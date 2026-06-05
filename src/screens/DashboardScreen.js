@@ -1,50 +1,46 @@
 import React from 'react';
-import { StyleSheet, Text, View, SafeAreaView, ScrollView } from 'react-native';
-import { CheckCircle, Clock, Zap } from 'lucide-react-native';
+import { StyleSheet, Text, View, SafeAreaView, ScrollView, useColorScheme } from 'react-native';
 import { BackgroundWrapper } from '../components/BackgroundWrapper';
 import { GlassCard } from '../components/GlassCard';
 import { GlassButton } from '../components/GlassButton';
 import { COLORS } from '../theme/theme';
+import { CheckCircle, Clock, Zap } from 'lucide-react-native';
 
-export const DashboardScreen = () => {
+export const DashboardScreen = ({ navigation }) => {
+  const colorScheme = useColorScheme();
+  const theme = colorScheme === 'dark' ? COLORS.dark : COLORS.light;
+
   return (
     <BackgroundWrapper>
       <SafeAreaView style={styles.container}>
-        <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
+        <ScrollView contentContainerStyle={styles.scroll}>
           <View style={styles.header}>
-            <Text style={styles.title}>LifePilot</Text>
-            <Text style={styles.subtitle}>Your AI Productivity Hub</Text>
+            <Text style={[styles.greeting, { color: theme.textMuted }]}>Good Morning,</Text>
+            <Text style={[styles.name, { color: theme.text }]}>Anupam</Text>
           </View>
-          
-          <GlassCard style={styles.card}>
-            <View style={styles.cardHeader}>
-              <Zap color={COLORS.secondary} size={24} />
-              <Text style={styles.cardTitle}>AI Assistant</Text>
-            </View>
-            <Text style={styles.cardText}>
-              I've prepared your daily roadmap. You have 3 high-priority tasks in the Eisenhower Matrix.
-            </Text>
+
+          <View style={styles.statsRow}>
+            <GlassCard style={styles.statCard}>
+              <CheckCircle color={theme.text} size={24} style={styles.icon} />
+              <Text style={[styles.statValue, { color: theme.text }]}>12</Text>
+              <Text style={[styles.statLabel, { color: theme.textMuted }]}>Tasks</Text>
+            </GlassCard>
+            <GlassCard style={styles.statCard}>
+              <Zap color={theme.text} size={24} style={styles.icon} />
+              <Text style={[styles.statValue, { color: theme.text }]}>4</Text>
+              <Text style={[styles.statLabel, { color: theme.textMuted }]}>Focus Hours</Text>
+            </GlassCard>
+          </View>
+
+          <View style={styles.actions}>
             <GlassButton 
               title="Start Focus Session" 
               icon={Clock} 
               style={styles.button}
               onPress={() => {}}
             />
-          </GlassCard>
-
-          <View style={styles.row}>
-            <GlassCard style={styles.halfCard}>
-              <CheckCircle color={COLORS.primary} size={28} />
-              <Text style={styles.metricTitle}>12</Text>
-              <Text style={styles.metricSubtitle}>Tasks Done</Text>
-            </GlassCard>
-            
-            <GlassCard style={styles.halfCard}>
-              <Clock color={COLORS.secondary} size={28} />
-              <Text style={styles.metricTitle}>2.5h</Text>
-              <Text style={styles.metricSubtitle}>Deep Work</Text>
-            </GlassCard>
           </View>
+
         </ScrollView>
       </SafeAreaView>
     </BackgroundWrapper>
@@ -56,71 +52,45 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scroll: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingBottom: 40,
+    padding: 24,
   },
   header: {
-    paddingHorizontal: 24,
-    paddingTop: 40,
-    paddingBottom: 20,
-  },
-  title: {
-    fontSize: 36,
-    fontWeight: 'bold',
-    color: COLORS.text,
-    letterSpacing: -1,
-  },
-  subtitle: {
-    fontSize: 18,
-    color: COLORS.textMuted,
-    marginTop: 4,
-  },
-  card: {
-    marginHorizontal: 24,
     marginTop: 20,
+    marginBottom: 32,
   },
-  cardHeader: {
+  greeting: {
+    fontSize: 16,
+    marginBottom: 4,
+  },
+  name: {
+    fontSize: 32,
+    fontWeight: 'bold',
+  },
+  statsRow: {
     flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 32,
+  },
+  statCard: {
+    flex: 0.48,
     alignItems: 'center',
+    paddingVertical: 24,
+  },
+  icon: {
     marginBottom: 12,
   },
-  cardTitle: {
-    fontSize: 20,
-    fontWeight: '600',
-    color: COLORS.text,
-    marginLeft: 8,
-  },
-  cardText: {
-    fontSize: 15,
-    color: COLORS.textMuted,
-    lineHeight: 22,
-    marginBottom: 20,
-  },
-  button: {
-    marginTop: 'auto',
-  },
-  row: {
-    flexDirection: 'row',
-    paddingHorizontal: 20,
-    justifyContent: 'space-between',
-    marginTop: 20,
-  },
-  halfCard: {
-    flex: 1,
-    marginHorizontal: 4,
-    marginTop: 0,
-  },
-  metricTitle: {
+  statValue: {
     fontSize: 28,
     fontWeight: 'bold',
-    color: COLORS.text,
-    marginTop: 12,
+    marginBottom: 4,
   },
-  metricSubtitle: {
+  statLabel: {
     fontSize: 14,
-    color: COLORS.textMuted,
-    marginTop: 4,
+  },
+  actions: {
+    gap: 16,
+  },
+  button: {
+    width: '100%',
   },
 });

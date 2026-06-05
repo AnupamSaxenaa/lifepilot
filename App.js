@@ -6,6 +6,8 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 
 import { LoginScreen } from './src/screens/LoginScreen';
 import { DashboardScreen } from './src/screens/DashboardScreen';
+import { TasksScreen } from './src/screens/TasksScreen';
+import { OnboardingScreen } from './src/screens/OnboardingScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -15,13 +17,14 @@ export default function App() {
       <StatusBar style="light" />
       <NavigationContainer>
         <Stack.Navigator 
-          initialRouteName="Login"
+          initialRouteName="Onboarding"
           screenOptions={{
             headerShown: false,
             contentStyle: { backgroundColor: 'transparent' },
             animation: 'fade',
           }}
         >
+          <Stack.Screen name="Onboarding" component={OnboardingScreen} />
           <Stack.Screen name="Login" component={LoginScreen} />
           <Stack.Screen name="Dashboard" component={DashboardScreen} />
         </Stack.Navigator>

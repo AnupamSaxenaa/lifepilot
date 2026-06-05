@@ -1,19 +1,18 @@
 import React from 'react';
-import { StyleSheet, TextInput, View } from 'react-native';
-import { BlurView } from 'expo-blur';
+import { StyleSheet, TextInput, useColorScheme, View } from 'react-native';
 import { COLORS } from '../theme/theme';
 
-export const GlassInput = ({ icon: Icon, ...props }) => {
+export const GlassInput = ({ style, ...props }) => {
+  const colorScheme = useColorScheme();
+  const theme = colorScheme === 'dark' ? COLORS.dark : COLORS.light;
+
   return (
-    <View style={styles.container}>
-      <BlurView intensity={15} tint="light" style={styles.blurView}>
-        {Icon && <Icon color={COLORS.textMuted} size={20} style={styles.icon} />}
-        <TextInput 
-          style={styles.input}
-          placeholderTextColor={COLORS.textMuted}
-          {...props}
-        />
-      </BlurView>
+    <View style={[styles.container, { backgroundColor: theme.surface, borderColor: theme.border }, style]}>
+      <TextInput 
+        style={[styles.input, { color: theme.text }]} 
+        placeholderTextColor={theme.textMuted}
+        {...props} 
+      />
     </View>
   );
 };
@@ -21,25 +20,13 @@ export const GlassInput = ({ icon: Icon, ...props }) => {
 const styles = StyleSheet.create({
   container: {
     borderRadius: 16,
-    overflow: 'hidden',
-    borderColor: COLORS.glassBorder,
     borderWidth: 1,
     marginBottom: 16,
-    backgroundColor: COLORS.glassBackground,
-  },
-  blurView: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 4,
-  },
-  icon: {
-    marginRight: 12,
+    overflow: 'hidden',
   },
   input: {
-    flex: 1,
-    color: COLORS.text,
+    paddingHorizontal: 20,
+    paddingVertical: 16,
     fontSize: 16,
-    height: 48,
   },
 });

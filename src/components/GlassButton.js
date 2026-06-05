@@ -1,40 +1,46 @@
 import React from 'react';
-import { StyleSheet, Text, TouchableOpacity } from 'react-native';
-import { BlurView } from 'expo-blur';
+import { StyleSheet, Text, TouchableOpacity, useColorScheme, View } from 'react-native';
 import { COLORS } from '../theme/theme';
 
 export const GlassButton = ({ title, onPress, icon: Icon, style }) => {
+  const colorScheme = useColorScheme();
+  const theme = colorScheme === 'dark' ? COLORS.dark : COLORS.light;
+
   return (
-    <TouchableOpacity onPress={onPress} activeOpacity={0.7} style={[styles.container, style]}>
-      <BlurView intensity={30} tint="light" style={styles.blurView}>
-        {Icon && <Icon color={COLORS.text} size={20} style={styles.icon} />}
-        <Text style={styles.text}>{title}</Text>
-      </BlurView>
+    <TouchableOpacity 
+      style={[styles.button, { backgroundColor: theme.surface, borderColor: theme.border }, style]} 
+      onPress={onPress}
+      activeOpacity={0.7}
+    >
+      <View style={styles.content}>
+        {Icon && <Icon color={theme.text} size={20} style={styles.icon} />}
+        <Text style={[styles.title, { color: theme.text }]}>{title}</Text>
+      </View>
     </TouchableOpacity>
   );
 };
 
 const styles = StyleSheet.create({
-  container: {
+  button: {
+    paddingVertical: 16,
+    paddingHorizontal: 24,
     borderRadius: 16,
-    overflow: 'hidden',
-    borderColor: COLORS.glassBorder,
     borderWidth: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginVertical: 8,
   },
-  blurView: {
+  content: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 14,
-    paddingHorizontal: 20,
+  },
+  title: {
+    fontSize: 16,
+    fontWeight: '600',
+    letterSpacing: 0.5,
   },
   icon: {
     marginRight: 8,
-  },
-  text: {
-    color: COLORS.text,
-    fontSize: 16,
-    fontWeight: '600',
   },
 });

@@ -1,66 +1,63 @@
-import React, { useState } from 'react';
-import { StyleSheet, Text, View, KeyboardAvoidingView, Platform } from 'react-native';
-import { Mail, Lock, ArrowRight } from 'lucide-react-native';
+import React from 'react';
+import { StyleSheet, Text, View, SafeAreaView, useColorScheme, TouchableOpacity } from 'react-native';
 import { BackgroundWrapper } from '../components/BackgroundWrapper';
 import { GlassCard } from '../components/GlassCard';
 import { GlassInput } from '../components/GlassInput';
 import { GlassButton } from '../components/GlassButton';
 import { COLORS } from '../theme/theme';
+import { LogIn } from 'lucide-react-native';
 
 export const LoginScreen = ({ navigation }) => {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-
-  const handleLogin = () => {
-    // Later we will link this to Supabase! For now, navigate.
-    navigation.replace('Dashboard');
-  };
+  const colorScheme = useColorScheme();
+  const theme = colorScheme === 'dark' ? COLORS.dark : COLORS.light;
 
   return (
     <BackgroundWrapper>
-      <KeyboardAvoidingView 
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={styles.container}
-      >
-        <View style={styles.content}>
-          <View style={styles.header}>
-            <Text style={styles.title}>LifePilot</Text>
-            <Text style={styles.subtitle}>Unlock your potential</Text>
-          </View>
+      <SafeAreaView style={styles.container}>
+        <View style={styles.header}>
+          <Text style={[styles.title, { color: theme.text }]}>LifePilot</Text>
+          <Text style={[styles.subtitle, { color: theme.textMuted }]}>Master your productivity</Text>
+        </View>
 
-          <GlassCard style={styles.card}>
-            <Text style={styles.cardTitle}>Welcome Back</Text>
-            
+        <View style={styles.formContainer}>
+          <GlassCard>
             <GlassInput 
-              icon={Mail}
-              placeholder="Email address"
-              value={email}
-              onChangeText={setEmail}
+              placeholder="Email" 
               keyboardType="email-address"
-              autoCapitalize="none"
+            />
+            <GlassInput 
+              placeholder="Password" 
+              secureTextEntry 
             />
             
-            <GlassInput 
-              icon={Lock}
-              placeholder="Password"
-              value={password}
-              onChangeText={setPassword}
-              secureTextEntry
+            <GlassButton 
+              title="Sign In" 
+              icon={LogIn} 
+              onPress={() => navigation.replace('Dashboard')} 
+              style={{ marginTop: 12 }}
             />
 
-            <View style={styles.forgotPasswordContainer}>
-              <Text style={styles.forgotPasswordText}>Forgot password?</Text>
+            <View style={styles.divider}>
+              <View style={[styles.line, { backgroundColor: theme.border }]} />
+              <Text style={[styles.orText, { color: theme.textMuted }]}>OR</Text>
+              <View style={[styles.line, { backgroundColor: theme.border }]} />
             </View>
 
             <GlassButton 
-              title="Sign In" 
-              icon={ArrowRight}
-              onPress={handleLogin}
-              style={styles.loginButton}
+              title="Continue with Google" 
+              onPress={() => {}} 
+              style={{ marginTop: 4, backgroundColor: theme.background }}
             />
+
+            <View style={styles.footer}>
+              <Text style={{ color: theme.textMuted }}>Don't have an account? </Text>
+              <TouchableOpacity>
+                <Text style={{ color: theme.text, fontWeight: 'bold' }}>Register</Text>
+              </TouchableOpacity>
+            </View>
           </GlassCard>
         </View>
-      </KeyboardAvoidingView>
+      </SafeAreaView>
     </BackgroundWrapper>
   );
 };
@@ -68,47 +65,43 @@ export const LoginScreen = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-  },
-  content: {
-    flex: 1,
     justifyContent: 'center',
-    paddingHorizontal: 24,
   },
   header: {
     alignItems: 'center',
     marginBottom: 40,
+    marginTop: -40,
   },
   title: {
     fontSize: 42,
     fontWeight: 'bold',
-    color: COLORS.text,
-    letterSpacing: -1,
+    letterSpacing: 1,
+    marginBottom: 8,
   },
   subtitle: {
-    fontSize: 18,
-    color: COLORS.textMuted,
-    marginTop: 8,
+    fontSize: 16,
+    letterSpacing: 0.5,
   },
-  card: {
-    padding: 8,
+  formContainer: {
+    paddingHorizontal: 24,
   },
-  cardTitle: {
-    fontSize: 24,
-    fontWeight: '600',
-    color: COLORS.text,
-    marginBottom: 24,
-    textAlign: 'center',
+  divider: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: 24,
   },
-  forgotPasswordContainer: {
-    alignItems: 'flex-end',
-    marginBottom: 24,
+  line: {
+    flex: 1,
+    height: 1,
   },
-  forgotPasswordText: {
-    color: COLORS.secondary,
+  orText: {
+    marginHorizontal: 16,
     fontSize: 14,
-    fontWeight: '500',
   },
-  loginButton: {
-    marginTop: 8,
+  footer: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    marginTop: 24,
+    marginBottom: 8,
   },
 });
