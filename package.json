@@ -77,12 +77,5 @@
     "web": "expo start --web",
     "lint": "expo lint"
   },
-  "private": true,
-  "expo": {
-    "autolinking": {
-      "exclude": [
-        "react-native-worklets"
-      ]
-    }
-  }
+  "private": true
 }
