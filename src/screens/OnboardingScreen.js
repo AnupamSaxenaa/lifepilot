@@ -1,9 +1,10 @@
 import React, { useState, useRef } from 'react';
-import { StyleSheet, Text, View, SafeAreaView, Dimensions, TouchableOpacity, FlatList, useColorScheme } from 'react-native';
+import { StyleSheet, Text, View, Dimensions, SafeAreaView, TouchableOpacity, FlatList, useColorScheme } from 'react-native';
 import { BackgroundWrapper } from '../components/BackgroundWrapper';
 import { GlassButton } from '../components/GlassButton';
 import { COLORS } from '../theme/theme';
 import { Target, LayoutGrid, TrendingUp } from 'lucide-react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const { width, height } = Dimensions.get('window');
 
@@ -33,17 +34,14 @@ export const OnboardingScreen = ({ navigation }) => {
   const flatListRef = useRef(null);
   const colorScheme = useColorScheme();
   const theme = colorScheme === 'dark' ? COLORS.dark : COLORS.light;
+  const insets = useSafeAreaInsets();
 
   const handleNext = () => {
     if (currentIndex < SLIDES.length - 1) {
       flatListRef.current?.scrollToIndex({ index: currentIndex + 1, animated: true });
     } else {
-      navigation.replace('Login');
+      navigation.navigate('Login');
     }
-  };
-
-  const handleSkip = () => {
-    navigation.replace('Login');
   };
 
   const onScroll = (event) => {
@@ -57,14 +55,14 @@ export const OnboardingScreen = ({ navigation }) => {
 
   return (
     <BackgroundWrapper>
-      <SafeAreaView style={styles.container}>
-        <View style={styles.header}>
+      <View style={styles.container}>
+        <View style={[styles.header, { marginTop: Math.max(insets.top, 16) }]}>
           {currentIndex < SLIDES.length - 1 ? (
-            <TouchableOpacity onPress={handleSkip}>
+            <TouchableOpacity onPress={() => navigation.navigate('Login')}>
               <Text style={[styles.skipText, { color: theme.textMuted }]}>Skip</Text>
             </TouchableOpacity>
           ) : (
-            <View /> // Empty view to maintain layout
+            <View />
           )}
         </View>
 
@@ -106,7 +104,7 @@ export const OnboardingScreen = ({ navigation }) => {
             onPress={handleNext} 
           />
         </View>
-      </SafeAreaView>
+      </View>
     </BackgroundWrapper>
   );
 };
@@ -143,10 +141,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   title: {
-    fontSize: 28,
-    fontWeight: 'bold',
+    fontFamily: 'PlaywriteGBJ_400Regular',
+    fontSize: 36,
     marginBottom: 16,
     textAlign: 'center',
+    paddingHorizontal: 20,
   },
   description: {
     fontSize: 16,

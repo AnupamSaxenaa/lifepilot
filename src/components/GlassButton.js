@@ -1,8 +1,8 @@
 import React from 'react';
-import { StyleSheet, Text, TouchableOpacity, useColorScheme, View } from 'react-native';
+import { StyleSheet, Text, TouchableOpacity, useColorScheme, View, Image } from 'react-native';
 import { COLORS } from '../theme/theme';
 
-export const GlassButton = ({ title, onPress, icon: Icon, style }) => {
+export const GlassButton = ({ title, onPress, icon: Icon, imageSource, style, textStyle }) => {
   const colorScheme = useColorScheme();
   const theme = colorScheme === 'dark' ? COLORS.dark : COLORS.light;
 
@@ -13,8 +13,14 @@ export const GlassButton = ({ title, onPress, icon: Icon, style }) => {
       activeOpacity={0.7}
     >
       <View style={styles.content}>
-        {Icon && <Icon color={theme.text} size={20} style={styles.icon} />}
-        <Text style={[styles.title, { color: theme.text }]}>{title}</Text>
+        {imageSource ? (
+          <Image source={imageSource} style={[styles.imageIcon, title && styles.iconWithText]} />
+        ) : Icon ? (
+          <Icon color={theme.text} size={20} style={[styles.icon, title && styles.iconWithText]} />
+        ) : null}
+        {title ? (
+          <Text style={[styles.title, { color: theme.text }, textStyle]}>{title}</Text>
+        ) : null}
       </View>
     </TouchableOpacity>
   );
@@ -42,5 +48,13 @@ const styles = StyleSheet.create({
   },
   icon: {
     marginRight: 8,
+  },
+  iconWithText: {
+    marginRight: 8,
+  },
+  imageIcon: {
+    width: 20,
+    height: 20,
+    resizeMode: 'contain',
   },
 });

@@ -1,0 +1,36 @@
+diff --git a/node_modules/react-native-reanimated/android/build.gradle b/node_modules/react-native-reanimated/android/build.gradle
+index 8167d16..65103ab 100644
+--- a/node_modules/react-native-reanimated/android/build.gradle
++++ b/node_modules/react-native-reanimated/android/build.gradle
+@@ -317,10 +317,10 @@ dependencies {
+     if (project == rootProject) {
+         // This is needed for linting in Reanimated's repo.
+     } else {
+-        if (rootProject.subprojects.find { it.name == "react-native-worklets" }) {
+-            implementation project(":react-native-worklets")
++        if (rootProject.subprojects.find { it.name == "react-native-worklets-core" }) {
++            implementation project(":react-native-worklets-core")
+         } else {
+-            throw new GradleException("[Reanimated] `react-native-worklets` library not found. Please install it as a dependency in your project. Install `react-native-worklets` with your package manager, i.e. `yarn add react-native-worklets` or `npm i react-native-worklets`. Read the documentation for more details: https://docs.swmansion.com/react-native-reanimated/docs/guides/troubleshooting#unable-to-find-a-specification-for-rnworklets-depended-upon-by-rnreanimated")
++            throw new GradleException("[Reanimated] `react-native-worklets-core` library not found. Please install it as a dependency in your project. Install `react-native-worklets-core` with your package manager, i.e. `yarn add react-native-worklets-core` or `npm i react-native-worklets-core`. Read the documentation for more details: https://docs.swmansion.com/react-native-reanimated/docs/guides/troubleshooting#unable-to-find-a-specification-for-rnworklets-depended-upon-by-rnreanimated")
+         }
+     }
+ }
+@@ -328,14 +328,14 @@ dependencies {
+ preBuild.dependsOn(prepareReanimatedHeadersForPrefabs)
+ 
+ if (project != rootProject) {
+-    evaluationDependsOn(":react-native-worklets")
++    evaluationDependsOn(":react-native-worklets-core")
+ 
+     afterEvaluate {
+         tasks.named("externalNativeBuildDebug").configure {
+-            dependsOn(findProject(":react-native-worklets").tasks.named("externalNativeBuildDebug"))
++            dependsOn(findProject(":react-native-worklets-core").tasks.named("externalNativeBuildDebug"))
+         }
+         tasks.named("externalNativeBuildRelease").configure {
+-            dependsOn(findProject(":react-native-worklets").tasks.named("externalNativeBuildRelease"))
++            dependsOn(findProject(":react-native-worklets-core").tasks.named("externalNativeBuildRelease"))
+         }
+         tasks.named("clean") {
+             it.finalizedBy(cleanCMakeCache)

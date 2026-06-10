@@ -3,23 +3,43 @@
   "main": "node_modules/expo/AppEntry.js",
   "version": "1.0.0",
   "dependencies": {
-    "@expo/ui": "~56.0.15",
+    "@expo-google-fonts/dancing-script": "^0.4.2",
+    "@expo-google-fonts/playwrite-gb-j": "^0.4.1",
+    "@expo/ui": "~56.0.16",
+    "@notifee/react-native": "^9.1.8",
     "@react-native-async-storage/async-storage": "2.2.0",
+    "@react-native-community/datetimepicker": "9.1.0",
+    "@react-native-masked-view/masked-view": "0.3.2",
     "@react-navigation/native": "^7.2.5",
     "@react-navigation/native-stack": "^7.16.0",
     "@supabase/supabase-js": "^2.107.0",
-    "expo": "~56.0.8",
+    "base64-arraybuffer": "^1.0.2",
+    "expo": "~56.0.9",
+    "expo-auth-session": "~56.0.13",
+    "expo-av": "^16.0.8",
     "expo-blur": "~56.0.3",
+    "expo-build-properties": "~56.0.17",
+    "expo-calendar": "~56.0.8",
+    "expo-clipboard": "~56.0.4",
     "expo-constants": "~56.0.16",
+    "expo-crypto": "~56.0.4",
+    "expo-dev-client": "~56.0.19",
     "expo-device": "~56.0.4",
+    "expo-document-picker": "~56.0.4",
+    "expo-file-system": "~56.0.7",
     "expo-font": "~56.0.5",
     "expo-glass-effect": "~56.0.4",
-    "expo-image": "~56.0.9",
+    "expo-image": "~56.0.10",
+    "expo-image-picker": "~56.0.16",
+    "expo-intent-launcher": "~56.0.4",
     "expo-linear-gradient": "~56.0.4",
     "expo-linking": "~56.0.13",
+    "expo-notifications": "~56.0.16",
+    "expo-secure-store": "~56.0.4",
+    "expo-speech-recognition": "^56.0.1",
     "expo-splash-screen": "~56.0.10",
     "expo-status-bar": "~56.0.4",
-    "expo-symbols": "~56.0.5",
+    "expo-symbols": "~56.0.6",
     "expo-system-ui": "~56.0.5",
     "expo-updates": "~56.0.18",
     "expo-web-browser": "~56.0.5",
@@ -28,17 +48,24 @@
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-native": "0.85.3",
+    "react-native-draggable-flatlist": "^4.0.3",
     "react-native-gesture-handler": "~2.31.1",
+    "react-native-keyboard-aware-scroll-view": "^0.9.5",
     "react-native-reanimated": "4.3.1",
     "react-native-safe-area-context": "~5.7.0",
     "react-native-screens": "4.25.2",
+    "react-native-svg": "15.15.4",
     "react-native-url-polyfill": "^3.0.0",
     "react-native-web": "~0.21.0",
     "react-native-worklets": "0.8.3",
+    "react-native-worklets-core": "^1.6.3",
     "zustand": "^5.0.14"
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
+    "eslint": "^9.0.0",
+    "eslint-config-expo": "~56.0.4",
+    "patch-package": "^8.0.1",
     "tailwindcss": "^3.3.2",
     "typescript": "~6.0.3"
   },
@@ -50,5 +77,12 @@
     "web": "expo start --web",
     "lint": "expo lint"
   },
-  "private": true
+  "private": true,
+  "expo": {
+    "autolinking": {
+      "exclude": [
+        "react-native-worklets"
+      ]
+    }
+  }
 }

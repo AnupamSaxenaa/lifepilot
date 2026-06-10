@@ -2,6 +2,14 @@
 
 This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
 
+---
+
+### ⚠️ Android APK Build Instructions (For Developers & AIs)
+If you need to compile a production release APK for Android on this machine, **do not run default gradle commands directly**. Newer Java versions (JDK 25) will fail during CMake JNI tasks due to system native access restrictions.
+Please refer to the [BUILD_GUIDE.md](file:///Users/praveenkumarsaxena/Desktop/lifepilot/BUILD_GUIDE.md) at the root of the project for configuration adjustments and the exact JDK 17 compile commands.
+
+---
+
 ## Get started
 
 1. Install dependencies

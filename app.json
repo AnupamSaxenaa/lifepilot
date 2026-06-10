@@ -1,17 +1,32 @@
 {
   "expo": {
-    "name": "lifepilot",
+    "name": "LifePilot Beta",
     "slug": "lifepilot",
-    "version": "1.0.0",
+    "version": "vjasper1.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "lifepilot",
+    "scheme": [
+      "lifepilot",
+      "com.anupam.lp",
+      "com.googleusercontent.apps.753694130355-8bhkicmdd6qqu9esu09qo5c9dv8ab3vi"
+    ],
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/expo.icon",
+      "bundleIdentifier": "com.anupam.lp",
+      "infoPlist": {
+        "NSSpeechRecognitionUsageDescription": "Allow $(PRODUCT_NAME) to securely transcribe your voice commands using native speech recognition.",
+        "NSMicrophoneUsageDescription": "Allow $(PRODUCT_NAME) to access your microphone so you can speak to the AI assistant.",
+        "NSCalendarsUsageDescription": "Allow $(PRODUCT_NAME) to read your calendar events to help you schedule tasks around your busy days."
+      }
     },
     "android": {
-      "package": "com.anupam.lifepilot",
+      "package": "com.anupam.lp",
+      "permissions": [
+        "RECORD_AUDIO",
+        "android.permission.READ_CALENDAR",
+        "android.permission.WRITE_CALENDAR"
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#000000",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -21,7 +36,7 @@
       "predictiveBackGestureEnabled": false
     },
     "web": {
-      "output": "static",
+      "output": "single",
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
@@ -34,11 +49,34 @@
             "imageWidth": 150
           }
         }
-      ]
+      ],
+      "expo-font",
+      "expo-web-browser",
+      "@react-native-community/datetimepicker",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#ffffff"
+        }
+      ],
+      "expo-secure-store",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "compileSdkVersion": 36,
+            "targetSdkVersion": 34
+          }
+        }
+      ],
+      "./plugins/withFullScreenAlarm",
+      "./plugins/withNotifeeRepo",
+      "expo-speech-recognition",
+      "expo-image"
     ],
     "experiments": {
-      "typedRoutes": true,
-      "reactCompiler": true
+      "reactCompiler": false
     },
     "extra": {
       "eas": {

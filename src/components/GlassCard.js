@@ -32,7 +32,6 @@ const styles = StyleSheet.create({
     marginVertical: 8,
   },
   blur: {
-    flex: 1,
   },
   content: {
     padding: 24,
