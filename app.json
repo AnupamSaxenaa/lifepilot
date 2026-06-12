@@ -2,7 +2,7 @@
   "expo": {
     "name": "LifePilot Beta",
     "slug": "lifepilot",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": [
@@ -22,7 +22,7 @@
     },
     "android": {
       "package": "com.anupam.lp",
-      "versionCode": 2,
+      "versionCode": 3,
       "permissions": [
         "RECORD_AUDIO",
         "android.permission.READ_CALENDAR",

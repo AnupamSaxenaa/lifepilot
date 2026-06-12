@@ -1,3 +1,4 @@
+import { BlurView } from 'expo-blur';
 import { AlertCircle, Download } from 'lucide-react-native';
 import React, { useState } from 'react';
 import { Alert, Animated, Dimensions, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
