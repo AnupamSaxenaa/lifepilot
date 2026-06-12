@@ -44,3 +44,8 @@ example
 *.apk
 
 .env
+
+# Ignore Markdown artifacts
+*.md
+!README.md
+
