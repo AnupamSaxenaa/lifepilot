@@ -1,18 +1,18 @@
+import Slider from '@react-native-community/slider';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { BlurView } from 'expo-blur';
+import * as Brightness from 'expo-brightness';
+import * as ScreenOrientation from 'expo-screen-orientation';
 import { StatusBar } from 'expo-status-bar';
-import { Brain, Clock, Coffee, Gamepad2, Info, Moon, Music, Pause, Pizza, Play, Save, X, Zap, Sun } from 'lucide-react-native';
+import { Brain, Clock, Coffee, Gamepad2, Info, Moon, Music, Pause, Pizza, Play, Save, Sun, X, Zap } from 'lucide-react-native';
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Animated, BackHandler, Easing, KeyboardAvoidingView, Modal, Platform, StyleSheet, Text, TextInput, TouchableOpacity, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { chatWithAura, getCoachAdvice } from '../lib/AIEngine';
+import { getCoachAdvice } from '../lib/AIEngine';
 import { addTask } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
 import { syncToSupabase } from '../lib/syncQueue';
 import { Storage } from '../utils/storage';
-import * as ScreenOrientation from 'expo-screen-orientation';
-import * as Brightness from 'expo-brightness';
-import Slider from '@react-native-community/slider';
 
 export default function FocusModeScreen() {
   const { width, height } = useWindowDimensions();
@@ -245,36 +245,57 @@ export default function FocusModeScreen() {
       try {
         const { data: { session } } = await supabase.auth.getSession();
         if (session) {
-          // ✅ CRITICAL FIX: Don't load stale tasks - just update THIS task directly
-          // Load the absolute latest tasks from cache
+          // ✅ CRITICAL FIX: Always reload the absolute latest tasks from storage
+          // This prevents stale data from overwriting recent changes
           const latestTasks = await Storage.get(`tasks_${session.user.id}`) || [];
+          
+          console.log('[FocusMode] Loaded latest tasks:', latestTasks.length);
+          console.log('[FocusMode] Looking for task:', task.id);
           
           // Find our task in the latest data
           const ourTask = latestTasks.find(t => t.id === task.id);
           
-          if (ourTask && !ourTask.is_completed) {
-            // Update ONLY this task
-            const updatedTasks = latestTasks.map(t =>
-              t.id === task.id 
-                ? { ...t, is_completed: true, completed_at: new Date().toISOString() }
-                : t
-            );
-            
-            // Save back to cache
-            await Storage.set(`tasks_${session.user.id}`, updatedTasks);
-            await Storage.set('last_local_write_time', Date.now().toString());
-            
-            // Sync to Supabase
-            syncToSupabase('tasks', 'update',
-              { is_completed: true, completed_at: new Date().toISOString() },
-              { column: 'id', value: task.id }
-            );
-          } else {
-            console.warn('[FocusMode] Task not found or already completed:', task.id);
+          if (!ourTask) {
+            console.error('[FocusMode] Task not found in latest data:', task.id);
+            // Task might have been deleted while in focus mode
+            Alert.alert('Task Not Found', 'This task may have been deleted. Returning to previous screen.');
+            navigation.goBack();
+            return;
           }
+          
+          if (ourTask.is_completed) {
+            console.log('[FocusMode] Task already completed, skipping update');
+            navigation.goBack();
+            return;
+          }
+          
+          // Update ONLY this task - don't touch any others
+          const updatedTasks = latestTasks.map(t =>
+            t.id === task.id 
+              ? { ...t, is_completed: true, completed_at: new Date().toISOString() }
+              : t  // Keep all other tasks exactly as they are
+          );
+          
+          console.log('[FocusMode] Updating task completion in cache');
+          
+          // Save back to cache
+          await Storage.set(`tasks_${session.user.id}`, updatedTasks);
+          await Storage.set('last_local_write_time', Date.now().toString());
+          
+          // Sync to Supabase (fire and forget)
+          syncToSupabase('tasks', 'update',
+            { is_completed: true, completed_at: new Date().toISOString() },
+            { column: 'id', value: task.id }
+          ).catch(err => {
+            console.error('[FocusMode] Sync failed:', err);
+          });
+          
+          console.log('[FocusMode] Task marked as completed successfully');
         }
       } catch (err) {
         console.error('[FocusMode] Error completing task:', err);
+        Alert.alert('Error', 'Failed to complete task. Please try again.');
+        return;
       }
     }
     navigation.goBack();
@@ -345,8 +366,11 @@ export default function FocusModeScreen() {
         created_at: new Date().toISOString()
       };
       
+      // Load the current cache so we don't wipe out other tasks
+      const currentCache = await Storage.get(`tasks_${session.user.id}`) || [];
+      
       // Fire and forget so we can instantly go back to focus
-      addTask(session.user.id, [], newTask, () => {}).then();
+      addTask(session.user.id, currentCache, newTask, () => {}).then();
     }
     
     setDumpText('');
