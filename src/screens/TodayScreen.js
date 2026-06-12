@@ -1,7 +1,7 @@
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
-import { ArrowUp, Bell, Calendar, Check, CheckCircle2, ChevronDown, ChevronRight, Circle, FileText, GripVertical, ListChecks, Menu, MoreVertical, Plus, Repeat, Star, Trash2, Wand2, X } from 'lucide-react-native';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { ArrowUp, Bell, Calendar, Check, CheckCircle2, ChevronDown, ChevronRight, Circle, FileText, GripVertical, ListChecks, Menu, MoreVertical, Plus, Repeat, Star, Trash2, Wand2, X, Zap } from 'lucide-react-native';
+import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { BackHandler, Keyboard, KeyboardAvoidingView, Modal, Platform, ScrollView, Share, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { NestableDraggableFlatList, NestableScrollContainer, ScaleDecorator } from 'react-native-draggable-flatlist';
 import Animated, { Easing, FadeIn, FadeOut, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
@@ -246,7 +246,8 @@ export const TodayScreen = ({ navigation }) => {
     return false;
   };
 
-  const getSortedActiveTasks = () => {
+  // ⚡ PERFORMANCE: Memoize expensive sorting (only recalculate when deps change)
+  const getSortedActiveTasks = useMemo(() => {
     // Keep task in active list while its scribble animation is playing
     const active = tasks.filter(t => isTaskForToday(t) && (!t.is_completed || completingTaskIds.includes(t.id)));
     const sortGroup = (arr) => {
@@ -278,9 +279,9 @@ export const TodayScreen = ({ navigation }) => {
       return s;
     };
     return sortGroup(active);
-  };
+  }, [tasks, sortBy, completingTaskIds]);
 
-  const getSortedTasks = () => {
+  const getSortedTasks = useMemo(() => {
     const active = tasks.filter(t => isTaskForToday(t) && (!t.is_completed || completingTaskIds.includes(t.id)));
     const completed = tasks.filter(t => isTaskForToday(t) && t.is_completed && !completingTaskIds.includes(t.id));
     const sortGroup = (arr) => {
@@ -312,15 +313,17 @@ export const TodayScreen = ({ navigation }) => {
       return s;
     };
     return [...sortGroup(active), ...sortGroup(completed)];
-  };
+  }, [tasks, sortBy, completingTaskIds]);
 
-  // Completed today — shown in collapsible section
-  const completedTodayTasks = tasks.filter(t => {
-    if (!isTaskForToday(t) && new Date(t.completed_at).toDateString() !== todayStr) return false;
-    if (!t.is_completed) return false;
-    const completedDate = t.completed_at ? new Date(t.completed_at).toDateString() : null;
-    return completedDate === todayStr;
-  });
+  // ⚡ PERFORMANCE: Memoize completed tasks filter
+  const completedTodayTasks = useMemo(() => {
+    return tasks.filter(t => {
+      if (!isTaskForToday(t) && new Date(t.completed_at).toDateString() !== todayStr) return false;
+      if (!t.is_completed) return false;
+      const completedDate = t.completed_at ? new Date(t.completed_at).toDateString() : null;
+      return completedDate === todayStr;
+    });
+  }, [tasks, todayStr]);
 
   // Clear completed handler
   const handleClearCompleted = async () => {
@@ -344,7 +347,7 @@ export const TodayScreen = ({ navigation }) => {
   const handlePrintList = async () => {
     setIsMenuOpen(false);
     const today = new Date().toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-    const lines = getSortedTasks().map(t => {
+    const lines = getSortedTasks.map(t => {
       const status = t.is_completed ? '✅' : (t.is_important ? '⭐' : '⬜');
       let line = `${status} ${t.title}`;
       if (t.due_date)      line += `\n   📅 Due: ${formatDate(t.due_date)}`;
@@ -401,19 +404,24 @@ export const TodayScreen = ({ navigation }) => {
     const isCompleting = !currentStatus;
 
     if (isCompleting) {
-      // 1. Mark as "completing" so scribble animation triggers but task stays in active list
+      // 1. Mark as "completing" so scribble animation triggers
       setCompletingTaskIds(prev => [...prev, id]);
 
-      // 2. After scribble animation finishes (~800ms), actually move to completed
+      // 2. IMPORTANT: Capture current tasks NOW to avoid race condition
+      //    Don't use latestTasksRef.current inside setTimeout - it may be stale
+      const taskSnapshot = [...latestTasksRef.current];
+
+      // 3. After scribble animation finishes (~800ms), actually move to completed
       setTimeout(() => {
         if (userId) {
-          const currentTasks = latestTasksRef.current;
           const completedAt = new Date().toISOString();
-          const updated = currentTasks.map(t =>
+          
+          // Use the snapshot we captured earlier, not latestTasksRef.current
+          const updated = taskSnapshot.map(t =>
             t.id === id ? { ...t, is_completed: true, completed_at: completedAt } : t
           );
 
-          // Update local state and clear animation state together in the same render cycle
+          // Update local state and clear animation state together
           setTasks(updated);
           setCompletingTaskIds(prev => prev.filter(tid => tid !== id));
 
@@ -424,13 +432,13 @@ export const TodayScreen = ({ navigation }) => {
             { column: 'id', value: id }
           );
 
-          const task = currentTasks.find(t => t.id === id);
+          const task = taskSnapshot.find(t => t.id === id);
           if (task?.reminder_time) cancelTaskReminder(id);
           Gamification.addXP(userId, 10);
         }
       }, 800);
     } else {
-      // Un-completing: instant
+      // Un-completing: instant (no animation delay needed)
       if (userId) {
         const currentTasks = latestTasksRef.current;
         const updated = currentTasks.map(t =>
@@ -541,7 +549,8 @@ export const TodayScreen = ({ navigation }) => {
   };
 
   // ─── Render ───────────────────────────────────────────
-  const sortedTasks = getSortedActiveTasks();
+  // ⚡ PERFORMANCE: sortedTasks is already memoized (no need to call function)
+  const sortedTasks = getSortedActiveTasks;
 
   return (
     <BackgroundWrapper>
@@ -654,20 +663,28 @@ export const TodayScreen = ({ navigation }) => {
                 contentContainerStyle={styles.scroll}
                 keyboardShouldPersistTaps="handled"
                 onContainerLayout={() => {}}
+                removeClippedSubviews={true}
+                maxToRenderPerBatch={10}
+                updateCellsBatchingPeriod={50}
+                initialNumToRender={10}
+                windowSize={5}
                 onDragEnd={({ data }) => {
-                  if (sortBy !== 'custom') setSortBy('custom');
-                  
-                  const orderMap = new Map(data.map((t, i) => [t.id, i]));
-                  
-                  const mergedTasks = latestTasksRef.current.map(t => 
-                    orderMap.has(t.id) ? { ...t, order_index: orderMap.get(t.id) } : t
-                  );
-                  
-                  setTasks(mergedTasks);
-                  
-                  // Background sync via SyncQueue (caching full lists and syncing mappings)
-                  const changedTasks = data.map((t, i) => ({ id: t.id, order_index: i }));
-                  reorderTasks(userId, mergedTasks, changedTasks);
+                  // Defer state update until after drag animation completes to prevent jitter
+                  requestAnimationFrame(() => {
+                    if (sortBy !== 'custom') setSortBy('custom');
+                    
+                    const orderMap = new Map(data.map((t, i) => [t.id, i]));
+                    
+                    const mergedTasks = latestTasksRef.current.map(t => 
+                      orderMap.has(t.id) ? { ...t, order_index: orderMap.get(t.id) } : t
+                    );
+                    
+                    setTasks(mergedTasks);
+                    
+                    // Background sync via SyncQueue (caching full lists and syncing mappings)
+                    const changedTasks = data.map((t, i) => ({ id: t.id, order_index: i }));
+                    reorderTasks(userId, mergedTasks, changedTasks);
+                  });
                 }}
                 renderItem={({ item: task, drag, isActive }) => {
                   const hasSubtasks = task.subtasks && task.subtasks.length > 0;
@@ -779,6 +796,11 @@ export const TodayScreen = ({ navigation }) => {
 
                         {/* Right: star + delete */}
                         <View style={styles.taskActions}>
+                          {!task.is_completed && (
+                            <TouchableOpacity onPress={() => navigation.navigate('FocusMode', { task })} style={styles.iconButtonSmall}>
+                              <Zap color="#A855F7" size={18} fill="rgba(168, 85, 247, 0.2)" />
+                            </TouchableOpacity>
+                          )}
                           <TouchableOpacity onPress={() => toggleImportant(task.id, task.is_important)} style={styles.iconButtonSmall}>
                             <Star
                               color={task.is_important ? '#FFFFFF' : '#444'}

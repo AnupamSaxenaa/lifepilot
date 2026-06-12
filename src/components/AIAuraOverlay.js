@@ -1,20 +1,36 @@
 /* eslint-disable react-hooks/immutability, react-hooks/set-state-in-effect */
-import React, { useState, useEffect } from 'react';
-import { 
-  View, Text, StyleSheet, TouchableOpacity, TextInput, 
-  Dimensions, KeyboardAvoidingView, Platform, ScrollView, Modal, Alert, Keyboard
+import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
+import { Calendar, CheckCircle2, Circle, Mic, Send, Sparkles, X, Zap } from 'lucide-react-native';
+import { useEffect, useState } from 'react';
+import {
+    Alert,
+    Dimensions,
+    Keyboard,
+    KeyboardAvoidingView,
+    Modal,
+    Platform, ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import Animated, { 
-  useSharedValue, useAnimatedStyle, withTiming, 
-  Easing, withSpring, runOnJS
+import Animated, {
+    Easing,
+    runOnJS,
+    useAnimatedStyle,
+    useSharedValue,
+    withRepeat,
+    withSequence,
+    withSpring,
+    withTiming
 } from 'react-native-reanimated';
-import { Send, CheckCircle2, Circle, Calendar, X, Mic, Sparkles } from 'lucide-react-native';
-import { generatePlan, chatWithAura } from '../lib/AIEngine';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { chatWithAura, generatePlan } from '../lib/AIEngine';
+import { supabase } from '../lib/supabase';
+import { fetchTodayEvents } from '../utils/calendarSync';
 import { Storage } from '../utils/storage';
 import { LiquidAura } from './LiquidAura';
-import { fetchTodayEvents } from '../utils/calendarSync';
-import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
 
 const { width, height } = Dimensions.get('window');
 const MAX_CHAT_MESSAGES = 24;
@@ -84,6 +100,96 @@ const TypewriterText = ({ message, isProcessing, style }) => {
   return <Text style={style}>{displayedText}</Text>;
 };
 
+const VoiceVisualizer = () => {
+  const bar1 = useSharedValue(4);
+  const bar2 = useSharedValue(8);
+  const bar3 = useSharedValue(6);
+  const bar4 = useSharedValue(10);
+  const bar5 = useSharedValue(5);
+
+  useEffect(() => {
+    const startPulse = (sv, delay, min, max) => {
+      setTimeout(() => {
+        sv.value = withRepeat(
+          withSequence(
+            withTiming(max, { duration: Math.random() * 200 + 200, easing: Easing.inOut(Easing.ease) }),
+            withTiming(min, { duration: Math.random() * 200 + 200, easing: Easing.inOut(Easing.ease) })
+          ),
+          -1,
+          true
+        );
+      }, delay);
+    };
+
+    startPulse(bar1, 0, 4, 18);
+    startPulse(bar2, 100, 8, 24);
+    startPulse(bar3, 200, 6, 20);
+    startPulse(bar4, 150, 10, 26);
+    startPulse(bar5, 50, 4, 16);
+  }, []);
+
+  const s1 = useAnimatedStyle(() => ({ height: bar1.value }));
+  const s2 = useAnimatedStyle(() => ({ height: bar2.value }));
+  const s3 = useAnimatedStyle(() => ({ height: bar3.value }));
+  const s4 = useAnimatedStyle(() => ({ height: bar4.value }));
+  const s5 = useAnimatedStyle(() => ({ height: bar5.value }));
+
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3, marginHorizontal: 8, height: 30, justifyContent: 'center' }}>
+      <Animated.View style={[{ width: 3, backgroundColor: '#A78BFA', borderRadius: 2 }, s1]} />
+      <Animated.View style={[{ width: 3, backgroundColor: '#C084FC', borderRadius: 2 }, s2]} />
+      <Animated.View style={[{ width: 3, backgroundColor: '#E879F9', borderRadius: 2 }, s3]} />
+      <Animated.View style={[{ width: 3, backgroundColor: '#F472B6', borderRadius: 2 }, s4]} />
+      <Animated.View style={[{ width: 3, backgroundColor: '#A78BFA', borderRadius: 2 }, s5]} />
+    </View>
+  );
+};
+
+const PulseMicButton = ({ isListening, disabled, onPress }) => {
+  const pulse = useSharedValue(1);
+
+  useEffect(() => {
+    if (isListening) {
+      pulse.value = withRepeat(
+        withSequence(
+          withTiming(1.2, { duration: 600, easing: Easing.inOut(Easing.ease) }),
+          withTiming(1, { duration: 600, easing: Easing.inOut(Easing.ease) })
+        ),
+        -1,
+        true
+      );
+    } else {
+      pulse.value = withTiming(1, { duration: 300 });
+    }
+  }, [isListening]);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: pulse.value }],
+    backgroundColor: isListening ? 'rgba(167, 139, 250, 0.3)' : 'transparent',
+    shadowColor: '#A78BFA',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: isListening ? 0.6 : 0,
+    shadowRadius: isListening ? 12 : 0,
+    elevation: isListening ? 10 : 0
+  }));
+
+  return (
+    <Animated.View style={[styles.micBtn, animatedStyle, { position: 'relative' }]}>
+      {isListening && (
+        <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: '#A78BFA', borderRadius: 25, opacity: 0.15 }]} />
+      )}
+      <TouchableOpacity 
+        style={{ width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center', borderRadius: 25 }} 
+        disabled={disabled}
+        onPress={onPress}
+      >
+        <Mic color={isListening ? "#FFF" : "#A78BFA"} size={22} />
+      </TouchableOpacity>
+    </Animated.View>
+  );
+};
+
+let accumulatedSpeech = "";
 export const AIAuraOverlay = ({ visible, onClose, tasks, savedPlan, onPlanGenerated, onToggleTask, userId }) => {
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
@@ -91,7 +197,7 @@ export const AIAuraOverlay = ({ visible, onClose, tasks, savedPlan, onPlanGenera
   const [isListening, setIsListening] = useState(false);
   const [generatedPlan, setGeneratedPlan] = useState(null);
   const [userMemory, setUserMemory] = useState('');
-  const [creditsUsed, setCreditsUsed] = useState(0);
+  const [creditsLeft, setCreditsLeft] = useState(20);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const insets = useSafeAreaInsets();
   
@@ -101,20 +207,46 @@ export const AIAuraOverlay = ({ visible, onClose, tasks, savedPlan, onPlanGenera
   const plannerOpacity = useSharedValue(0);
   const plannerX = useSharedValue(0);
   const plannerY = useSharedValue(0);
+  const boltRotation = useSharedValue(0);
+
+  useEffect(() => {
+    boltRotation.value = withRepeat(
+      withSequence(
+        withTiming(-20, { duration: 80, easing: Easing.linear }),
+        withTiming(20, { duration: 80, easing: Easing.linear }),
+        withTiming(-20, { duration: 80, easing: Easing.linear }),
+        withTiming(0, { duration: 80, easing: Easing.linear }),
+        withTiming(0, { duration: 2000 })
+      ),
+      -1,
+      false
+    );
+  }, []);
 
   const persistMessages = async (nextMessages) => {
     await Storage.set(getScopedKey('ai_chat_history', userId), trimMessages(nextMessages));
   };
 
-  useSpeechRecognitionEvent('start', () => setIsListening(true));
+  useSpeechRecognitionEvent('start', () => {
+    setIsListening(true);
+    accumulatedSpeech = inputText;
+  });
   useSpeechRecognitionEvent('end', () => setIsListening(false));
   useSpeechRecognitionEvent('error', (event) => {
     setIsListening(false);
     console.log('Voice Error:', event.error, event.message);
   });
   useSpeechRecognitionEvent('result', (event) => {
-    if (event.results[0]?.transcript) {
-      setInputText((prev) => prev ? prev + ' ' + event.results[0].transcript : event.results[0].transcript);
+    const currentSegment = event.results[0]?.transcript || '';
+    
+    const previewText = accumulatedSpeech 
+      ? accumulatedSpeech + (accumulatedSpeech.endsWith(' ') ? '' : ' ') + currentSegment
+      : currentSegment;
+      
+    setInputText(previewText.trim());
+
+    if (event.isFinal) {
+      accumulatedSpeech = previewText.trim() + ' ';
     }
   });
 
@@ -138,7 +270,12 @@ export const AIAuraOverlay = ({ visible, onClose, tasks, savedPlan, onPlanGenera
           Alert.alert('Microphone Error', 'Please enable microphone permissions in settings.');
           return;
         }
-        ExpoSpeechRecognitionModule.start({ lang: 'en-US', interimResults: false });
+        ExpoSpeechRecognitionModule.start({ 
+          lang: 'en-US', 
+          interimResults: true,
+          continuous: true,
+          addsPunctuation: true
+        });
       }
     } catch (e) {
       console.error(e);
@@ -150,20 +287,63 @@ export const AIAuraOverlay = ({ visible, onClose, tasks, savedPlan, onPlanGenera
     if (visible) {
       const init = async () => {
         const memoryKey = getScopedKey('aimemory', userId);
-        const legacyMemory = await Storage.get('aimemory');
-        const mem = await Storage.get(memoryKey) || legacyMemory || '';
-        if (mem) setUserMemory(mem);
         
-        if (legacyMemory && userId) {
-          await Storage.set(memoryKey, legacyMemory);
-          await Storage.remove('aimemory');
+        // IMPROVEMENT 1: Sync memory from cloud first, then fall back to local
+        if (userId) {
+          try {
+            const { data: profileData, error } = await supabase
+              .from('profiles')
+              .select('ai_memory')
+              .eq('id', userId)
+              .single();
+            
+            if (!error && profileData?.ai_memory) {
+              setUserMemory(profileData.ai_memory);
+              // Cache it locally for offline access
+              await Storage.set(memoryKey, profileData.ai_memory);
+              console.log('🧠 Memory synced from cloud');
+            } else {
+              // Fall back to local storage
+              const legacyMemory = await Storage.get('aimemory');
+              const mem = await Storage.get(memoryKey) || legacyMemory || '';
+              if (mem) setUserMemory(mem);
+              
+              if (legacyMemory && userId) {
+                await Storage.set(memoryKey, legacyMemory);
+                await Storage.remove('aimemory');
+              }
+            }
+          } catch (err) {
+            console.log('⚠️ Failed to fetch memory from cloud:', err.message);
+            // Fall back to local storage
+            const legacyMemory = await Storage.get('aimemory');
+            const mem = await Storage.get(memoryKey) || legacyMemory || '';
+            if (mem) setUserMemory(mem);
+          }
+        } else {
+          // No userId, use local storage only
+          const legacyMemory = await Storage.get('aimemory');
+          const mem = await Storage.get(memoryKey) || legacyMemory || '';
+          if (mem) setUserMemory(mem);
+          
+          if (legacyMemory) {
+            await Storage.set(memoryKey, legacyMemory);
+            await Storage.remove('aimemory');
+          }
         }
 
-        const aiCredits = await Storage.get(getScopedKey('ai_credits', userId));
-        if (aiCredits && aiCredits.date === new Date().toDateString()) {
-          setCreditsUsed(aiCredits.used || 0);
+        const localProfile = await Storage.get(`profile_${userId}`);
+        const isPremium = localProfile && (localProfile.username === 'terminator' || localProfile.username === 'saxenaanupam2004');
+        
+        if (isPremium) {
+          setCreditsLeft(99999999);
         } else {
-          setCreditsUsed(0);
+          const localCredits = await Storage.get(`aicredits_${userId}`);
+          if (localCredits !== null && localCredits !== undefined) {
+            setCreditsLeft(parseInt(localCredits, 10));
+          } else {
+            setCreditsLeft(20);
+          }
         }
 
         const savedMessages = await Storage.get(getScopedKey('ai_chat_history', userId));
@@ -173,7 +353,9 @@ export const AIAuraOverlay = ({ visible, onClose, tasks, savedPlan, onPlanGenera
         }
         
         // Dynamic, versatile greetings based on memory
-        if (mem && mem.length > 30) {
+        // Use userMemory state which was just loaded above
+        const currentMemory = await Storage.get(memoryKey);
+        if (currentMemory && currentMemory.length > 30) {
           const returningGreetings = [
             "Welcome back! Any changes to your usual routine today?",
             "Hello again! Should we stick to your standard schedule, or is something new happening?",
@@ -220,24 +402,59 @@ export const AIAuraOverlay = ({ visible, onClose, tasks, savedPlan, onPlanGenera
     }
   }, [visible, savedPlan, userId]);
 
+  const deductCredits = async (amount) => {
+    const newCredits = Math.max(0, creditsLeft - amount);
+    setCreditsLeft(newCredits);
+    await Storage.set(`aicredits_${userId}`, newCredits.toString());
+    if (userId) {
+      supabase.from('profiles').update({ ai_credits: newCredits }).eq('id', userId).then();
+    }
+    return newCredits;
+  };
+
+  // IMPROVEMENT 2: Refund credits if operation fails
+  const refundCredits = async (amount) => {
+    const newCredits = creditsLeft + amount;
+    setCreditsLeft(newCredits);
+    await Storage.set(`aicredits_${userId}`, newCredits.toString());
+    if (userId) {
+      supabase.from('profiles').update({ ai_credits: newCredits }).eq('id', userId).then();
+    }
+    console.log(`💰 Refunded ${amount} credits due to error`);
+    return newCredits;
+  };
+
   const handleSend = async () => {
     if (!inputText.trim() || isProcessing) return;
+
+    if (creditsLeft < 1) {
+      const outOfCreditsMessage = { role: 'assistant', content: 'You have run out of AI credits for today! Please check back tomorrow.' };
+      setMessages([...messages, outOfCreditsMessage]);
+      setInputText('');
+      return;
+    }
 
     setIsProcessing(true);
     const newMessages = trimMessages([...messages, { role: 'user', content: inputText.trim() }]);
     setMessages(newMessages);
     await persistMessages(newMessages);
     setInputText('');
+    
+    let creditsDeducted = false;
 
     try {
       // Phase 1: Chat and update memory
       let calendarContext = '';
-      const calEvents = await fetchTodayEvents(userId);
-      if (calEvents) {
-        calendarContext = `\n\n${calEvents}`;
+      try {
+        const calEvents = await fetchTodayEvents(userId);
+        if (calEvents) {
+          calendarContext = `\n\n${calEvents}`;
+        }
+      } catch (calError) {
+        console.log('[Calendar Fetch Error]:', calError.message);
       }
       
-      const taskContext = formatTaskContext(tasks);
+      const taskContext = formatTaskContext(tasks || []);
       
       const chatSysPrompt = {
         role: 'system',
@@ -254,14 +471,39 @@ ${taskContext}${calendarContext}`
       if (responseJson.memory && responseJson.memory !== userMemory) {
         setUserMemory(responseJson.memory);
         await Storage.set(getScopedKey('aimemory', userId), responseJson.memory);
-        console.log('🧠 Memory Updated:', responseJson.memory);
+        
+        if (userId) {
+          // Sync new memory up to the cloud!
+          supabase.from('profiles').update({ ai_memory: responseJson.memory }).eq('id', userId).then(({error}) => {
+             if(error) console.log('Failed to sync memory to cloud:', error.message);
+          });
+        }
+        
+        console.log('🧠 Memory Updated & Synced:', responseJson.memory);
       }
       
       const nextMessages = trimMessages([...newMessages, { role: 'assistant', content: responseJson.reply || "Got it. Anything else?" }]);
       setMessages(nextMessages);
       await persistMessages(nextMessages);
-    } catch (_error) {
-      const nextMessages = trimMessages([...newMessages, { role: 'assistant', content: 'I lost the AI connection for a moment. Please try again.' }]);
+      
+      // IMPROVEMENT 2: Only deduct if not fallback and track deduction
+      if (!responseJson._isFallback) {
+        await deductCredits(1);
+        creditsDeducted = true;
+      }
+    } catch (error) {
+      console.error('[AI Chat Error]:', error);
+      
+      // IMPROVEMENT 2: Refund credits if we deducted them before the error
+      if (creditsDeducted) {
+        await refundCredits(1);
+      }
+      
+      const errorMessage = error.message === 'All AI services are currently unavailable.'
+        ? 'All AI services are temporarily unavailable. Please check your API keys and try again later.'
+        : 'I lost the AI connection for a moment. Please try again.';
+      
+      const nextMessages = trimMessages([...newMessages, { role: 'assistant', content: errorMessage }]);
       setMessages(nextMessages);
       await persistMessages(nextMessages);
     } finally {
@@ -274,10 +516,12 @@ ${taskContext}${calendarContext}`
     const planningMessages = trimMessages([...messages, { role: 'assistant', content: 'Weaving your perfect timeline...' }]);
     setMessages(planningMessages);
     persistMessages(planningMessages);
+    
+    let creditsDeducted = false;
 
     try {
-      if (creditsUsed >= 3) {
-        const nextMessages = trimMessages([...planningMessages, { role: 'assistant', content: 'You have reached your daily limit of 3 free AI schedules. Please try again tomorrow.' }]);
+      if (creditsLeft < 3) {
+        const nextMessages = trimMessages([...planningMessages, { role: 'assistant', content: 'You need at least 3 AI credits to build a daily planner! Please check back tomorrow.' }]);
         setMessages(nextMessages);
         await persistMessages(nextMessages);
         setIsProcessing(false);
@@ -285,12 +529,16 @@ ${taskContext}${calendarContext}`
       }
 
       const now = new Date();
-      const taskContext = formatTaskContext(tasks);
+      const taskContext = formatTaskContext(tasks || []);
       
       let calendarContext = '';
-      const calEvents = await fetchTodayEvents(userId);
-      if (calEvents) {
-        calendarContext = `\n\n${calEvents}`;
+      try {
+        const calEvents = await fetchTodayEvents(userId);
+        if (calEvents) {
+          calendarContext = `\n\n${calEvents}`;
+        }
+      } catch (calError) {
+        console.log('[Calendar Fetch Error in Build Schedule]:', calError.message);
       }
 
       const sysPrompt = {
@@ -311,16 +559,32 @@ ${taskContext}${calendarContext}`
       };
       
       const planJson = await generatePlan([sysPrompt, ...messages], userMemory, tasks);
+      console.log('✅ Plan generated:', planJson);
       setGeneratedPlan(planJson);
       
-      const newUsed = creditsUsed + 1;
-      setCreditsUsed(newUsed);
-      Storage.set(getScopedKey('ai_credits', userId), { date: getTodayKey(), used: newUsed });
+      // IMPROVEMENT 2: Only deduct if not fallback and track deduction
+      if (!planJson._isFallback) {
+        await deductCredits(3);
+        creditsDeducted = true;
+      }
       
+      const finalMessages = trimMessages([...planningMessages, { role: 'assistant', content: "I've assembled your perfect timeline. Swipe up the planner to review and accept it!" }]);
+      setMessages(finalMessages);
+      await persistMessages(finalMessages);
+
       // Reveal Planner
       plannerScale.value = withSpring(1);
+      plannerOpacity.value = withSpring(1);
       
     } catch (error) {
+      console.error('[Build Schedule Error]:', error);
+      console.error('[Error Stack]:', error.stack);
+      
+      // IMPROVEMENT 2: Refund credits if we deducted them before the error
+      if (creditsDeducted) {
+        await refundCredits(3);
+      }
+      
       const nextMessages = trimMessages([...planningMessages, { role: 'assistant', content: `I could not build a schedule yet: ${error.message}` }]);
       setMessages(nextMessages);
       await persistMessages(nextMessages);
@@ -368,6 +632,10 @@ ${taskContext}${calendarContext}`
     ],
   }));
 
+  const animatedBoltStyle = useAnimatedStyle(() => ({
+    transform: [{ rotateZ: `${boltRotation.value}deg` }],
+  }));
+
   if (!visible) return null;
 
   return (
@@ -376,14 +644,23 @@ ${taskContext}${calendarContext}`
         <TouchableOpacity style={styles.backdrop} activeOpacity={1} onPress={onClose} />
         
         <SafeAreaView style={{ flex: 1 }}>
-          {/* Close Button */}
-          <TouchableOpacity 
-            style={[styles.closeBtn, { top: Math.max(insets.top + 10, Platform.OS === 'android' ? 20 : 10) }]} 
-            onPress={onClose} 
-            activeOpacity={0.7}
-          >
-            <X color="#FFF" size={28} />
-          </TouchableOpacity>
+          {/* Top Header Bar */}
+          <View style={[styles.topBar, { top: Math.max(insets.top + 10, Platform.OS === 'android' ? 20 : 10) }]}>
+            <View style={styles.creditsBadge}>
+              <Animated.View style={animatedBoltStyle}>
+                <Zap color="#FFD700" size={14} fill="#FFD700" />
+              </Animated.View>
+              <Text style={styles.creditsText}>{creditsLeft} Credits Left</Text>
+            </View>
+            
+            <TouchableOpacity 
+              style={styles.closeBtn} 
+              onPress={onClose} 
+              activeOpacity={0.7}
+            >
+              <X color="#FFF" size={28} />
+            </TouchableOpacity>
+          </View>
 
           <View style={[styles.interactionContainer, { paddingBottom: Platform.OS === 'android' ? keyboardHeight : 0 }]}>
             <KeyboardAvoidingView 
@@ -420,8 +697,8 @@ ${taskContext}${calendarContext}`
                       <Mic color={isListening ? "#FFF" : "#A78BFA"} size={22} />
                     </TouchableOpacity>
                     <TextInput
-                      style={styles.input}
-                      placeholder="Type or tap the mic..."
+                      style={[styles.input, isListening && { color: '#A78BFA', fontWeight: '500' }]}
+                      placeholder={isListening ? "Listening... Start speaking" : "Type or tap the mic..."}
                       placeholderTextColor="#888"
                       value={inputText}
                       onChangeText={setInputText}
@@ -433,10 +710,10 @@ ${taskContext}${calendarContext}`
                   </View>
                   
                   {/* Build Schedule Button */}
-                  {creditsUsed >= 3 ? (
+                  {creditsLeft < 3 ? (
                     <View style={{ marginTop: 12, padding: 12, backgroundColor: 'rgba(239, 68, 68, 0.1)', borderRadius: 12, alignItems: 'center' }}>
                       <Text style={{ color: '#ef4444', fontSize: 13, fontWeight: '600', textAlign: 'center' }}>
-                        ⚡ Daily AI limit reached (3/3).{'\n'}Upgrade to Premium for unlimited access.
+                        ⚡ Not enough AI credits (costs 3).{'\n'}Please check back tomorrow!
                       </Text>
                     </View>
                   ) : (
@@ -448,7 +725,7 @@ ${taskContext}${calendarContext}`
                     >
                       <Sparkles color="#A78BFA" size={20} />
                       <Text style={styles.buildBtnText}>
-                        Build Schedule ({3 - creditsUsed} left)
+                        Build Schedule (Costs 3 ⚡)
                       </Text>
                     </TouchableOpacity>
                   )}
@@ -531,10 +808,33 @@ const styles = StyleSheet.create({
   backdrop: {
     ...StyleSheet.absoluteFillObject,
   },
-  closeBtn: {
+  topBar: {
     position: 'absolute',
-    right: 20,
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
     zIndex: 10,
+  },
+  creditsBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+  },
+  creditsText: {
+    color: '#FFF',
+    fontSize: 13,
+    fontWeight: '600',
+    marginLeft: 6,
+  },
+  closeBtn: {
     padding: 8,
   },
   interactionContainer: {
@@ -569,7 +869,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   micBtn: {
-    paddingHorizontal: 12,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 4,
   },
   input: {
     flex: 1,

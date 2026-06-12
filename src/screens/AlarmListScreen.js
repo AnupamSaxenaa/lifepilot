@@ -1,15 +1,15 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, FlatList, Switch, Modal, TextInput, Animated } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Plus, ArrowLeft, Trash2, Check, MoonStar, Clock } from 'lucide-react-native';
-import DateTimePicker from '@react-native-community/datetimepicker';
-import { supabase } from '../lib/supabase';
-import { loadAlarms, addAlarm, updateAlarm, deleteAlarm } from '../lib/dataManager';
-import { Storage } from '../utils/storage';
-import * as IntentLauncher from 'expo-intent-launcher';
 import notifee from '@notifee/react-native';
-import { Platform } from 'react-native';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import * as DocumentPicker from 'expo-document-picker';
+import * as IntentLauncher from 'expo-intent-launcher';
+import { ArrowLeft, MoonStar, Plus, Trash2 } from 'lucide-react-native';
+import { useEffect, useState } from 'react';
+import { Animated, FlatList, Modal, Platform, StyleSheet, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { addAlarm, deleteAlarm, loadAlarms, updateAlarm } from '../lib/dataManager';
+import { supabase } from '../lib/supabase';
+import { syncAlarmsToNotifications } from '../utils/AlarmManager';
+import { Storage } from '../utils/storage';
 
 const DAYS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
 
@@ -104,7 +104,9 @@ export const AlarmListScreen = ({ navigation }) => {
   const handleSave = async () => {
     if (!userId) return;
     
-    const timeStr = selectedTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+    const h = selectedTime.getHours().toString().padStart(2, '0');
+    const m = selectedTime.getMinutes().toString().padStart(2, '0');
+    const timeStr = `${h}:${m}`;
     
     if (editingAlarm) {
       const updated = await updateAlarm(userId, alarms, editingAlarm.id, {
@@ -181,14 +183,18 @@ export const AlarmListScreen = ({ navigation }) => {
 
   const formatTimeDisplay = (time24) => {
     if (!time24) return '';
-    const [h, m] = time24.split(':');
-    const d = new Date();
-    d.setHours(parseInt(h, 10), parseInt(m, 10), 0, 0);
-    return d.toLocaleTimeString([], { 
-      hour: use24HourFormat ? '2-digit' : 'numeric', 
-      minute: '2-digit', 
-      hour12: !use24HourFormat 
-    });
+    const [hStr, mStr] = time24.split(':');
+    let h = parseInt(hStr, 10);
+    const m = mStr ? mStr.padStart(2, '0') : '00';
+    
+    if (use24HourFormat) {
+      return `${h.toString().padStart(2, '0')}:${m}`;
+    } else {
+      const ampm = h >= 12 ? 'PM' : 'AM';
+      h = h % 12;
+      if (h === 0) h = 12;
+      return `${h}:${m} ${ampm}`;
+    }
   };
 
   const pickCustomSound = async () => {
@@ -301,11 +307,7 @@ export const AlarmListScreen = ({ navigation }) => {
             onPress={() => setShowPicker(true)}
           >
             <Text style={styles.timeDisplayTxt}>
-              {selectedTime.toLocaleTimeString([], { 
-                hour: use24HourFormat ? '2-digit' : 'numeric', 
-                minute: '2-digit', 
-                hour12: !use24HourFormat 
-              })}
+              {formatTimeDisplay(`${selectedTime.getHours().toString().padStart(2, '0')}:${selectedTime.getMinutes().toString().padStart(2, '0')}`)}
             </Text>
           </TouchableOpacity>
 
@@ -316,7 +318,9 @@ export const AlarmListScreen = ({ navigation }) => {
               is24Hour={use24HourFormat}
               onChange={(e, date) => {
                 setShowPicker(false);
-                if (date) setSelectedTime(date);
+                if (e.type === 'set' && date) {
+                  setSelectedTime(date);
+                }
               }}
               textColor="#FFF"
             />

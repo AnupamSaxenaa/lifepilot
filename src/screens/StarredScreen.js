@@ -1,18 +1,18 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Share, useColorScheme, Platform, Modal } from 'react-native';
-import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withTiming, Easing, FadeIn } from 'react-native-reanimated';
+import { Bell, Calendar, CheckCircle2, Circle, FileText, GripVertical, ListChecks, Menu, MoreVertical, Plus, Repeat, Star, Trash2, X } from 'lucide-react-native';
+import { useEffect, useRef, useState, useMemo } from 'react';
+import { Share, StyleSheet, Text, TouchableOpacity, useColorScheme, View } from 'react-native';
+import { NestableDraggableFlatList, NestableScrollContainer, ScaleDecorator } from 'react-native-draggable-flatlist';
+import Animated, { Easing, FadeIn, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Menu, MoreVertical, Star, CheckCircle2, Circle, Plus, Calendar, Bell, Repeat, X, GripVertical, Trash2, ListChecks, FileText } from 'lucide-react-native';
-import { NestableScrollContainer, NestableDraggableFlatList, ScaleDecorator } from 'react-native-draggable-flatlist';
-import { supabase } from '../lib/supabase';
-import { loadTasks, toggleTaskCompletion, toggleTaskImportance, loadProfile, reorderTasks } from '../lib/dataManager';
-import { drainSyncQueue } from '../lib/syncQueue';
-import { COLORS } from '../theme/theme';
-import { ScribbleStrike } from '../components/ScribbleStrike';
 import { BackgroundWrapper } from '../components/BackgroundWrapper';
 import { GlassSidebar } from '../components/GlassSidebar';
-import { Storage } from '../utils/storage';
+import { ScribbleStrike } from '../components/ScribbleStrike';
+import { loadProfile, loadTasks, reorderTasks, toggleTaskImportance } from '../lib/dataManager';
+import { supabase } from '../lib/supabase';
+import { syncToSupabase } from '../lib/syncQueue';
+import { COLORS } from '../theme/theme';
 import { Gamification } from '../utils/gamification';
+import { Storage } from '../utils/storage';
 
 const THEME_COLOR = '#FFFFFF';
 
@@ -92,28 +92,57 @@ export const StarredScreen = ({ navigation }) => {
 
   const toggleTask = async (taskId, currentStatus) => {
     if (!currentStatus) {
+      // Completing task - show animation
       setCompletingTaskIds(prev => [...prev, taskId]);
+      
       setTimeout(async () => {
-        const updated = tasks.map(t => t.id === taskId ? { ...t, is_completed: true, completed_at: new Date().toISOString() } : t);
+        const completedAt = new Date().toISOString();
+        const updated = tasks.map(t => 
+          t.id === taskId ? { ...t, is_completed: true, completed_at: completedAt } : t
+        );
         setTasks(updated);
         setCompletingTaskIds(prev => prev.filter(id => id !== taskId));
         
         if (userId) {
-          const allTasks = await Storage.get(`tasks_${userId}`);
-          if (allTasks) {
-            await toggleTaskCompletion(userId, allTasks, taskId, false);
-          }
+          // ✅ FIX: Load fresh tasks RIGHT NOW, not relying on stale closure
+          const latestTasks = await Storage.get(`tasks_${userId}`) || [];
+          const updatedAll = latestTasks.map(t =>
+            t.id === taskId ? { ...t, is_completed: true, completed_at: completedAt } : t
+          );
+          
+          await Storage.set(`tasks_${userId}`, updatedAll);
+          await Storage.set('last_local_write_time', Date.now().toString());
+          
+          syncToSupabase('tasks', 'update',
+            { is_completed: true, completed_at: completedAt },
+            { column: 'id', value: taskId }
+          );
+          
           await Gamification.addXP(userId, 25);
         }
       }, 600);
     } else {
-      const updated = tasks.map(t => t.id === taskId ? { ...t, is_completed: false, completed_at: null } : t);
+      // Un-completing task - instant
+      const updated = tasks.map(t => 
+        t.id === taskId ? { ...t, is_completed: false, completed_at: null } : t
+      );
       setTasks(updated);
+      
       if (userId) {
-        const allTasks = await Storage.get(`tasks_${userId}`);
-        if (allTasks) {
-          await toggleTaskCompletion(userId, allTasks, taskId, true);
-        }
+        // ✅ FIX: Load fresh tasks
+        const latestTasks = await Storage.get(`tasks_${userId}`) || [];
+        const updatedAll = latestTasks.map(t =>
+          t.id === taskId ? { ...t, is_completed: false, completed_at: null } : t
+        );
+        
+        await Storage.set(`tasks_${userId}`, updatedAll);
+        await Storage.set('last_local_write_time', Date.now().toString());
+        
+        syncToSupabase('tasks', 'update',
+          { is_completed: false, completed_at: null },
+          { column: 'id', value: taskId }
+        );
+        
         await Gamification.addXP(userId, -25);
       }
     }
@@ -210,7 +239,8 @@ export const StarredScreen = ({ navigation }) => {
     return [...sortGroup(active), ...sortGroup(done)];
   };
 
-  const getSortedActiveTasks = () => {
+  // ⚡ PERFORMANCE: Memoize expensive sorting
+  const getSortedActiveTasks = useMemo(() => {
     const active = tasks.filter(t => !t.is_completed || completingTaskIds.includes(t.id));
     const sortGroup = (arr) => {
       const s = [...arr];
@@ -249,10 +279,13 @@ export const StarredScreen = ({ navigation }) => {
       return s;
     };
     return sortGroup(active);
-  };
+  }, [tasks, sortBy, completingTaskIds]);
 
-  const sortedActiveTasks = getSortedActiveTasks();
-  const completedTasks = tasks.filter(t => t.is_completed && !completingTaskIds.includes(t.id));
+  const sortedActiveTasks = getSortedActiveTasks;
+  const completedTasks = useMemo(() => 
+    tasks.filter(t => t.is_completed && !completingTaskIds.includes(t.id)),
+    [tasks, completingTaskIds]
+  );
 
   const SORT_LABELS = {
     creation: 'Creation Date',
@@ -392,20 +425,28 @@ export const StarredScreen = ({ navigation }) => {
                 contentContainerStyle={styles.scroll}
                 keyboardShouldPersistTaps="handled"
                 onContainerLayout={() => {}}
+                removeClippedSubviews={true}
+                maxToRenderPerBatch={10}
+                updateCellsBatchingPeriod={50}
+                initialNumToRender={10}
+                windowSize={5}
                 onDragEnd={({ data }) => {
-                  if (sortBy !== 'custom') setSortBy('custom');
-                  
-                  const orderMap = new Map(data.map((t, i) => [t.id, i]));
-                  
-                  const mergedTasks = latestTasksRef.current.map(t => 
-                    orderMap.has(t.id) ? { ...t, starred_order_index: orderMap.get(t.id) } : t
-                  );
-                  
-                  setTasks(mergedTasks);
-                  
-                  // Background sync via SyncQueue
-                  const changedTasks = data.map((t, i) => ({ id: t.id, starred_order_index: i }));
-                  reorderTasks(userId, mergedTasks, changedTasks, 'starred_order_index');
+                  // Defer state update until after drag animation completes to prevent jitter
+                  requestAnimationFrame(() => {
+                    if (sortBy !== 'custom') setSortBy('custom');
+                    
+                    const orderMap = new Map(data.map((t, i) => [t.id, i]));
+                    
+                    const mergedTasks = latestTasksRef.current.map(t => 
+                      orderMap.has(t.id) ? { ...t, starred_order_index: orderMap.get(t.id) } : t
+                    );
+                    
+                    setTasks(mergedTasks);
+                    
+                    // Background sync via SyncQueue
+                    const changedTasks = data.map((t, i) => ({ id: t.id, starred_order_index: i }));
+                    reorderTasks(userId, mergedTasks, changedTasks, 'starred_order_index');
+                  });
                 }}
                 renderItem={({ item: task, drag, isActive }) => {
                   const hasSubtasks = task.subtasks && task.subtasks.length > 0;

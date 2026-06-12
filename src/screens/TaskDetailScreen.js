@@ -1,21 +1,39 @@
-import React, { useState, useEffect, useRef } from 'react';
-import {
-  View, Text, StyleSheet, TouchableOpacity, TextInput, ScrollView,
-  Keyboard, Platform, Alert, KeyboardAvoidingView,
-} from 'react-native';
-import Animated, { FadeIn, FadeOut, SlideInDown, SlideOutDown, Layout } from 'react-native-reanimated';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import {
-  ArrowLeft, Circle, CheckCircle2, Star, Sun, Bell,
-  Calendar, Repeat, Trash2, X, Check, Plus, FileText,
-  ListChecks,
+    ArrowLeft,
+    Bell,
+    Calendar,
+    Check,
+    CheckCircle2,
+    Circle,
+    FileText,
+    Plus,
+    Repeat,
+    Star, Sun,
+    Trash2, X,
+    Zap
 } from 'lucide-react-native';
+import { useRef, useState } from 'react';
+import {
+    Alert,
+    Keyboard,
+    KeyboardAvoidingView,
+    Platform,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
+} from 'react-native';
+import Animated, { FadeIn, Layout, SlideInDown, SlideOutDown } from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BackgroundWrapper } from '../components/BackgroundWrapper';
-import { updateTask, toggleTaskCompletion, toggleTaskImportance, deleteTask as dmDeleteTask } from '../lib/dataManager';
-import { Storage } from '../utils/storage';
-import { scheduleTaskReminder, cancelTaskReminder } from '../utils/notifications';
+import { deleteTask as dmDeleteTask, toggleTaskImportance, updateTask } from '../lib/dataManager';
+import { syncToSupabase } from '../lib/syncQueue';
 import { Gamification } from '../utils/gamification';
+import { cancelTaskReminder, scheduleTaskReminder } from '../utils/notifications';
+import { Storage } from '../utils/storage';
 
 // ─── Helpers ────────────────────────────────────────────
 const formatDate = (d) => {
@@ -128,9 +146,26 @@ export const TaskDetailScreen = ({ route, navigation }) => {
   // ─── Task handlers ────────────────────────────────────
   const handleToggleComplete = async () => {
     const newStatus = !task.is_completed;
-    setTask(prev => ({ ...prev, is_completed: newStatus }));
-    const allTasks = await Storage.get(`tasks_${userId}`);
-    if (allTasks) await toggleTaskCompletion(userId, allTasks, task.id, task.is_completed);
+    const completedAt = newStatus ? new Date().toISOString() : null;
+    
+    setTask(prev => ({ ...prev, is_completed: newStatus, completed_at: completedAt }));
+    
+    // ✅ FIX: Load fresh tasks, update only this task
+    const latestTasks = await Storage.get(`tasks_${userId}`) || [];
+    const updated = latestTasks.map(t =>
+      t.id === task.id 
+        ? { ...t, is_completed: newStatus, completed_at: completedAt }
+        : t
+    );
+    
+    await Storage.set(`tasks_${userId}`, updated);
+    await Storage.set('last_local_write_time', Date.now().toString());
+    
+    syncToSupabase('tasks', 'update',
+      { is_completed: newStatus, completed_at: completedAt },
+      { column: 'id', value: task.id }
+    );
+    
     if (newStatus && task.reminder_time) cancelTaskReminder(task.id);
     else if (!newStatus && task.reminder_time) scheduleTaskReminder(task.id, task.title, task.reminder_time);
     await Gamification.addXP(userId, newStatus ? 10 : -10);
@@ -332,6 +367,15 @@ export const TaskDetailScreen = ({ route, navigation }) => {
               </View>
             )}
           </View>
+
+          {/* ─── Focus Mode Button ──────────────────────── */}
+          <TouchableOpacity 
+            style={styles.focusModeBtn} 
+            onPress={() => navigation.navigate('FocusMode', { task })}
+          >
+            <Zap color="#fff" size={20} fill="#fff" style={{ marginRight: 10 }} />
+            <Text style={styles.focusModeBtnText}>Start Focus Mode</Text>
+          </TouchableOpacity>
 
           {/* ─── Options List ─────────────────────────── */}
           <View style={styles.optionsSection}>
@@ -571,6 +615,23 @@ const styles = StyleSheet.create({
     minWidth: 36,
     textAlign: 'right',
   },
+
+  // Focus Mode
+  focusModeBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#A855F7',
+    paddingVertical: 16,
+    borderRadius: 12,
+    marginBottom: 20,
+    shadowColor: '#A855F7',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  focusModeBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
 
   // Options
   optionsSection: { marginTop: 0, backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: 12, overflow: 'hidden' },

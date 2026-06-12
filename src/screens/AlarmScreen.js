@@ -1,7 +1,7 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, BackHandler, Animated, Dimensions } from 'react-native';
 import notifee from '@notifee/react-native';
-import { Audio } from 'expo-av';
+// import { Audio } from 'expo-av'; // Temporarily removed due to Expo 56 crash
 import { scheduleSnoozeAlarm } from '../utils/AlarmManager';
 import { LiquidAura } from '../components/LiquidAura';
 
@@ -15,9 +15,17 @@ const FALLBACK_QUOTES = [
   "Make today incredible."
 ];
 
+// Precalculate star positions outside render to maintain component purity
+const STARS_DATA = [...Array(60)].map(() => ({
+  size: Math.random() * 3 + 1,
+  left: Math.random() * width,
+  top: Math.random() * (height * 2),
+  opacity: Math.random() * 0.8 + 0.2,
+}));
+
 // Galaxy Starfield component
 const Starfield = () => {
-  const moveAnim = useRef(new Animated.Value(0)).current;
+  const [moveAnim] = useState(new Animated.Value(0));
 
   useEffect(() => {
     Animated.loop(
@@ -27,7 +35,7 @@ const Starfield = () => {
         useNativeDriver: true,
       })
     ).start();
-  }, []);
+  }, [moveAnim]);
 
   const translateY = moveAnim.interpolate({
     inputRange: [0, 1],
@@ -37,14 +45,9 @@ const Starfield = () => {
   return (
     <View style={StyleSheet.absoluteFill}>
       <Animated.View style={[styles.starsContainer, { transform: [{ translateY }] }]}>
-        {/* Render 50 random white dots */}
-        {[...Array(60)].map((_, i) => {
-          const size = Math.random() * 3 + 1;
-          const left = Math.random() * width;
-          const top = Math.random() * (height * 2);
-          const opacity = Math.random() * 0.8 + 0.2;
+        {STARS_DATA.map((star, i) => {
           return (
-            <View key={i} style={[styles.star, { width: size, height: size, left, top, opacity }]} />
+            <View key={i} style={[styles.star, { width: star.size, height: star.size, left: star.left, top: star.top, opacity: star.opacity }]} />
           );
         })}
       </Animated.View>
@@ -56,13 +59,12 @@ const Starfield = () => {
 const TypewriterText = ({ quotes }) => {
   const [currentQuoteIndex, setCurrentQuoteIndex] = useState(0);
   const [displayedText, setDisplayedText] = useState('');
-  const fadeAnim = useRef(new Animated.Value(1)).current;
+  const [fadeAnim] = useState(new Animated.Value(1));
 
   useEffect(() => {
     let timeout;
     let charIndex = 0;
     const currentQuote = quotes[currentQuoteIndex];
-    setDisplayedText('');
     fadeAnim.setValue(1);
 
     const typeChar = () => {
@@ -80,9 +82,13 @@ const TypewriterText = ({ quotes }) => {
       }
     };
     
-    timeout = setTimeout(typeChar, 500); // small initial delay
+    timeout = setTimeout(() => {
+      setDisplayedText('');
+      typeChar();
+    }, 500); // small initial delay
+    
     return () => clearTimeout(timeout);
-  }, [currentQuoteIndex, quotes]);
+  }, [currentQuoteIndex, quotes, fadeAnim]);
 
   return (
     <Animated.Text style={[styles.motivationText, { opacity: fadeAnim }]}>
@@ -119,6 +125,7 @@ export default function AlarmScreen(props) {
     const playAudio = async () => {
       try {
         if (soundUri && soundUri !== 'default') {
+          /* Temporarily disabled
           await Audio.setAudioModeAsync({
             allowsRecordingIOS: false,
             playsInSilentModeIOS: true,
@@ -131,6 +138,7 @@ export default function AlarmScreen(props) {
           await sound.setIsLoopingAsync(true);
           await sound.playAsync();
           setSoundObj(sound);
+          */
         }
       } catch (e) {
         console.log('Error playing custom sound', e);

@@ -1,15 +1,16 @@
 import { BlurView } from 'expo-blur';
 import {
-  Calendar,
-  Heart,
-  History,
-  Home, LayoutGrid,
-  List,
-  LogOut,
-  Plus,
-  Settings,
-  Star,
-  X
+    Calendar,
+    Heart,
+    History,
+    Home, LayoutGrid,
+    List, Inbox,
+    LogOut,
+    Plus,
+    Settings,
+    ShieldCheck,
+    Star,
+    X
 } from 'lucide-react-native';
 import { useEffect, useState } from 'react';
 import { Alert, Animated, Dimensions, Image, Platform, StyleSheet, Switch, Text, TextInput, TouchableOpacity, TouchableWithoutFeedback, useColorScheme, View } from 'react-native';
@@ -18,8 +19,8 @@ import { addList, loadLists } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
 import { COLORS } from '../theme/theme';
 import {
-  isCalendarConnected,
-  requestCalendarPermissions,
+    isCalendarConnected,
+    requestCalendarPermissions,
 } from '../utils/calendarSync';
 import { Storage } from '../utils/storage';
 
@@ -147,13 +148,27 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
   }, [isOpen]);
 
   const handleToggleCalendar = async () => {
+    console.log('[GlassSidebar] Calendar toggle tapped, current state:', isCalendarLinked);
+    
     if (isCalendarLinked) {
       Alert.alert('Calendar Synced', 'Your local calendars are already synced. You can disable this in your OS settings.');
     } else {
+      console.log('[GlassSidebar] Requesting calendar permissions...');
       const granted = await requestCalendarPermissions();
+      console.log('[GlassSidebar] Permission granted:', granted);
+      
       if (granted) {
         setIsCalendarLinked(true);
         Alert.alert('Connected', 'Your device calendars are now synced!');
+        
+        // Verify by checking permission again
+        setTimeout(async () => {
+          const verified = await isCalendarConnected();
+          console.log('[GlassSidebar] Verification check:', verified);
+          if (!verified) {
+            console.warn('[GlassSidebar] WARNING: Permission verification failed!');
+          }
+        }, 500);
       } else {
         Alert.alert('Permission Denied', 'Please enable calendar access in your OS settings.');
       }
@@ -265,6 +280,30 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
                 { color: currentRoute === 'Dashboard' ? theme.primary : theme.textMuted },
                 currentRoute === 'Dashboard' && { fontWeight: '700' },
               ]}>Dashboard</Text>
+            </TouchableOpacity>
+
+            {/* Inbox */}
+            <TouchableOpacity
+              style={[
+                styles.menuItem,
+                currentRoute === 'CustomList' && navigation.getState()?.routes?.find(r => r.name === 'CustomList')?.params?.listId === 'inbox' && { backgroundColor: theme.primary + '22' },
+              ]}
+              onPress={() => {
+                onClose();
+                navigation.replace('CustomList', { listId: 'inbox', listName: 'Inbox' });
+              }}
+            >
+              <Inbox
+                color={currentRoute === 'CustomList' && navigation.getState()?.routes?.find(r => r.name === 'CustomList')?.params?.listId === 'inbox' ? theme.primary : theme.textMuted}
+                size={24}
+                style={styles.menuIcon}
+              />
+              <Text style={[
+                styles.menuText,
+                { color: currentRoute === 'CustomList' && navigation.getState()?.routes?.find(r => r.name === 'CustomList')?.params?.listId === 'inbox' ? theme.primary : theme.textMuted },
+                currentRoute === 'CustomList' && navigation.getState()?.routes?.find(r => r.name === 'CustomList')?.params?.listId === 'inbox' && { fontWeight: '700' },
+                { flex: 1 }
+              ]}>Inbox</Text>
             </TouchableOpacity>
 
             {/* Today */}
@@ -479,6 +518,31 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
                 />
               </View>
             </View>
+
+            {/* Permissions */}
+            <TouchableOpacity
+              style={[
+                styles.menuItem,
+                currentRoute === 'Permissions' && { backgroundColor: theme.primary + '22' },
+              ]}
+              onPress={() => {
+                onClose();
+                if (currentRoute !== 'Permissions') {
+                  navigation.replace('Permissions');
+                }
+              }}
+            >
+              <ShieldCheck
+                color={currentRoute === 'Permissions' ? theme.primary : theme.textMuted}
+                size={24}
+                style={styles.menuIcon}
+              />
+              <Text style={[
+                styles.menuText,
+                { color: currentRoute === 'Permissions' ? theme.primary : theme.textMuted },
+                currentRoute === 'Permissions' && { fontWeight: '700' },
+              ]}>Permissions Hub</Text>
+            </TouchableOpacity>
 
             {/* Settings */}
             <TouchableOpacity

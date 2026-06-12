@@ -1,23 +1,37 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  View, Text, StyleSheet, TouchableOpacity, ScrollView, 
-  ActivityIndicator, Share, useColorScheme, Platform, Modal 
-} from 'react-native';
-import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withTiming, Easing } from 'react-native-reanimated';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { 
-  Menu, MoreVertical, Star, CheckCircle2, Circle, Plus, Calendar, 
-  Bell, X, CalendarDays, CalendarClock, ChevronDown, ChevronRight 
-} from 'lucide-react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { supabase } from '../lib/supabase';
-import { loadTasks, toggleTaskCompletion, toggleTaskImportance, loadProfile, updateTask } from '../lib/dataManager';
-import { COLORS } from '../theme/theme';
-import { ScribbleStrike } from '../components/ScribbleStrike';
+import {
+    Bell,
+    Calendar,
+    CalendarClock,
+    CalendarDays,
+    CheckCircle2,
+    ChevronDown, ChevronRight,
+    Circle,
+    Menu, MoreVertical, Star,
+    X
+} from 'lucide-react-native';
+import { useEffect, useState } from 'react';
+import {
+    Modal,
+    Platform,
+    ScrollView,
+    Share,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    useColorScheme,
+    View
+} from 'react-native';
+import Animated, { Easing, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BackgroundWrapper } from '../components/BackgroundWrapper';
 import { GlassSidebar } from '../components/GlassSidebar';
-import { Storage } from '../utils/storage';
+import { ScribbleStrike } from '../components/ScribbleStrike';
+import { loadProfile, loadTasks, toggleTaskImportance, updateTask } from '../lib/dataManager';
+import { supabase } from '../lib/supabase';
+import { COLORS } from '../theme/theme';
 import { Gamification } from '../utils/gamification';
+import { Storage } from '../utils/storage';
 
 const THEME_COLOR = '#FFFFFF';
 
@@ -104,26 +118,54 @@ export const PlannedScreen = ({ navigation }) => {
     const nextStatus = !currentStatus;
 
     if (nextStatus) {
+      // Completing task - show animation
       setCompletingTaskIds(prev => [...prev, taskId]);
-      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, is_completed: true, completed_at: new Date().toISOString() } : t));
+      setTasks(prev => prev.map(t => 
+        t.id === taskId ? { ...t, is_completed: true, completed_at: new Date().toISOString() } : t
+      ));
 
       setTimeout(async () => {
         if (userId) {
-          const allTasks = await Storage.get(`tasks_${userId}`);
-          if (allTasks) {
-            await toggleTaskCompletion(userId, allTasks, taskId, false);
-          }
+          // ✅ FIX: Load fresh tasks RIGHT NOW
+          const latestTasks = await Storage.get(`tasks_${userId}`) || [];
+          const completedAt = new Date().toISOString();
+          const updatedAll = latestTasks.map(t =>
+            t.id === taskId ? { ...t, is_completed: true, completed_at: completedAt } : t
+          );
+          
+          await Storage.set(`tasks_${userId}`, updatedAll);
+          await Storage.set('last_local_write_time', Date.now().toString());
+          
+          syncToSupabase('tasks', 'update',
+            { is_completed: true, completed_at: completedAt },
+            { column: 'id', value: taskId }
+          );
+          
           await Gamification.addXP(userId, 25);
         }
         setCompletingTaskIds(prev => prev.filter(id => id !== taskId));
       }, 500);
     } else {
-      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, is_completed: false, completed_at: null } : t));
+      // Un-completing task - instant
+      setTasks(prev => prev.map(t => 
+        t.id === taskId ? { ...t, is_completed: false, completed_at: null } : t
+      ));
+      
       if (userId) {
-        const allTasks = await Storage.get(`tasks_${userId}`);
-        if (allTasks) {
-          await toggleTaskCompletion(userId, allTasks, taskId, true);
-        }
+        // ✅ FIX: Load fresh tasks
+        const latestTasks = await Storage.get(`tasks_${userId}`) || [];
+        const updatedAll = latestTasks.map(t =>
+          t.id === taskId ? { ...t, is_completed: false, completed_at: null } : t
+        );
+        
+        await Storage.set(`tasks_${userId}`, updatedAll);
+        await Storage.set('last_local_write_time', Date.now().toString());
+        
+        syncToSupabase('tasks', 'update',
+          { is_completed: false, completed_at: null },
+          { column: 'id', value: taskId }
+        );
+        
         await Gamification.addXP(userId, -25);
       }
     }

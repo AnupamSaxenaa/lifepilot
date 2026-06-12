@@ -1,25 +1,24 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, Text, View, ScrollView, useColorScheme, TouchableOpacity, Image, Animated, ActivityIndicator, BackHandler } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { BackgroundWrapper } from '../components/BackgroundWrapper';
-import { GlassSidebar } from '../components/GlassSidebar';
-import { Storage } from '../utils/storage';
-import { loadTasks, toggleTaskCompletion, loadProfile, performInitialSync } from '../lib/dataManager';
-import { drainSyncQueue } from '../lib/syncQueue';
-import { COLORS } from '../theme/theme';
-import { Clock, Menu } from 'lucide-react-native';
-import { supabase } from '../lib/supabase';
-import { Gamification } from '../utils/gamification';
 import { useFocusEffect } from '@react-navigation/native';
+import { Bell, Calendar, CheckCircle2, Circle, Lock, Menu, Repeat, Wand2, Zap } from 'lucide-react-native';
+import React, { useEffect, useState } from 'react';
+import { ActivityIndicator, Alert, Animated, BackHandler, ScrollView, StyleSheet, Text, TouchableOpacity, useColorScheme, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { AIAuraOverlay } from '../components/AIAuraOverlay';
+import { PermissionsOnboarding } from '../components/PermissionsOnboarding';
+import { AlarmOverlay } from '../components/AlarmOverlay';
+import { BackgroundWrapper } from '../components/BackgroundWrapper';
 import { DailyPromiseOverlay } from '../components/DailyPromiseOverlay';
+import { GlassSidebar } from '../components/GlassSidebar';
 import { LifetimeProgressRing } from '../components/LifetimeProgressRing';
 import { LifetimeStatsModal } from '../components/LifetimeStatsModal';
-import { CheckCircle2, Circle, Calendar, Bell, Repeat, Wand2 } from 'lucide-react-native';
-import { AIAuraOverlay } from '../components/AIAuraOverlay';
-import { AlarmOverlay } from '../components/AlarmOverlay';
-import { runRepeatEngine } from '../utils/repeatEngine';
+import { loadProfile, loadTasks, performInitialSync } from '../lib/dataManager';
+import { supabase } from '../lib/supabase';
+import { syncToSupabase } from '../lib/syncQueue';
+import { COLORS } from '../theme/theme';
+import { Gamification } from '../utils/gamification';
 import { requestNotificationPermissions, rescheduleAllReminders } from '../utils/notifications';
-import { scheduleAlarm } from '../utils/AlarmManager';
+import { runRepeatEngine } from '../utils/repeatEngine';
+import { Storage } from '../utils/storage';
 const formatDate = (d) => {
   if (!d) return null;
   const date = new Date(d);
@@ -110,8 +109,8 @@ export const DashboardScreen = ({ navigation }) => {
     const completed = taskList.filter(t => t.is_completed).length;
     setLifetimeStats({ completed, total: taskList.length });
 
-    // Show all uncompleted tasks to match the Today screen
-    const activeTasks = taskList.filter(t => !t.is_completed && isTaskForToday(t));
+    // Show all uncompleted tasks to match the Dashboard view
+    const activeTasks = taskList.filter(t => !t.is_completed);
     
     // Sort them exactly like the custom sort in Today screen
     activeTasks.sort((a, b) => (a.order_index || 0) - (b.order_index || 0) || new Date(b.created_at) - new Date(a.created_at));
@@ -193,12 +192,29 @@ export const DashboardScreen = ({ navigation }) => {
   const toggleTask = async (id, currentStatus) => {
     if (!profile?.id) return;
 
-    // Optimistic update via DataManager (local + cache + sync queue)
-    const updatedAll = await toggleTaskCompletion(profile.id, allTasks, id, currentStatus);
+    // ✅ FIX: Load fresh tasks, update only this task
+    const latestTasks = await Storage.get(`tasks_${profile.id}`) || [];
+    const newStatus = !currentStatus;
+    const completedAt = newStatus ? new Date().toISOString() : null;
+    
+    const updatedAll = latestTasks.map(t =>
+      t.id === id 
+        ? { ...t, is_completed: newStatus, completed_at: completedAt }
+        : t
+    );
+    
+    await Storage.set(`tasks_${profile.id}`, updatedAll);
+    await Storage.set('last_local_write_time', Date.now().toString());
+    
+    syncToSupabase('tasks', 'update',
+      { is_completed: newStatus, completed_at: completedAt },
+      { column: 'id', value: id }
+    );
+    
     processTasks(updatedAll);
 
     // Gamification XP
-    await Gamification.addXP(profile.id, !currentStatus ? 10 : -10);
+    await Gamification.addXP(profile.id, newStatus ? 10 : -10);
   };
 
   const handleLogout = async () => {
@@ -227,8 +243,13 @@ export const DashboardScreen = ({ navigation }) => {
               </TouchableOpacity>
             </Animated.View>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16 }}>
-              <TouchableOpacity onPress={() => navigation.navigate('AlarmList')} activeOpacity={0.7} style={{ padding: 4 }}>
-                <Bell color="#A78BFA" size={26} />
+              <TouchableOpacity onPress={() => Alert.alert('Coming Soon', 'The Smart Alarm module is currently locked and will be available in a future update.')} activeOpacity={0.7} style={{ padding: 4 }}>
+                <View>
+                  <Bell color="#A78BFA" size={26} />
+                  <View style={{ position: 'absolute', bottom: -2, right: -4, backgroundColor: '#18181B', borderRadius: 8, padding: 2 }}>
+                    <Lock color="#FFD700" size={12} />
+                  </View>
+                </View>
               </TouchableOpacity>
               <TouchableOpacity onPress={() => setShowAura(true)} activeOpacity={0.7} style={{ padding: 4 }}>
                 {generatedPlan ? (
@@ -319,6 +340,17 @@ export const DashboardScreen = ({ navigation }) => {
                         </View>
                       )}
                     </View>
+                    {!task.is_completed && (
+                      <TouchableOpacity 
+                        style={{ padding: 8, marginLeft: 'auto' }}
+                        onPress={(e) => {
+                          e.stopPropagation();
+                          navigation.navigate('FocusMode', { task });
+                        }}
+                      >
+                        <Zap color="#A855F7" size={18} fill="rgba(168, 85, 247, 0.2)" />
+                      </TouchableOpacity>
+                    )}
                   </TouchableOpacity>
                 );
               })
@@ -326,6 +358,8 @@ export const DashboardScreen = ({ navigation }) => {
           </View>
 
         </ScrollView>
+        {/* New User Onboarding */}
+        <PermissionsOnboarding />
       </SafeAreaView>
       
       <GlassSidebar 
@@ -360,6 +394,7 @@ export const DashboardScreen = ({ navigation }) => {
         visible={showAura} 
         onClose={() => setShowAura(false)} 
         userId={profile?.id}
+        firstName={profile?.first_name || 'there'}
         tasks={todaysTasks}
         savedPlan={generatedPlan}
         onPlanGenerated={(plan) => {

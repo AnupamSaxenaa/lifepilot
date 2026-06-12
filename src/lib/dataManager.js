@@ -9,9 +9,10 @@
  * 
  * Every screen should use this instead of calling Supabase directly.
  */
-import { Storage } from '../utils/storage';
 import { supabase } from '../lib/supabase';
-import { syncToSupabase, drainSyncQueue, getQueueLength } from './syncQueue';
+import { Storage } from '../utils/storage';
+import { drainSyncQueue, getQueueLength, syncToSupabase } from './syncQueue';
+import { updateAllWidgets } from '../utils/widgetUpdater';
 
 // RFC4122 v4 compliant UUID generator for offline-first primary keys
 const generateUUID = () => {
@@ -23,6 +24,11 @@ const generateUUID = () => {
 };
 
 export const performInitialSync = async (userId) => {
+  if (!userId || typeof userId !== 'string') {
+    console.error('[DataManager] Invalid userId in performInitialSync:', userId);
+    return;
+  }
+  
   try {
     // 1. Fetch Profile
     const { data: profile } = await supabase.from('profiles').select('*').eq('id', userId).single();
@@ -49,6 +55,12 @@ export const performInitialSync = async (userId) => {
  * @returns {Array} - Cached tasks (may be empty on first launch)
  */
 export const loadTasks = async (userId, onFresh) => {
+  // Validate userId
+  if (!userId || typeof userId !== 'string') {
+    console.error('[DataManager] Invalid userId in loadTasks:', userId);
+    return [];
+  }
+  
   // 1. Get cached instantly
   const cached = await Storage.get(`tasks_${userId}`);
 
@@ -57,6 +69,11 @@ export const loadTasks = async (userId, onFresh) => {
   const fetchBackground = async () => {
     try {
       await drainSyncQueue();
+      
+      // Capture write time BEFORE starting the fetch
+      const lastWriteBeforeFetch = await Storage.get('last_local_write_time');
+      const lastWriteTime = lastWriteBeforeFetch ? parseInt(lastWriteBeforeFetch, 10) : 0;
+      
       const { data, error } = await supabase
         .from('tasks')
         .select('*')
@@ -65,26 +82,28 @@ export const loadTasks = async (userId, onFresh) => {
 
       if (!error && data) {
         const qLen = await getQueueLength();
-        const lastWriteStr = await Storage.get('last_local_write_time');
-        const lastWriteTime = lastWriteStr ? parseInt(lastWriteStr, 10) : 0;
+        
+        // Capture write time AFTER fetch completes
+        const lastWriteAfterFetch = await Storage.get('last_local_write_time');
+        const lastWriteTimeAfter = lastWriteAfterFetch ? parseInt(lastWriteAfterFetch, 10) : 0;
 
-        // Only overwrite the cache if there are no pending mutations AND
-        // no local updates occurred after this fetch was initiated.
-        if (qLen === 0 && fetchStartTime > lastWriteTime) {
+        // Only overwrite cache if:
+        // 1. No pending mutations in sync queue
+        // 2. NO local writes occurred during the fetch (prevents overwriting edits)
+        if (qLen === 0 && lastWriteTime === lastWriteTimeAfter) {
           await Storage.set(`tasks_${userId}`, data);
           if (onFresh) onFresh(data);
         } else {
-          console.log('[DataManager] Supabase fetch discarded: Local updates occurred or are pending.');
+          console.log('[DataManager] Skipping cache update - local writes detected or sync queue not empty');
         }
       }
-    } catch (e) {
-      console.log('[DataManager] Supabase fetch failed (offline?):', e.message);
+    } catch (err) {
+      console.log('[DataManager] Background fetch error:', err);
+      if (onFresh) onFresh(null);
     }
   };
-  
-  fetchBackground();
 
-  // 3. Return cached data immediately so UI doesn't block
+  fetchBackground();
   return cached || [];
 };
 
@@ -92,8 +111,13 @@ export const loadTasks = async (userId, onFresh) => {
  * Save tasks to local cache only (called after optimistic UI updates).
  */
 export const cacheTasks = async (userId, tasks) => {
+  if (!userId || typeof userId !== 'string') {
+    console.error('[DataManager] Invalid userId in cacheTasks:', userId);
+    return;
+  }
   await Storage.set(`tasks_${userId}`, tasks);
   await Storage.set('last_local_write_time', Date.now().toString());
+  updateAllWidgets();
 };
 
 /**
@@ -108,6 +132,12 @@ export const cacheTasks = async (userId, tasks) => {
  * @returns {Array} - Updated task list with temp task
  */
 export const addTask = async (userId, currentTasks, taskData, onSynced) => {
+  // Validate userId
+  if (!userId || typeof userId !== 'string') {
+    console.error('[DataManager] Invalid userId in addTask:', userId);
+    return currentTasks;
+  }
+  
   const currentMinIndex = currentTasks.length > 0
     ? Math.min(...currentTasks.map(t => t.order_index || 0))
     : 0;
@@ -160,6 +190,12 @@ export const addTask = async (userId, currentTasks, taskData, onSynced) => {
  * Toggle task completion: optimistic + sync.
  */
 export const toggleTaskCompletion = async (userId, currentTasks, taskId, currentStatus) => {
+  // Validate userId
+  if (!userId || typeof userId !== 'string') {
+    console.error('[DataManager] Invalid userId in toggleTaskCompletion:', userId);
+    return currentTasks;
+  }
+  
   const newStatus = !currentStatus;
   const completedAt = newStatus ? new Date().toISOString() : null;
   const updated = currentTasks.map(t =>
@@ -179,6 +215,12 @@ export const toggleTaskCompletion = async (userId, currentTasks, taskId, current
  * Toggle task importance: optimistic + sync.
  */
 export const toggleTaskImportance = async (userId, currentTasks, taskId, currentStatus) => {
+  // Validate userId
+  if (!userId || typeof userId !== 'string') {
+    console.error('[DataManager] Invalid userId in toggleTaskImportance:', userId);
+    return currentTasks;
+  }
+  
   const newStatus = !currentStatus;
   const updated = currentTasks.map(t =>
     t.id === taskId ? { ...t, is_important: newStatus } : t
@@ -197,6 +239,12 @@ export const toggleTaskImportance = async (userId, currentTasks, taskId, current
  * Delete task: optimistic + sync.
  */
 export const deleteTask = async (userId, currentTasks, taskId) => {
+  // Validate userId
+  if (!userId || typeof userId !== 'string') {
+    console.error('[DataManager] Invalid userId in deleteTask:', userId);
+    return currentTasks;
+  }
+  
   const updated = currentTasks.filter(t => t.id !== taskId);
   await cacheTasks(userId, updated);
 
@@ -209,6 +257,12 @@ export const deleteTask = async (userId, currentTasks, taskId) => {
  * Update task fields (due date, reminder, repeat rule, etc.): optimistic + sync.
  */
 export const updateTask = async (userId, currentTasks, taskId, fields) => {
+  // Validate userId
+  if (!userId || typeof userId !== 'string') {
+    console.error('[DataManager] Invalid userId in updateTask:', userId);
+    return currentTasks;
+  }
+  
   const updated = currentTasks.map(t =>
     t.id === taskId ? { ...t, ...fields } : t
   );
@@ -223,6 +277,12 @@ export const updateTask = async (userId, currentTasks, taskId, fields) => {
  * Reorder tasks (drag & drop): optimistic + sync each changed index.
  */
 export const reorderTasks = async (userId, fullTasks, changedTasks, sortColumn = 'order_index') => {
+  // Validate userId
+  if (!userId || typeof userId !== 'string') {
+    console.error('[DataManager] Invalid userId in reorderTasks:', userId);
+    return fullTasks;
+  }
+  
   // 1. Cache the complete task list
   await cacheTasks(userId, fullTasks);
 
@@ -240,10 +300,20 @@ export const reorderTasks = async (userId, fullTasks, changedTasks, sortColumn =
 // ─── Lists ──────────────────────────────────────────────
 
 export const cacheLists = async (userId, lists) => {
+  if (!userId || typeof userId !== 'string') {
+    console.error('[DataManager] Invalid userId in cacheLists:', userId);
+    return;
+  }
   await Storage.set(`lists_${userId}`, lists);
 };
 
 export const loadLists = async (userId, onFresh) => {
+  // Validate userId
+  if (!userId || typeof userId !== 'string') {
+    console.error('[DataManager] Invalid userId in loadLists:', userId);
+    return null;
+  }
+  
   const cached = await Storage.get(`lists_${userId}`);
   
   const fetchBackground = async () => {
@@ -268,6 +338,12 @@ export const loadLists = async (userId, onFresh) => {
 };
 
 export const addList = async (userId, currentLists, listName) => {
+  // Validate userId
+  if (!userId || typeof userId !== 'string') {
+    console.error('[DataManager] Invalid userId in addList:', userId);
+    return currentLists;
+  }
+  
   const tempId = generateUUID();
   const tempList = {
     id: tempId,
@@ -289,6 +365,12 @@ export const addList = async (userId, currentLists, listName) => {
 };
 
 export const deleteList = async (userId, currentLists, listId) => {
+  // Validate userId
+  if (!userId || typeof userId !== 'string') {
+    console.error('[DataManager] Invalid userId in deleteList:', userId);
+    return currentLists;
+  }
+  
   const newLists = currentLists.filter(l => l.id !== listId);
   await cacheLists(userId, newLists);
   
@@ -297,6 +379,12 @@ export const deleteList = async (userId, currentLists, listId) => {
 };
 
 export const renameList = async (userId, currentLists, listId, newName) => {
+  // Validate userId
+  if (!userId || typeof userId !== 'string') {
+    console.error('[DataManager] Invalid userId in renameList:', userId);
+    return currentLists;
+  }
+  
   const newLists = currentLists.map(l => l.id === listId ? { ...l, name: newName } : l);
   await cacheLists(userId, newLists);
 
@@ -310,6 +398,12 @@ export const renameList = async (userId, currentLists, listId, newName) => {
  * Load profile: cache first, then Supabase.
  */
 export const loadProfile = async (userId, onFresh) => {
+  // Validate userId
+  if (!userId || typeof userId !== 'string') {
+    console.error('[DataManager] Invalid userId in loadProfile:', userId);
+    return null;
+  }
+  
   const cached = await Storage.get(`profile_${userId}`);
 
   const fetchBackground = async () => {
@@ -321,7 +415,58 @@ export const loadProfile = async (userId, onFresh) => {
         .single();
 
       if (data) {
+        // Auto-heal missing avatar_url if the user uploaded directly via Supabase dashboard
+        if (!data.avatar_url) {
+          try {
+            const { data: files } = await supabase.storage.from('avatar').list(userId);
+            const avatarFile = files?.find(f => f.name === 'avatar.jpg' || f.name === 'avatar.png' || f.name === 'avatar.jpeg');
+            if (avatarFile) {
+               const { data: urlData } = supabase.storage.from('avatar').getPublicUrl(`${userId}/${avatarFile.name}`);
+               data.avatar_url = urlData.publicUrl + `?t=${Date.now()}`;
+               // Fire and forget update to save it for next time
+               supabase.from('profiles').update({ avatar_url: data.avatar_url }).eq('id', userId).then();
+            }
+          } catch (e) {
+            console.log('Error checking avatar bucket:', e);
+          }
+        }
+
         await Storage.set(`profile_${userId}`, data);
+        
+        // Pull down their AI brain if it exists
+        if (data.ai_memory) {
+          await Storage.set(`aimemory_${userId}`, data.ai_memory);
+        }
+        
+        // Handle AI Credits Daily Reset
+        const today = new Date().toISOString().split('T')[0];
+        let currentCredits = data.ai_credits ?? 20;
+        
+        if (data.username === 'terminator' || data.username === 'saxenaanupam2004') {
+          currentCredits = 99999999;
+          data.ai_credits = 99999999;
+          data.last_credit_reset_date = today;
+          
+          supabase.from('profiles').update({ 
+            ai_credits: 99999999, 
+            last_credit_reset_date: today 
+          }).eq('id', userId).then(({error}) => {
+            if (error) console.log('Failed to set premium credits:', error.message);
+          });
+        } else if (data.last_credit_reset_date !== today) {
+           currentCredits = 20;
+           data.ai_credits = 20;
+           data.last_credit_reset_date = today;
+           
+           supabase.from('profiles').update({ 
+             ai_credits: 20, 
+             last_credit_reset_date: today 
+           }).eq('id', userId).then(({error}) => {
+             if (error) console.log('Failed to reset credits:', error.message);
+           });
+        }
+        await Storage.set(`aicredits_${userId}`, currentCredits.toString());
+        
         if (onFresh) onFresh(data);
       }
     } catch (err) {
@@ -373,6 +518,12 @@ export const loadProfile = async (userId, onFresh) => {
  * Update profile: optimistic + sync.
  */
 export const updateProfile = async (userId, currentProfile, fields) => {
+  // Validate userId
+  if (!userId || typeof userId !== 'string') {
+    console.error('[DataManager] Invalid userId in updateProfile:', userId);
+    return currentProfile;
+  }
+  
   const updated = { ...currentProfile, ...fields };
   await Storage.set(`profile_${userId}`, updated);
 
@@ -385,6 +536,11 @@ export const updateProfile = async (userId, currentProfile, fields) => {
  * Delete all database records and storage objects for a user (called during account deletion).
  */
 export const deleteUserAccountData = async (userId) => {
+  if (!userId || typeof userId !== 'string') {
+    console.error('[DataManager] Invalid userId in deleteUserAccountData:', userId);
+    return;
+  }
+  
   await supabase.from('tasks').delete().eq('user_id', userId);
   await supabase.from('profiles').delete().eq('id', userId);
   try {
@@ -396,11 +552,28 @@ export const deleteUserAccountData = async (userId) => {
 
 // ─── Alarms ──────────────────────────────────────────────
 
+export const cacheAlarms = async (userId, alarms) => {
+  if (!userId || typeof userId !== 'string') {
+    console.error('[DataManager] Invalid userId in cacheAlarms:', userId);
+    return;
+  }
+  await Storage.set(`alarms_${userId}`, alarms);
+  await Storage.set('last_local_write_time', Date.now().toString());
+};
+
 export const loadAlarms = async (userId, onFresh) => {
+  // Validate userId
+  if (!userId || typeof userId !== 'string') {
+    console.error('[DataManager] Invalid userId in loadAlarms:', userId);
+    return [];
+  }
+  
   const cached = await Storage.get(`alarms_${userId}`);
   
+  const fetchStartTime = Date.now();
   const fetchBackground = async () => {
     try {
+      await drainSyncQueue();
       const { data, error } = await supabase
         .from('alarms')
         .select('*')
@@ -408,11 +581,21 @@ export const loadAlarms = async (userId, onFresh) => {
         .order('time', { ascending: true });
         
       if (!error && data) {
-        await Storage.set(`alarms_${userId}`, data);
-        if (onFresh) onFresh(data);
+        const qLen = await getQueueLength();
+        const lastWriteStr = await Storage.get('last_local_write_time');
+        const lastWriteTime = lastWriteStr ? parseInt(lastWriteStr, 10) : 0;
+        
+        // Only overwrite the cache if there are no pending mutations AND
+        // no local updates occurred after this fetch was initiated.
+        if (qLen === 0 && fetchStartTime > lastWriteTime) {
+          await Storage.set(`alarms_${userId}`, data);
+          if (onFresh) onFresh(data);
+        } else {
+          console.log('[DataManager] Supabase alarms fetch discarded: Local updates occurred or are pending.');
+        }
       }
     } catch (e) {
-      console.log('Sync alarms error', e);
+      console.log('[DataManager] Sync alarms error:', e.message || e);
     }
   };
   
@@ -421,6 +604,12 @@ export const loadAlarms = async (userId, onFresh) => {
 };
 
 export const addAlarm = async (userId, currentAlarms, alarmData) => {
+  // Validate userId
+  if (!userId || typeof userId !== 'string') {
+    console.error('[DataManager] Invalid userId in addAlarm:', userId);
+    return currentAlarms;
+  }
+  
   const tempId = generateUUID();
   const tempAlarm = {
     id: tempId,
@@ -432,24 +621,34 @@ export const addAlarm = async (userId, currentAlarms, alarmData) => {
   const newAlarms = [...currentAlarms, tempAlarm];
   // Sort alarms by time
   newAlarms.sort((a, b) => a.time.localeCompare(b.time));
-  await Storage.set(`alarms_${userId}`, newAlarms);
+  await cacheAlarms(userId, newAlarms);
   
   syncToSupabase('alarms', 'insert', tempAlarm);
   return newAlarms;
 };
 
 export const updateAlarm = async (userId, currentAlarms, alarmId, fields) => {
+  if (!userId || typeof userId !== 'string') {
+    console.error('[DataManager] Invalid userId in updateAlarm:', userId);
+    return currentAlarms;
+  }
+  
   const updated = currentAlarms.map(a => a.id === alarmId ? { ...a, ...fields } : a);
   updated.sort((a, b) => a.time.localeCompare(b.time));
-  await Storage.set(`alarms_${userId}`, updated);
+  await cacheAlarms(userId, updated);
 
   syncToSupabase('alarms', 'update', fields, { column: 'id', value: alarmId });
   return updated;
 };
 
 export const deleteAlarm = async (userId, currentAlarms, alarmId) => {
+  if (!userId || typeof userId !== 'string') {
+    console.error('[DataManager] Invalid userId in deleteAlarm:', userId);
+    return currentAlarms;
+  }
+  
   const updated = currentAlarms.filter(a => a.id !== alarmId);
-  await Storage.set(`alarms_${userId}`, updated);
+  await cacheAlarms(userId, updated);
   
   syncToSupabase('alarms', 'delete', {}, { column: 'id', value: alarmId });
   return updated;

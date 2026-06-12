@@ -5,6 +5,8 @@
 Before making ANY code changes, read `/ARCHITECTURE.md` in the project root.
 It defines the **offline-first data architecture** that EVERY screen must follow.
 
+**For new AI agents:** Also read `/AI_AGENT_HANDOFF.md` for complete project context.
+
 ## Quick Rules
 
 1. **NEVER call Supabase directly from screens** — use `src/lib/dataManager.js`

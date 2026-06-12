@@ -1,22 +1,22 @@
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { ArrowUp, Bell, Calendar, Check, CheckCircle2, ChevronDown, ChevronRight, Circle, FileText, GripVertical, ListChecks, Menu, MoreVertical, Plus, Repeat, Sparkles, Star, Sun, Trash2, X, Wand2 } from 'lucide-react-native';
-import { useEffect, useState, useCallback, useRef } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Modal, Platform, ScrollView, Share, StyleSheet, Text, TextInput, TouchableOpacity, View, Keyboard, BackHandler, Alert } from 'react-native';
-import Animated, { FadeIn, FadeOut, useSharedValue, useAnimatedStyle, withRepeat, withTiming, Easing } from 'react-native-reanimated';
-import { NestableScrollContainer, NestableDraggableFlatList, ScaleDecorator } from 'react-native-draggable-flatlist';
 import { useFocusEffect } from '@react-navigation/native';
+import { ArrowUp, Bell, Calendar, Check, CheckCircle2, ChevronDown, ChevronRight, Circle, FileText, GripVertical, ListChecks, Menu, MoreVertical, Plus, Repeat, Star, Sun, Trash2, X } from 'lucide-react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Alert, BackHandler, Keyboard, KeyboardAvoidingView, Modal, Platform, ScrollView, Share, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { NestableDraggableFlatList, NestableScrollContainer, ScaleDecorator } from 'react-native-draggable-flatlist';
+import Animated, { Easing, FadeIn, FadeOut, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ScribbleStrike } from '../components/ScribbleStrike';
+import { AIAuraOverlay } from '../components/AIAuraOverlay';
 import { BackgroundWrapper } from '../components/BackgroundWrapper';
 import { GlassSidebar } from '../components/GlassSidebar';
+import { ScribbleStrike } from '../components/ScribbleStrike';
+import { cacheTasks, deleteList, addTask as dmAddTask, deleteTask as dmDeleteTask, loadLists, loadProfile, loadTasks, renameList, reorderTasks, toggleTaskImportance } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
-import { loadTasks, addTask as dmAddTask, toggleTaskCompletion, toggleTaskImportance, deleteTask as dmDeleteTask, reorderTasks, loadProfile, cacheTasks, loadLists, deleteList, renameList } from '../lib/dataManager';
-import { drainSyncQueue, syncToSupabase } from '../lib/syncQueue';
+import { syncToSupabase } from '../lib/syncQueue';
 import { COLORS } from '../theme/theme';
-import { Storage } from '../utils/storage';
 import { Gamification } from '../utils/gamification';
-import { scheduleTaskReminder, cancelTaskReminder } from '../utils/notifications';
-import { AIAuraOverlay } from '../components/AIAuraOverlay';
+import { cancelTaskReminder, scheduleTaskReminder } from '../utils/notifications';
+import { Storage } from '../utils/storage';
 
 // ─── Helpers ────────────────────────────────────────────
 const getDayName = (d) => d.toLocaleDateString('en-US', { weekday: 'short' });
@@ -682,19 +682,22 @@ export const CustomListScreen = ({ navigation, route }) => {
                 keyboardShouldPersistTaps="handled"
                 onContainerLayout={() => {}}
                 onDragEnd={({ data }) => {
-                  if (sortBy !== 'custom') setSortBy('custom');
-                  
-                  const orderMap = new Map(data.map((t, i) => [t.id, i]));
-                  
-                  const mergedTasks = latestTasksRef.current.map(t => 
-                    orderMap.has(t.id) ? { ...t, order_index: orderMap.get(t.id) } : t
-                  );
-                  
-                  setTasks(mergedTasks);
-                  
-                  // Background sync via SyncQueue (caching full lists and syncing mappings)
-                  const changedTasks = data.map((t, i) => ({ id: t.id, order_index: i }));
-                  reorderTasks(userId, mergedTasks, changedTasks);
+                  // Defer state update until after drag animation completes to prevent jitter
+                  requestAnimationFrame(() => {
+                    if (sortBy !== 'custom') setSortBy('custom');
+                    
+                    const orderMap = new Map(data.map((t, i) => [t.id, i]));
+                    
+                    const mergedTasks = latestTasksRef.current.map(t => 
+                      orderMap.has(t.id) ? { ...t, order_index: orderMap.get(t.id) } : t
+                    );
+                    
+                    setTasks(mergedTasks);
+                    
+                    // Background sync via SyncQueue (caching full lists and syncing mappings)
+                    const changedTasks = data.map((t, i) => ({ id: t.id, order_index: i }));
+                    reorderTasks(userId, mergedTasks, changedTasks);
+                  });
                 }}
                 renderItem={({ item: task, drag, isActive }) => {
                   const hasSubtasks = task.subtasks && task.subtasks.length > 0;

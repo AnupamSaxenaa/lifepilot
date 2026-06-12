@@ -51,6 +51,8 @@ export const Gamification = {
     if (!state) return;
 
     state.xp += amount;
+    // ✅ Fix: Prevent negative XP
+    state.xp = Math.max(0, state.xp);
     
     // Level formula: Level = floor(xp / 100) + 1
     state.level = Math.floor(state.xp / 100) + 1;

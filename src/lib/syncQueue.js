@@ -27,6 +27,7 @@ import { supabase } from '../lib/supabase';
 
 const QUEUE_KEY = '@lifepilot_sync_queue';
 const MAX_RETRIES = 10;
+const MAX_AGE_DAYS = 7; // Drop entries older than 7 days
 
 // ─── Queue Persistence ─────────────────────────────────
 
@@ -94,8 +95,18 @@ export const drainSyncQueue = async () => {
   const survivors = [];
   let succeeded = 0;
   let failed = 0;
+  const now = Date.now();
 
   for (const entry of queue) {
+    // ✅ Check if entry is too old (7+ days)
+    const ageMs = now - new Date(entry.createdAt).getTime();
+    const ageDays = ageMs / (1000 * 60 * 60 * 24);
+    
+    if (ageDays > MAX_AGE_DAYS) {
+      console.warn(`[SyncQueue] Dropping stale entry (${ageDays.toFixed(1)} days old):`, entry);
+      continue;
+    }
+    
     if (entry.retryCount >= MAX_RETRIES) {
       // Give up on this entry — it's been tried too many times
       console.warn(`[SyncQueue] Dropping entry after ${MAX_RETRIES} retries:`, entry);
@@ -149,12 +160,19 @@ const enqueue = async (table, operation, data, filter) => {
 };
 
 const executeOperation = async (table, operation, data, filter) => {
-  let query;
+  const handleError = (error) => {
+    if (error && (error.code === 'PGRST204' || error.message?.includes('Could not find the') || error.message?.includes('column'))) {
+      console.warn(`[SyncQueue] Fatal schema error, dropping ${operation} on ${table}:`, error.message);
+      return null;
+    }
+    throw error;
+  };
 
+  let query;
   switch (operation) {
     case 'insert': {
       const { data: result, error } = await supabase.from(table).insert(data).select().single();
-      if (error) throw error;
+      if (error) return handleError(error);
       return result;
     }
     case 'update': {
@@ -165,7 +183,7 @@ const executeOperation = async (table, operation, data, filter) => {
         .eq(filter.column, filter.value)
         .select()
         .single();
-      if (error) throw error;
+      if (error) return handleError(error);
       return result;
     }
     case 'delete': {
@@ -174,7 +192,7 @@ const executeOperation = async (table, operation, data, filter) => {
         .from(table)
         .delete()
         .eq(filter.column, filter.value);
-      if (error) throw error;
+      if (error) return handleError(error);
       return null;
     }
     default:

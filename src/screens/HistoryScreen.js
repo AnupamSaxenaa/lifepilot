@@ -1,17 +1,31 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { 
-  View, Text, StyleSheet, TouchableOpacity, ScrollView, 
-  ActivityIndicator, TextInput, useColorScheme, Platform 
+import {
+    AlignLeft,
+    Calendar,
+    CheckCircle2,
+    History,
+    ListTree,
+    Menu,
+    RotateCcw,
+    Search,
+    Star
+} from 'lucide-react-native';
+import { useEffect, useMemo, useState } from 'react';
+import {
+    ActivityIndicator,
+    Alert,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    useColorScheme,
+    View
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { 
-  Menu, Search, History, CheckCircle2, RotateCcw, 
-  Calendar, Star, ListTree, AlignLeft
-} from 'lucide-react-native';
-import { supabase } from '../lib/supabase';
-import { loadTasks, toggleTaskCompletion, loadProfile } from '../lib/dataManager';
-import { COLORS } from '../theme/theme';
 import { GlassSidebar } from '../components/GlassSidebar';
+import { loadProfile, loadTasks } from '../lib/dataManager';
+import { supabase } from '../lib/supabase';
+import { syncToSupabase } from '../lib/syncQueue';
 
 const THEME_COLOR = '#FFFFFF';
 
@@ -50,9 +64,23 @@ export const HistoryScreen = ({ navigation }) => {
   }, []);
 
   const handleRestoreTask = async (task) => {
-    // Un-complete the task (is_completed: false, completed_at: null)
-    const updatedTasks = await toggleTaskCompletion(userId, tasks, task.id, true);
-    setTasks(updatedTasks);
+    // ✅ FIX: Load fresh tasks, un-complete this specific task
+    const latestTasks = await Storage.get(`tasks_${userId}`) || [];
+    const updated = latestTasks.map(t =>
+      t.id === task.id 
+        ? { ...t, is_completed: false, completed_at: null }
+        : t
+    );
+    
+    await Storage.set(`tasks_${userId}`, updated);
+    await Storage.set('last_local_write_time', Date.now().toString());
+    
+    syncToSupabase('tasks', 'update',
+      { is_completed: false, completed_at: null },
+      { column: 'id', value: task.id }
+    );
+    
+    setTasks(updated);
   };
 
   const handleLogout = () => {

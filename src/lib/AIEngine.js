@@ -11,6 +11,7 @@ const GEMINI_MODELS = asArray(AI_CONFIG.GEMINI_MODELS, [
   AI_CONFIG.GEMINI_MODEL || 'gemini-2.5-flash',
   'gemini-2.5-flash',
   'gemini-2.0-flash',
+  'gemini-flash-latest',
 ]);
 
 const GROQ_MODELS = asArray(AI_CONFIG.GROQ_MODELS, [
@@ -113,8 +114,9 @@ const getTimeRange = (item) => {
 const normalizePlan = (planItems, tasks = []) => {
   if (!Array.isArray(planItems)) throw new Error('Plan is not an array');
 
+  const safeTasks = Array.isArray(tasks) ? tasks : [];
   const taskByTitle = new Map(
-    tasks
+    safeTasks
       .filter(task => task?.title)
       .map(task => [normalizeTitleKey(task.title), task])
   );
@@ -152,10 +154,14 @@ const extractPlanItems = (parsed) => {
   throw new Error('No schedule array found');
 };
 
-const formatTime = (date) => date.toLocaleTimeString('en-US', {
-  hour: 'numeric',
-  minute: '2-digit',
-});
+const formatTime = (date) => {
+  let h = date.getHours();
+  const m = date.getMinutes().toString().padStart(2, '0');
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  h = h % 12;
+  if (h === 0) h = 12;
+  return `${h}:${m} ${ampm}`;
+};
 
 const roundToNextHalfHour = (date) => {
   const rounded = new Date(date);
@@ -169,17 +175,12 @@ const buildFallbackSchedule = (tasks = []) => {
   const activeTasks = tasks.filter(task => task?.title && !task.is_completed).slice(0, 8);
   let cursor = roundToNextHalfHour(new Date());
 
-  if (activeTasks.length === 0) {
-    const end = new Date(cursor.getTime() + 45 * 60000);
-    return [{
+  const fallback = activeTasks.length === 0 ? [{
       taskId: null,
-      time: `${formatTime(cursor)} - ${formatTime(end)}`,
+      time: `${formatTime(cursor)} - ${formatTime(new Date(cursor.getTime() + 45 * 60000))}`,
       title: 'Plan and prioritize today',
       completed: false,
-    }];
-  }
-
-  return activeTasks.map((task) => {
+    }] : activeTasks.map((task) => {
     const start = new Date(cursor);
     const end = new Date(start.getTime() + 45 * 60000);
     cursor = new Date(end.getTime() + 15 * 60000);
@@ -191,52 +192,70 @@ const buildFallbackSchedule = (tasks = []) => {
       completed: Boolean(task.is_completed),
     };
   });
+  
+  fallback._isFallback = true;
+  return fallback;
 };
 
 const callGemini = async (messages, options = {}) => {
-  if (!AI_CONFIG.GEMINI_API_KEY || AI_CONFIG.GEMINI_API_KEY.includes('YOUR_')) throw new Error('Missing Key');
+  if (!AI_CONFIG.GEMINI_API_KEY || AI_CONFIG.GEMINI_API_KEY.includes('YOUR_')) {
+    throw new Error('Gemini API key is missing or invalid');
+  }
   
   // Convert standard roles to Gemini roles
-  const prompt = messages.map(m => {
-    const role = m.role === 'user' ? 'User' : (m.role === 'system' ? 'System Instructions' : 'Assistant');
-    return `${role}: ${m.content}`;
-  }).join('\n\n');
+  const safeMessages = Array.isArray(messages) ? messages : [];
+  const prompt = safeMessages
+    .filter(m => m && typeof m === 'object' && m.content)
+    .map(m => {
+      const role = m.role === 'user' ? 'User' : (m.role === 'system' ? 'System Instructions' : 'Assistant');
+      return `${role}: ${m.content}`;
+    })
+    .join('\n\n');
 
   let lastError;
   for (const model of GEMINI_MODELS) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${AI_CONFIG.GEMINI_API_KEY}`;
-    
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: options.json ? 0.2 : 0.7,
-          ...(options.json ? { responseMimeType: 'application/json' } : {}),
-        },
-      })
-    });
-    
-    if (!response.ok) {
-      lastError = new Error(`Gemini ${model} Error: ${response.status}`);
-      continue;
-    }
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${AI_CONFIG.GEMINI_API_KEY}`;
+      
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: options.json ? 0.2 : 0.7,
+            ...(options.json ? { responseMimeType: 'application/json' } : {}),
+          },
+        })
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        lastError = new Error(`Gemini ${model} Error ${response.status}: ${errorText}`);
+        console.error('Gemini API Error:', errorText);
+        continue;
+      }
 
-    const data = await response.json();
-    if (!data.candidates || data.candidates.length === 0) {
-      lastError = new Error(`Gemini ${model} returned empty response`);
-      continue;
+      const data = await response.json();
+      if (!data.candidates || data.candidates.length === 0) {
+        lastError = new Error(`Gemini ${model} returned empty response`);
+        continue;
+      }
+      
+      return data.candidates[0].content.parts[0].text;
+    } catch (error) {
+      lastError = error;
+      console.error(`Gemini ${model} exception:`, error.message);
     }
-    
-    return data.candidates[0].content.parts[0].text;
   }
 
-  throw lastError || new Error('Gemini failed');
+  throw lastError || new Error('All Gemini models failed');
 };
 
 const callGroq = async (messages, options = {}) => {
   if (!AI_CONFIG.GROQ_API_KEY || AI_CONFIG.GROQ_API_KEY.includes('YOUR_')) throw new Error('Missing Key');
+  
+  const safeMessages = Array.isArray(messages) ? messages.filter(m => m && typeof m === 'object') : [];
   
   let lastError;
   for (const model of GROQ_MODELS) {
@@ -248,7 +267,7 @@ const callGroq = async (messages, options = {}) => {
       },
       body: JSON.stringify({
         model,
-        messages,
+        messages: safeMessages,
         temperature: options.json ? 0.2 : 0.7,
         ...(options.json ? { response_format: { type: 'json_object' } } : {}),
       })
@@ -269,6 +288,8 @@ const callGroq = async (messages, options = {}) => {
 const callMistral = async (messages, options = {}) => {
   if (!AI_CONFIG.MISTRAL_API_KEY || AI_CONFIG.MISTRAL_API_KEY.includes('YOUR_')) throw new Error('Missing Key');
   
+  const safeMessages = Array.isArray(messages) ? messages.filter(m => m && typeof m === 'object') : [];
+  
   const response = await fetch('https://api.mistral.ai/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -278,7 +299,7 @@ const callMistral = async (messages, options = {}) => {
     },
     body: JSON.stringify({
       model: 'mistral-small-latest',
-      messages,
+      messages: safeMessages,
       temperature: options.json ? 0.2 : 0.7,
       ...(options.json ? { response_format: { type: 'json_object' } } : {}),
     })
@@ -292,15 +313,17 @@ const callMistral = async (messages, options = {}) => {
 const callCohere = async (messages) => {
   if (!AI_CONFIG.COHERE_API_KEY || AI_CONFIG.COHERE_API_KEY.includes('YOUR_')) throw new Error('Missing Key');
   
+  const safeMessages = Array.isArray(messages) ? messages.filter(m => m && typeof m === 'object') : [];
+  
   // Convert OpenAI format to Cohere chat history format
-  const chatHistory = messages.filter(m => m.role !== 'system').map(m => ({
+  const chatHistory = safeMessages.filter(m => m.role !== 'system').map(m => ({
     role: m.role === 'user' ? 'USER' : 'CHATBOT',
-    message: m.content
+    message: m.content || ''
   }));
   
   const lastMessageObj = chatHistory.pop();
   const lastMessage = lastMessageObj ? lastMessageObj.message : 'Plan my day';
-  const systemPrompt = messages.find(m => m.role === 'system')?.content || '';
+  const systemPrompt = safeMessages.find(m => m.role === 'system')?.content || '';
 
   const response = await fetch('https://api.cohere.ai/v1/chat', {
     method: 'POST',
@@ -337,8 +360,10 @@ export const generatePlan = async (messages, currentMemory, tasks = []) => {
     }
   }
 
+  const safeMessages = Array.isArray(messages) ? messages : [];
+  
   // Extract the system prompt passed from AIAuraOverlay (which is always messages[0])
-  const callerSysPrompt = messages.length > 0 && messages[0].role === 'system' ? messages[0].content : '';
+  const callerSysPrompt = safeMessages.length > 0 && safeMessages[0].role === 'system' ? safeMessages[0].content : '';
 
   // Merge the instructions into a single System message to prevent Groq/Mistral 400 Errors
   const masterSystemInstruction = { 
@@ -350,6 +375,7 @@ RULES:
 1. If the user memory indicates they want a "Detailed Plan" or if it is implied, you MUST invent "Implicit Tasks" (e.g., waking up, breakfast, deep work blocks, gym, lunch) based on their occupation and habits.
 2. For IMPLICIT TASKS (habits, meals, routines), you MUST set "taskId" to null.
 3. For EXPLICIT TASKS provided in the prompt below, you MUST preserve their exact "taskId".
+4. You MUST include any Calendar Events provided in the prompt in your schedule. Set their "taskId" to null, and use the exact title and time from the calendar. Do NOT overlap tasks with these calendar events.
 
 USER'S PERSONAL MEMORY PROFILE:
 ${currentMemory || "No memory profile yet."}
@@ -365,23 +391,27 @@ ${callerSysPrompt}`
 
   let rawResponse = '';
   try {
-    console.log('🤖 Attempting Gemini...');
-    rawResponse = await callGemini(finalMessages, { json: true });
+    console.log('🤖 Attempting Groq for generatePlan...');
+    rawResponse = await callGroq(finalMessages, { json: true });
+    console.log('✅ Groq succeeded. Response length:', rawResponse?.length);
   } catch (e1) {
-    console.log('❌ Gemini failed:', e1.message);
+    console.log('❌ Groq failed:', e1.message);
     try {
-      console.log('🤖 Attempting Groq...');
-      rawResponse = await callGroq(finalMessages, { json: true });
+      console.log('🤖 Attempting Gemini for generatePlan...');
+      rawResponse = await callGemini(finalMessages, { json: true });
+      console.log('✅ Gemini succeeded. Response length:', rawResponse?.length);
     } catch (e2) {
       console.log('❌ Groq failed:', e2.message);
       try {
-        console.log('🤖 Attempting Mistral...');
+        console.log('🤖 Attempting Mistral for generatePlan...');
         rawResponse = await callMistral(finalMessages, { json: true });
+        console.log('✅ Mistral succeeded. Response length:', rawResponse?.length);
       } catch (e3) {
         console.log('❌ Mistral failed:', e3.message);
         try {
-          console.log('🤖 Attempting Cohere Command R...');
+          console.log('🤖 Attempting Cohere Command R for generatePlan...');
           rawResponse = await callCohere(finalMessages);
+          console.log('✅ Cohere succeeded. Response length:', rawResponse?.length);
         } catch (e4) {
           console.log('❌ Cohere failed:', e4.message);
           console.log('⚠️ Using local fallback schedule because all AI services failed.');
@@ -393,10 +423,15 @@ ${callerSysPrompt}`
 
 // Parse the JSON
   try {
+    console.log('🔍 Parsing AI response...');
     const parsed = parseJsonFromText(rawResponse);
-    return normalizePlan(extractPlanItems(parsed), tasks);
-  } catch (_err) {
-    console.log('❌ AI Failed to return valid JSON array:', rawResponse);
+    console.log('✅ JSON parsed successfully:', JSON.stringify(parsed).slice(0, 200));
+    const normalized = normalizePlan(extractPlanItems(parsed), tasks);
+    console.log('✅ Plan normalized. Items:', normalized.length);
+    return normalized;
+  } catch (parseError) {
+    console.log('❌ AI Failed to return valid JSON array. Error:', parseError.message);
+    console.log('Raw response:', rawResponse?.slice(0, 500));
     console.log('⚠️ Using local fallback schedule because AI returned invalid JSON.');
     return buildFallbackSchedule(tasks);
   }
@@ -415,11 +450,12 @@ export const chatWithAura = async (messages, currentMemory) => {
     }
   }
 
-  const systemContext = messages
-    .filter(message => message.role === 'system')
+  const safeMessages = Array.isArray(messages) ? messages : [];
+  const systemContext = safeMessages
+    .filter(message => message && message.role === 'system')
     .map(message => message.content)
     .join('\n\n');
-  const chatHistory = messages.filter(message => message.role !== 'system');
+  const chatHistory = safeMessages.filter(message => message && message.role !== 'system');
 
   const jsonInstruction = { 
     role: 'system', 
@@ -446,16 +482,25 @@ ${systemContext || "No task/calendar context."}`
   const finalMessages = [jsonInstruction, ...chatHistory];
 
   let rawResponse = '';
+  let lastError = null;
+  
   try {
-    rawResponse = await callGemini(finalMessages, { json: true });
-  } catch (_e1) {
+    rawResponse = await callGroq(finalMessages, { json: true });
+  } catch (e1) {
+    console.log('❌ Groq failed:', e1.message);
+    lastError = e1;
     try {
-      rawResponse = await callGroq(finalMessages, { json: true });
-    } catch (_e2) {
+      rawResponse = await callGemini(finalMessages, { json: true });
+    } catch (e2) {
+      console.log('❌ Gemini failed:', e2.message);
+      lastError = e2;
       try {
         rawResponse = await callMistral(finalMessages, { json: true });
-      } catch (_e3) {
-        throw new Error('All AI services are currently unavailable.');
+      } catch (e3) {
+        console.log('❌ Mistral failed:', e3.message);
+        lastError = e3;
+        const errorMsg = lastError?.message || 'Unknown error';
+        throw new Error(`All AI services are currently unavailable. Last error: ${errorMsg}`);
       }
     }
   }
@@ -465,6 +510,37 @@ ${systemContext || "No task/calendar context."}`
   } catch (_err) {
     console.log('❌ AI Failed to return valid JSON object:', rawResponse);
     // Fallback if AI fails to return JSON
-    return { reply: "I'm having trouble thinking clearly. Let's just build your schedule whenever you're ready!", memory: currentMemory };
+    return { reply: "I'm having trouble thinking clearly. Let's just build your schedule whenever you're ready!", memory: currentMemory, _isFallback: true };
+  }
+};
+
+export const getCoachAdvice = async (taskTitle, nextTaskInfo, memory) => {
+  const finalMessages = [
+    { 
+      role: 'system', 
+      content: `You are an AI Flow Coach. Analyze the user's task and memory. ${nextTaskInfo} 
+Suggest an optimal focus duration (in minutes) and a 1-sentence piece of advice. Also, generate a harsh 1-sentence "tough love" quote to guilt-trip them in case they try to quit early.
+CRITICAL: Return strict JSON ONLY. No markdown.
+Schema: {"minutes": 25, "advice": "Deep work requires 0 distractions. Let's crush this.", "tough_love": "Great things never came from comfort zones. Get back to work!"}
+USER MEMORY: ${memory || "None"}`
+    },
+    { role: 'user', content: `Task: ${taskTitle || 'Custom Session'}` }
+  ];
+
+  try {
+    let rawResponse = '';
+    try {
+      rawResponse = await callGemini(finalMessages, { json: true });
+    } catch (e1) {
+      try {
+        rawResponse = await callGroq(finalMessages, { json: true });
+      } catch (e2) {
+        rawResponse = await callMistral(finalMessages, { json: true });
+      }
+    }
+    return parseJsonFromText(rawResponse);
+  } catch (err) {
+    console.log('Coach AI error:', err.message);
+    return { minutes: 25, advice: "Zero distractions. Let's go.", tough_love: "Quitting is for the weak. Get back to work." };
   }
 };

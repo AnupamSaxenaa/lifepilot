@@ -2,7 +2,7 @@
   "expo": {
     "name": "LifePilot Beta",
     "slug": "lifepilot",
-    "version": "vjasper1.0",
+    "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": [
@@ -22,10 +22,17 @@
     },
     "android": {
       "package": "com.anupam.lp",
+      "versionCode": 1,
       "permissions": [
         "RECORD_AUDIO",
         "android.permission.READ_CALENDAR",
-        "android.permission.WRITE_CALENDAR"
+        "android.permission.WRITE_CALENDAR",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.USE_FULL_SCREEN_INTENT",
+        "android.permission.VIBRATE",
+        "android.permission.WAKE_LOCK"
       ],
       "adaptiveIcon": {
         "backgroundColor": "#000000",
@@ -75,6 +82,7 @@
       "expo-speech-recognition",
       "expo-image"
     ],
+    "jsEngine": "hermes",
     "experiments": {
       "reactCompiler": false
     },

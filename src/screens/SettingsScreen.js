@@ -2,19 +2,21 @@ import { decode } from 'base64-arraybuffer';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import {
-  Camera, ChevronRight, ImagePlus, KeyRound, LogOut, Mail, Menu,
-  Shield, Trash2, User, UserCog, X
+    Camera, ChevronRight, ImagePlus, KeyRound, LogOut, Mail, Menu,
+    RefreshCw,
+    Shield, Trash2, User, UserCog, X
 } from 'lucide-react-native';
 import { useEffect, useState } from 'react';
 import {
-  ActivityIndicator, Alert, Image, Modal, Platform, ScrollView,
-  StyleSheet, Text, TextInput, TouchableOpacity, View
+    ActivityIndicator, Alert, Image, Modal, Platform, ScrollView,
+    StyleSheet, Text, TextInput, TouchableOpacity, View
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { GlassSidebar } from '../components/GlassSidebar';
 import { deleteUserAccountData, loadProfile, updateProfile } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
 import { Storage } from '../utils/storage';
+import { UpdateManager } from '../utils/updateManager';
 
 const THEME_COLOR = '#FFFFFF';
 const DARK_BG = '#000000';
@@ -48,6 +50,10 @@ export const SettingsScreen = ({ navigation }) => {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [formError, setFormError] = useState('');
+
+  // ─── OTA Update States ────────────────────────────────
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState(null);
   const [formLoading, setFormLoading] = useState(false);
 
   // ─── Password OTP States ──────────────────────────────
@@ -123,6 +129,9 @@ export const SettingsScreen = ({ navigation }) => {
     setAvatarUploading(true);
 
     try {
+      const mimeType = asset.mimeType || (asset.uri.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg');
+      const ext = mimeType === 'image/png' ? 'png' : 'jpg';
+
       const base64 = await FileSystem.readAsStringAsync(asset.uri, {
         encoding: FileSystem.EncodingType.Base64,
       });
@@ -140,11 +149,11 @@ export const SettingsScreen = ({ navigation }) => {
         return;
       }
 
-      const fileName = `${userId}/avatar.jpg`;
+      const fileName = `${userId}/avatar.${ext}`;
       const { error: uploadError } = await supabase.storage
         .from('avatar')
         .upload(fileName, decode(base64), {
-          contentType: 'image/jpeg',
+          contentType: mimeType,
           upsert: true,
         });
 
@@ -196,6 +205,49 @@ export const SettingsScreen = ({ navigation }) => {
     Storage.set(`profile_${userId}`, updated);
     setAvatarUploading(false);
     Alert.alert('Done', 'Avatar removed. A random avatar has been assigned.');
+  };
+
+  // ─── Check for OTA Updates ────────────────────────────
+  const handleCheckForUpdates = async () => {
+    if (!UpdateManager.isEnabled()) {
+      Alert.alert('Updates', 'OTA updates are only available in production builds.');
+      return;
+    }
+
+    setCheckingUpdate(true);
+    setUpdateInfo(null);
+
+    try {
+      const { isAvailable } = await UpdateManager.checkForUpdates();
+
+      if (isAvailable) {
+        Alert.alert(
+          'Update Available',
+          'A new version is available. Would you like to download it now?',
+          [
+            { text: 'Later', style: 'cancel', onPress: () => setCheckingUpdate(false) },
+            {
+              text: 'Update Now',
+              onPress: async () => {
+                const result = await UpdateManager.downloadAndApply(() => {});
+                if (result.success && result.isNew) {
+                  // App will reload automatically
+                } else {
+                  setCheckingUpdate(false);
+                  Alert.alert('Update', 'Update downloaded. Restart the app to apply.');
+                }
+              },
+            },
+          ]
+        );
+      } else {
+        setCheckingUpdate(false);
+        Alert.alert('No Updates', 'You are running the latest version!');
+      }
+    } catch (error) {
+      setCheckingUpdate(false);
+      Alert.alert('Error', 'Failed to check for updates. Please try again later.');
+    }
   };
 
   // ─── Change Display Name ──────────────────────────────
@@ -409,7 +461,15 @@ export const SettingsScreen = ({ navigation }) => {
           <SettingRow
             icon={KeyRound} iconColor="#FFF" label="Change Password"
             onPress={() => { setNewPassword(''); setConfirmPassword(''); setOtp(''); setPasswordStep('input'); setFormError(''); setShowPasswordModal(true); }}
+          />
+          <View style={styles.divider} />
+          <SettingRow
+            icon={RefreshCw}
+            iconColor="#A78BFA"
+            label="Check for Updates"
+            onPress={handleCheckForUpdates}
             isLast
+            rightComponent={checkingUpdate && <ActivityIndicator size="small" color="#A78BFA" />}
           />
         </View>
 
@@ -573,7 +633,7 @@ export const SettingsScreen = ({ navigation }) => {
 };
 
 // ─── Setting Row Component ────────────────────────────
-const SettingRow = ({ icon: Icon, iconColor, label, value, onPress, danger, isLast }) => (
+const SettingRow = ({ icon: Icon, iconColor, label, value, onPress, danger, isLast, rightComponent }) => (
   <TouchableOpacity style={[styles.settingRow, isLast && { paddingBottom: 14 }]} onPress={onPress} activeOpacity={0.6}>
     <View style={[styles.settingIconWrap, { backgroundColor: (danger ? '#EF444420' : iconColor + '20') }]}>
       <Icon color={danger ? '#EF4444' : iconColor} size={18} />
@@ -582,7 +642,7 @@ const SettingRow = ({ icon: Icon, iconColor, label, value, onPress, danger, isLa
       <Text style={[styles.settingLabel, danger && { color: '#EF4444' }]}>{label}</Text>
       {value ? <Text style={styles.settingValue} numberOfLines={1}>{value}</Text> : null}
     </View>
-    {!danger && <ChevronRight color="#444" size={20} />}
+    {rightComponent || (!danger && <ChevronRight color="#444" size={20} />)}
   </TouchableOpacity>
 );
 

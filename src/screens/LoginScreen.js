@@ -1,17 +1,17 @@
-import React, { useState } from 'react';
-import { StyleSheet, Text, View, useColorScheme, TouchableOpacity, Image, Platform, Alert } from 'react-native';
-import * as WebBrowser from 'expo-web-browser';
-import * as Linking from 'expo-linking';
 import { makeRedirectUri } from 'expo-auth-session';
+import * as WebBrowser from 'expo-web-browser';
+import { ArrowLeft, Lock, LogIn } from 'lucide-react-native';
+import { useState } from 'react';
+import { Alert, Image, StyleSheet, Text, TouchableOpacity, View, useColorScheme } from 'react-native';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BackgroundWrapper } from '../components/BackgroundWrapper';
+import { GlassButton } from '../components/GlassButton';
 import { GlassCard } from '../components/GlassCard';
 import { GlassInput } from '../components/GlassInput';
-import { GlassButton } from '../components/GlassButton';
-import { COLORS } from '../theme/theme';
-import { LogIn, ArrowLeft, Lock } from 'lucide-react-native';
 import { supabase } from '../lib/supabase';
-import { useSafeAreaInsets, SafeAreaView } from 'react-native-safe-area-context';
+import { COLORS } from '../theme/theme';
+import { Storage } from '../utils/storage';
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -34,73 +34,139 @@ export const LoginScreen = ({ navigation }) => {
     setLoading(true);
     setError(null);
     
-    const { error } = await supabase.auth.signInWithPassword({
-      email: email,
-      password: password,
-    });
-    
-    setLoading(false);
-    
-    if (error) {
-      setError(error.message);
-      return;
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email,
+        password: password,
+      });
+      
+      if (error) {
+        setError(error.message);
+      } else {
+        // 📱 Save user ID for Android Widgets
+        if (data?.session?.user?.id) {
+          await Storage.set('current_user_id', data.session.user.id);
+        }
+        
+        navigation.reset({
+          index: 0,
+          routes: [{ name: 'Dashboard' }],
+        });
+      }
+    } catch (e) {
+      setError(e.message || 'A network error occurred.');
+    } finally {
+      setLoading(false);
     }
-    
-    navigation.reset({
-      index: 0,
-      routes: [{ name: 'Dashboard' }],
-    });
   };
 
   const handleGoogleAuth = async () => {
+    try {
+      // Check if running in dev mode
+      const isDev = __DEV__;
+      
+      if (isDev) {
+        Alert.alert(
+          'Google Sign In - Dev Mode',
+          'Google OAuth works best in production APK builds.\n\nFor development testing, please use:\n• Email: saxenaanupam2004@gmail.com\n• Or create a new account\n\nWant to try Google Sign In anyway?',
+          [
+            { text: 'Use Email Instead', style: 'cancel' },
+            { 
+              text: 'Try Anyway', 
+              onPress: () => proceedWithGoogleAuth()
+            }
+          ]
+        );
+        return;
+      }
+      
+      proceedWithGoogleAuth();
+    } catch (err) {
+      setError(err.message);
+      setLoading(false);
+    }
+  };
+
+  const proceedWithGoogleAuth = async () => {
     try {
       setLoading(true);
       setError(null);
       
       const redirectUrl = makeRedirectUri({
-        scheme: 'lifepilot',
-        path: 'auth/callback',
+        scheme: 'com.anupam.lp', // Use package name for better compatibility
       });
       
-      // Temporary debug alert
-      Alert.alert(
-        "Redirect URL Generated!", 
-        `Please add exactly this URL to your Supabase Redirect URLs list:\n\n${redirectUrl}\n\nMake sure to add a '/**' at the end of it just in case!`,
-        [
-          { 
-            text: "I've added it", 
-            onPress: async () => {
-              try {
-                const { data, error } = await supabase.auth.signInWithOAuth({
-                  provider: 'google',
-                  options: {
-                    redirectTo: redirectUrl,
-                    skipBrowserRedirect: true,
-                  },
-                });
+      console.log('[Google Auth] Redirect URL:', redirectUrl);
+      
+      console.log('[Google Auth] Redirect URL:', redirectUrl);
+      
+      // Use Supabase OAuth with the correct redirect
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: redirectUrl,
+          skipBrowserRedirect: false, // Let Supabase handle the redirect
+        },
+      });
+      if (error) {
+        console.error('[Google Auth] OAuth error:', error);
+        throw error;
+      }
 
-                if (error) throw error;
-
-                if (data?.url) {
-                  const result = await WebBrowser.openAuthSessionAsync(data.url, redirectUrl);
-                  if (result.type === 'success' && result.url) {
-                    navigation.reset({
-                      index: 0,
-                      routes: [{ name: 'Dashboard' }],
-                    });
-                  }
-                }
-              } catch (err) {
-                setError(err.message);
-              } finally {
-                setLoading(false);
-              }
-            } 
+      if (data?.url) {
+        console.log('[Google Auth] Opening auth session...');
+        const result = await WebBrowser.openAuthSessionAsync(data.url, redirectUrl);
+        console.log('[Google Auth] WebBrowser result:', result);
+        
+        if (result.type === 'success' && result.url) {
+          // Parse the redirect URL to extract tokens
+          const url = new URL(result.url);
+          const params = new URLSearchParams(url.hash.substring(1)); // Remove # and parse
+          const accessToken = params.get('access_token');
+          const refreshToken = params.get('refresh_token');
+          
+          console.log('[Google Auth] Tokens received:', { accessToken: !!accessToken, refreshToken: !!refreshToken });
+          
+          if (accessToken) {
+            // Set the session with the tokens
+            const { data: sessionData, error: sessionError } = await supabase.auth.setSession({
+              access_token: accessToken,
+              refresh_token: refreshToken,
+            });
+            
+            if (sessionError) {
+              console.error('[Google Auth] Session error:', sessionError);
+              throw sessionError;
+            }
+            
+            console.log('[Google Auth] Session set successfully:', !!sessionData.session);
+            
+            // 📱 Save user ID for Android Widgets
+            if (sessionData?.session?.user?.id) {
+              await Storage.set('current_user_id', sessionData.session.user.id);
+              console.log('[Google Auth] User ID saved for widgets');
+            }
+            
+            // Navigate to Dashboard
+            navigation.reset({
+              index: 0,
+              routes: [{ name: 'Dashboard' }],
+            });
+          } else {
+            throw new Error('No access token received from Google');
           }
-        ]
-      );
+        } else if (result.type === 'cancel') {
+          console.log('[Google Auth] User cancelled');
+          setError('Sign in cancelled');
+        } else {
+          console.log('[Google Auth] Unexpected result:', result);
+          setError('Sign in failed. Please try again.');
+        }
+      }
     } catch (err) {
-      setError(err.message);
+      console.error('[Google Auth] Error:', err);
+      setError(err.message || 'Failed to sign in with Google');
+    } finally {
       setLoading(false);
     }
   };
