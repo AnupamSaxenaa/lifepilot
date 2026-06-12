@@ -12,7 +12,6 @@ import {
 import { useEffect, useMemo, useState } from 'react';
 import {
     ActivityIndicator,
-    Alert,
     ScrollView,
     StyleSheet,
     Text,
@@ -26,6 +25,7 @@ import { GlassSidebar } from '../components/GlassSidebar';
 import { loadProfile, loadTasks } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
 import { syncToSupabase } from '../lib/syncQueue';
+import { Storage } from '../utils/storage';
 
 const THEME_COLOR = '#FFFFFF';
 

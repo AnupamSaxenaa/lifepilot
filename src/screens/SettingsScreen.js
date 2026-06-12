@@ -79,6 +79,7 @@ export const SettingsScreen = ({ navigation }) => {
       setEmail(session.user.email);
 
       // Load profile: cache first → Supabase background
+      // Force fresh load to ensure avatar_url is current (especially after reinstall)
       const cached = await loadProfile(session.user.id, (fresh) => {
         setProfile(fresh);
         setLoading(false);

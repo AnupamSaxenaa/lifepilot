@@ -43,9 +43,4 @@ example
 /android
 *.apk
 
-.env
-
-# Ignore Markdown artifacts
-*.md
-!README.md
-
+# .env intentionally omitted here so EAS build can use it!

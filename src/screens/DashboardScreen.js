@@ -296,11 +296,13 @@ export const DashboardScreen = ({ navigation }) => {
                     onPress={() => toggleTask(task.id, task.is_completed)}
                     activeOpacity={0.7}
                   >
-                    {task.is_completed ? (
-                      <CheckCircle2 color="#555" size={18} />
-                    ) : (
-                      <Circle color="#fff" size={18} />
-                    )}
+                    <View style={{ marginTop: 3 }}>
+                      {task.is_completed ? (
+                        <CheckCircle2 color="#555" size={18} />
+                      ) : (
+                        <Circle color="#fff" size={18} />
+                      )}
+                    </View>
                     <View style={styles.taskTextWrapper}>
                       <Text style={[styles.taskTitle, task.is_completed && styles.taskTitleCompleted]}>
                         {task.title}
@@ -479,7 +481,7 @@ const styles = StyleSheet.create({
   },
   taskItem: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     marginBottom: 20,
     paddingVertical: 4,
   },
