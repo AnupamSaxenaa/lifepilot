@@ -114,8 +114,13 @@ export const checkForceUpdate = async () => {
     }
 
     // Check if current version is below minimum required
-    const comparison = compareVersions(currentVersion, data.min_version);
-    const updateRequired = comparison < 0 || data.force_update;
+    const minComparison = compareVersions(currentVersion, data.min_version);
+    const latestComparison = compareVersions(currentVersion, data.latest_version);
+    
+    // An update is required if:
+    // 1. We are below min_version
+    // 2. We are below latest_version AND force_update is true
+    const updateRequired = minComparison < 0 || (latestComparison < 0 && data.force_update);
 
     console.log('[VersionChecker] Current:', currentVersion, 'Min:', data.min_version, 'Required:', updateRequired);
 

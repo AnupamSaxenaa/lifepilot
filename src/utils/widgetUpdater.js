@@ -1,5 +1,7 @@
 import { Platform } from 'react-native';
 import { requestWidgetUpdate } from 'react-native-android-widget';
+import { TodayTasksWidget } from '../widgets/TodayTasksWidget';
+import { StatsWidget } from '../widgets/StatsWidget';
 
 /**
  * Update all widgets when tasks/stats change
@@ -19,14 +21,18 @@ export async function updateAllWidgets() {
     console.log('[Widgets] Updating all widgets...');
 
     // Update Today Tasks Widget
+    const todayWidget = await TodayTasksWidget({});
     await requestWidgetUpdate({
       widgetName: 'TodayTasksWidget',
+      renderWidget: () => todayWidget,
       widgetId: 'all', // Update all instances
     });
 
     // Update Stats Widget
+    const statsWidget = await StatsWidget({});
     await requestWidgetUpdate({
       widgetName: 'StatsWidget',
+      renderWidget: () => statsWidget,
       widgetId: 'all',
     });
 
@@ -45,8 +51,10 @@ export async function updateTodayWidget() {
   if (Platform.OS !== 'android') return;
 
   try {
+    const todayWidget = await TodayTasksWidget({});
     await requestWidgetUpdate({
       widgetName: 'TodayTasksWidget',
+      renderWidget: () => todayWidget,
       widgetId: 'all',
     });
   } catch (error) {
@@ -62,8 +70,10 @@ export async function updateStatsWidget() {
   if (Platform.OS !== 'android') return;
 
   try {
+    const statsWidget = await StatsWidget({});
     await requestWidgetUpdate({
       widgetName: 'StatsWidget',
+      renderWidget: () => statsWidget,
       widgetId: 'all',
     });
   } catch (error) {

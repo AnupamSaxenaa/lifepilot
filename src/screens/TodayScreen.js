@@ -1,7 +1,7 @@
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
 import { ArrowUp, Bell, Calendar, Check, CheckCircle2, ChevronDown, ChevronRight, Circle, FileText, GripVertical, ListChecks, Menu, MoreVertical, Plus, Repeat, Star, Trash2, Wand2, X, Zap } from 'lucide-react-native';
-import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BackHandler, Keyboard, KeyboardAvoidingView, Modal, Platform, ScrollView, Share, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { NestableDraggableFlatList, NestableScrollContainer, ScaleDecorator } from 'react-native-draggable-flatlist';
 import Animated, { Easing, FadeIn, FadeOut, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
@@ -398,6 +398,8 @@ export const TodayScreen = ({ navigation }) => {
     setPendingRepeatRule(null);
     setActiveToolbarMenu(null);
     setIsAddingTask(false);
+
+
   };
 
   const toggleTask = async (id, currentStatus) => {
@@ -435,6 +437,8 @@ export const TodayScreen = ({ navigation }) => {
           const task = taskSnapshot.find(t => t.id === id);
           if (task?.reminder_time) cancelTaskReminder(id);
           Gamification.addXP(userId, 10);
+
+
         }
       }, 800);
     } else {
@@ -458,6 +462,8 @@ export const TodayScreen = ({ navigation }) => {
         const task = currentTasks.find(t => t.id === id);
         if (task?.reminder_time) scheduleTaskReminder(id, task.title, task.reminder_time);
         Gamification.addXP(userId, -10);
+
+
       }
     }
   };
@@ -471,6 +477,8 @@ export const TodayScreen = ({ navigation }) => {
     cancelTaskReminder(id);
     const updated = await dmDeleteTask(userId, latestTasksRef.current, id);
     setTasks(updated);
+
+
   };
 
   // ─── Date Picker Handlers ────────────────────────────

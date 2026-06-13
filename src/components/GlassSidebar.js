@@ -1,4 +1,5 @@
 import { BlurView } from 'expo-blur';
+import Constants from 'expo-constants';
 import {
     Calendar,
     Heart,
@@ -576,6 +577,12 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
               <LogOut color="#EF4444" size={24} style={styles.menuIcon} />
               <Text style={[styles.menuText, { color: "#EF4444", fontWeight: '600' }]}>Log Out</Text>
             </TouchableOpacity>
+            
+            <View style={{ alignItems: 'center', marginTop: 16 }}>
+              <Text style={{ fontSize: 11, color: theme.textMuted, opacity: 0.6, fontWeight: '600', letterSpacing: 0.5 }}>
+                JASPER UPDATE V{Constants.expoConfig?.version || Constants.manifest?.version || '1.0.2'}
+              </Text>
+            </View>
           </View>
         </View>
       </Animated.View>

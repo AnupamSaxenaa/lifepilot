@@ -1,10 +1,11 @@
-import { FlexWidget, TextWidget } from 'react-native-android-widget';
+import React from 'react';
+import { FlexWidget, TextWidget, OverlapWidget, ImageWidget, ListWidget } from 'react-native-android-widget';
 import { Storage } from '../utils/storage';
 
 /**
  * Today's Tasks Widget
- * Shows first 5 uncompleted tasks from Today screen
- * Updates every 15 minutes
+ * Shows uncompleted tasks from Today screen
+ * Updates every 15 minutes, supports background completion
  */
 export async function TodayTasksWidget(props) {
   try {
@@ -18,13 +19,18 @@ export async function TodayTasksWidget(props) {
     // Load tasks from AsyncStorage (instant, no network)
     const allTasks = await Storage.get(`tasks_${userId}`) || [];
     
+    // Load lists to resolve list names for tags
+    const allLists = await Storage.get(`lists_${userId}`) || [];
+    const listMap = {};
+    allLists.forEach(l => listMap[l.id] = l.name);
+    
     // Filter today's tasks (same logic as TodayScreen)
     const todayStr = new Date().toDateString();
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
     
     const todayTasks = allTasks.filter(t => {
-      // Skip completed tasks
+      // Skip completed tasks entirely from the widget view
       if (t.is_completed) return false;
       
       // Explicitly added to today
@@ -55,43 +61,46 @@ export async function TodayTasksWidget(props) {
       return indexA - indexB || new Date(b.created_at) - new Date(a.created_at);
     });
 
-    // Show max 5 tasks
-    const displayTasks = todayTasks.slice(0, 5);
-    const hasMore = todayTasks.length > 5;
+    // Support up to 50 tasks using ListWidget
+    const displayTasks = todayTasks.slice(0, 50);
+
+    const { width, height } = props.widgetInfo || {};
 
     return (
       <FlexWidget
         style={{
-          height: 'match_parent',
-          width: 'match_parent',
-          backgroundColor: '#000000',
-          borderRadius: 12,
+          height: height || 'match_parent',
+          width: width || 'match_parent',
+          backgroundColor: 'rgba(0, 0, 0, 0.66)',
+          borderRadius: 16,
           padding: 16,
         }}
         clickAction="OPEN_APP"
         clickActionData={{ screen: 'Today' }}
       >
-        {/* Header - matching LifePilot's "YOUR TASKS" style */}
+        {/* Header */}
         <FlexWidget
           style={{
             flexDirection: 'row',
-            justifyContent: 'space-between',
             alignItems: 'center',
+            width: 'match_parent',
             marginBottom: 16,
             paddingBottom: 12,
             borderBottomWidth: 1,
-            borderBottomColor: '#222222',
+            borderBottomColor: '#444444',
           }}
         >
           <TextWidget
             text="TODAY"
             style={{
               fontSize: 13,
-              color: '#666666',
+              color: '#BBBBBB',
               fontWeight: 'bold',
               letterSpacing: 1.5,
             }}
           />
+          {/* Explicit flex spacer to push the count to the right edge */}
+          <FlexWidget style={{ flex: 1 }} />
           <TextWidget
             text={`${todayTasks.length}`}
             style={{
@@ -102,130 +111,152 @@ export async function TodayTasksWidget(props) {
           />
         </FlexWidget>
 
-        {/* Task List or Empty State */}
-        {displayTasks.length === 0 ? (
-          <FlexWidget
-            style={{
-              flex: 1,
-              justifyContent: 'center',
-              alignItems: 'center',
-            }}
-          >
-            <TextWidget
-              text="All caught up"
+          {/* Task List or Empty State */}
+          {displayTasks.length === 0 ? (
+            <FlexWidget
               style={{
-                fontSize: 18,
-                color: '#FFFFFF',
-                fontWeight: '600',
-                marginBottom: 8,
+                flex: 1,
+                justifyContent: 'center',
+                alignItems: 'center',
               }}
-            />
-            <TextWidget
-              text="No tasks for today"
-              style={{
-                fontSize: 14,
-                color: '#555555',
-                fontStyle: 'italic',
-              }}
-            />
-          </FlexWidget>
-        ) : (
-          <FlexWidget style={{ flex: 1 }}>
-            {displayTasks.map((task, index) => {
-              const isOverdue = task.due_date && new Date(task.due_date) < todayStart;
-              
-              return (
-                <FlexWidget
-                  key={task.id}
-                  clickAction="OPEN_APP"
-                  clickActionData={{ screen: 'TaskDetail', taskId: task.id }}
-                  style={{
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    marginBottom: index < displayTasks.length - 1 ? 16 : 0,
-                    paddingVertical: 4,
-                  }}
-                >
-                  {/* Checkbox - minimal circle like Dashboard */}
-                  <TextWidget
-                    text="○"
+            >
+              <TextWidget
+                text="All caught up"
+                style={{
+                  fontSize: 18,
+                  color: '#FFFFFF',
+                  fontWeight: '600',
+                  marginBottom: 8,
+                }}
+              />
+              <TextWidget
+                text="No tasks for today"
+                style={{
+                  fontSize: 14,
+                  color: '#999999',
+                  fontStyle: 'italic',
+                }}
+              />
+            </FlexWidget>
+          ) : (
+            <ListWidget style={{ flex: 1 }}>
+              {displayTasks.map((task, index) => {
+                const isOverdue = task.due_date && new Date(task.due_date) < todayStart;
+                
+                const tags = [];
+                if (!isOverdue && task.due_date) tags.push(new Date(task.due_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+                if (task.reminder_time) tags.push(new Date(task.reminder_time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }));
+                if (task.repeat_rule) tags.push(task.repeat_rule);
+                if (task.subtasks && task.subtasks.length > 0) {
+                  const comp = task.subtasks.filter(s => s.is_completed).length;
+                  tags.push(`${comp}/${task.subtasks.length} steps`);
+                }
+                if (task.list_id && listMap[task.list_id]) {
+                  tags.push(listMap[task.list_id]);
+                }
+                const tagsString = tags.join(' • ');
+
+                return (
+                  <FlexWidget
+                    key={task.id}
                     style={{
-                      fontSize: 18,
-                      color: '#FFFFFF',
-                      marginRight: 16,
-                      width: 18,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      marginBottom: index < displayTasks.length - 1 ? 16 : 0,
+                      paddingVertical: 4,
                     }}
-                  />
-                  
-                  {/* Task Title - clean typography */}
-                  <FlexWidget style={{ flex: 1 }}>
-                    <TextWidget
-                      text={task.title}
+                  >
+                    {/* Checkbox - now clickable in the background! */}
+                    <FlexWidget
+                      clickAction="CUSTOM_ACTION"
+                      clickActionData={{ action: 'TOGGLE_TASK', taskId: task.id, currentStatus: task.is_completed ? 'true' : 'false' }}
                       style={{
-                        fontSize: 16,
-                        color: '#FFFFFF',
-                        fontWeight: '400',
-                        lineHeight: 22,
+                        paddingRight: 16,
+                        justifyContent: 'center',
+                        alignItems: 'center',
                       }}
-                      maxLines={2}
-                    />
-                    
-                    {/* Overdue indicator below title if needed */}
-                    {isOverdue && (
+                    >
                       <TextWidget
-                        text="OVERDUE"
+                        text="○"
                         style={{
-                          fontSize: 10,
-                          color: '#EF4444',
-                          fontWeight: '700',
-                          letterSpacing: 0.5,
-                          marginTop: 4,
+                          fontSize: 20,
+                          color: '#FFFFFF',
+                        }}
+                      />
+                    </FlexWidget>
+                    
+                    {/* Task Title - opens the app to TaskDetail */}
+                    <FlexWidget 
+                      style={{ flex: 1 }}
+                      clickAction="OPEN_APP"
+                      clickActionData={{ screen: 'TaskDetail', taskId: task.id }}
+                    >
+                      <TextWidget
+                        text={task.title}
+                        style={{
+                          fontSize: 16,
+                          color: '#FFFFFF',
+                          fontWeight: '400',
+                          lineHeight: 22,
+                        }}
+                        maxLines={2}
+                      />
+                      
+                      {/* Overdue indicator */}
+                      {isOverdue && (
+                        <TextWidget
+                          text="OVERDUE"
+                          style={{
+                            fontSize: 10,
+                            color: '#EF4444',
+                            fontWeight: '700',
+                            letterSpacing: 0.5,
+                            marginTop: 4,
+                          }}
+                        />
+                      )}
+                      
+                      {/* Meta Tags */}
+                      {tagsString.length > 0 && (
+                        <TextWidget
+                           text={tagsString}
+                           style={{
+                             fontSize: 11,
+                             color: '#A1A1AA',
+                             marginTop: isOverdue ? 2 : 4,
+                           }}
+                           maxLines={1}
+                         />
+                      )}
+                    </FlexWidget>
+                    
+                    {/* Star for important tasks */}
+                    {task.is_important && (
+                      <TextWidget
+                        text="⭐"
+                        style={{
+                          fontSize: 14,
+                          marginLeft: 8,
                         }}
                       />
                     )}
                   </FlexWidget>
-                  
-                  {/* Star for important tasks */}
-                  {task.is_important && (
-                    <TextWidget
-                      text="⭐"
-                      style={{
-                        fontSize: 14,
-                        marginLeft: 8,
-                      }}
-                    />
-                  )}
-                </FlexWidget>
-              );
-            })}
-            
-            {/* "X more" text at bottom */}
-            {hasMore && (
-              <TextWidget
-                text={`+ ${todayTasks.length - 5} more`}
-                style={{
-                  fontSize: 11,
-                  color: '#555555',
-                  textAlign: 'center',
-                  marginTop: 12,
-                  fontStyle: 'italic',
-                }}
-              />
-            )}
-          </FlexWidget>
-        )}
+                );
+              })}
+            </ListWidget>
+          )}
 
-        {/* Footer - minimal timestamp */}
-        <TextWidget
-          text={new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
-          style={{
-            fontSize: 10,
-            color: '#333333',
-            textAlign: 'right',
-            marginTop: 12,
-          }}
-        />
-      </FlexWidget>
+          {/* Footer - minimal timestamp */}
+          <TextWidget
+            text={new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+            style={{
+              fontSize: 10,
+              color: '#999999',
+              textAlign: 'right',
+              marginTop: 12,
+            }}
+          />
+        </FlexWidget>
     );
   } catch (error) {
     console.error('Widget error:', error);
@@ -240,7 +271,7 @@ function EmptyStateWidget({ message }) {
       style={{
         height: 'match_parent',
         width: 'match_parent',
-        backgroundColor: '#000000',
+        backgroundColor: 'rgba(0, 0, 0, 0.66)',
         borderRadius: 16,
         padding: 16,
         justifyContent: 'center',
@@ -248,23 +279,23 @@ function EmptyStateWidget({ message }) {
       }}
       clickAction="OPEN_APP"
     >
-      <TextWidget
-        text="LifePilot"
-        style={{
-          fontSize: 16,
-          color: '#FFFFFF',
-          fontWeight: 'bold',
-          marginBottom: 8,
-        }}
-      />
-      <TextWidget
-        text={message}
-        style={{
-          fontSize: 13,
-          color: '#888888',
-          textAlign: 'center',
-        }}
-      />
-    </FlexWidget>
+        <TextWidget
+          text="LifePilot"
+          style={{
+            fontSize: 16,
+            color: '#FFFFFF',
+            fontWeight: 'bold',
+            marginBottom: 8,
+          }}
+        />
+        <TextWidget
+          text={message}
+          style={{
+            fontSize: 13,
+            color: '#DDDDDD',
+            textAlign: 'center',
+          }}
+        />
+      </FlexWidget>
   );
 }

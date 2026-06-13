@@ -1,6 +1,6 @@
-import { CheckCircle, Download, RefreshCw } from 'lucide-react-native';
+import { CheckCircle, Download, RefreshCw, X } from 'lucide-react-native';
 import { useEffect, useState } from 'react';
-import { Animated, Dimensions, StyleSheet, Text, View } from 'react-native';
+import { Animated, Dimensions, StyleSheet, Text, View, TouchableOpacity } from 'react-native';
 
 const { width } = Dimensions.get('window');
 
@@ -12,10 +12,16 @@ export const UpdateProgress = ({ status, progress = 0 }) => {
   const [slideAnim] = useState(new Animated.Value(100)); // Start off-screen
   const [spinAnim] = useState(new Animated.Value(0));
   const [progressWidth] = useState(new Animated.Value(0));
+  const [localStatus, setLocalStatus] = useState(status);
+
+  // Sync local status with prop
+  useEffect(() => {
+    setLocalStatus(status);
+  }, [status]);
 
   // Slide in/out animation
   useEffect(() => {
-    if (status === 'checking' || status === 'downloading' || status === 'reloading') {
+    if (localStatus === 'checking' || localStatus === 'downloading' || localStatus === 'reloading' || localStatus === 'success_toast') {
       // Slide in
       Animated.spring(slideAnim, {
         toValue: 0,
@@ -31,11 +37,11 @@ export const UpdateProgress = ({ status, progress = 0 }) => {
         useNativeDriver: true,
       }).start();
     }
-  }, [status]);
+  }, [localStatus]);
 
   // Spin animation for checking/downloading
   useEffect(() => {
-    if (status === 'checking' || status === 'downloading') {
+    if (localStatus === 'checking' || localStatus === 'downloading') {
       const animation = Animated.loop(
         Animated.timing(spinAnim, {
           toValue: 1,
@@ -46,7 +52,7 @@ export const UpdateProgress = ({ status, progress = 0 }) => {
       animation.start();
       return () => animation.stop();
     }
-  }, [status]);
+  }, [localStatus]);
 
   // Progress bar animation
   useEffect(() => {
@@ -68,13 +74,15 @@ export const UpdateProgress = ({ status, progress = 0 }) => {
   });
 
   const getStatusText = () => {
-    switch (status) {
+    switch (localStatus) {
       case 'checking':
         return 'Checking for updates...';
       case 'downloading':
         return `Downloading update... ${Math.round(progress * 100)}%`;
       case 'reloading':
         return 'Update complete! Reloading...';
+      case 'success_toast':
+        return 'New patches downloaded successfully';
       case 'complete':
         return 'Up to date';
       default:
@@ -83,7 +91,7 @@ export const UpdateProgress = ({ status, progress = 0 }) => {
   };
 
   const getIcon = () => {
-    switch (status) {
+    switch (localStatus) {
       case 'checking':
         return (
           <Animated.View style={{ transform: [{ rotate: spin }] }}>
@@ -97,6 +105,7 @@ export const UpdateProgress = ({ status, progress = 0 }) => {
           </Animated.View>
         );
       case 'reloading':
+      case 'success_toast':
       case 'complete':
         return <CheckCircle color="#10B981" size={20} />;
       default:
@@ -104,7 +113,7 @@ export const UpdateProgress = ({ status, progress = 0 }) => {
     }
   };
 
-  if (!status || status === 'no_update' || status === 'error') {
+  if (!localStatus || localStatus === 'no_update' || localStatus === 'error') {
     return null;
   }
 
@@ -121,7 +130,7 @@ export const UpdateProgress = ({ status, progress = 0 }) => {
         <View style={styles.iconContainer}>{getIcon()}</View>
         <View style={styles.textContainer}>
           <Text style={styles.statusText}>{getStatusText()}</Text>
-          {status === 'downloading' && (
+          {localStatus === 'downloading' && (
             <View style={styles.progressBar}>
               <Animated.View
                 style={[
@@ -132,6 +141,16 @@ export const UpdateProgress = ({ status, progress = 0 }) => {
             </View>
           )}
         </View>
+        
+        {/* Dismiss Button for Success Toast */}
+        {localStatus === 'success_toast' && (
+          <TouchableOpacity 
+            style={styles.closeButton} 
+            onPress={() => setLocalStatus(null)}
+          >
+            <X color="#999" size={20} />
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* Glow effect */}
@@ -159,6 +178,10 @@ const styles = StyleSheet.create({
     elevation: 10,
     borderTopWidth: 1,
     borderTopColor: 'rgba(167, 139, 250, 0.2)',
+  },
+  closeButton: {
+    padding: 8,
+    marginLeft: 8,
   },
   glowTop: {
     position: 'absolute',

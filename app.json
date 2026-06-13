@@ -2,7 +2,7 @@
   "expo": {
     "name": "LifePilot Beta",
     "slug": "lifepilot",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": [
@@ -22,7 +22,7 @@
     },
     "android": {
       "package": "com.anupam.lp",
-      "versionCode": 3,
+      "versionCode": 5,
       "permissions": [
         "RECORD_AUDIO",
         "android.permission.READ_CALENDAR",
@@ -32,7 +32,8 @@
         "android.permission.SYSTEM_ALERT_WINDOW",
         "android.permission.USE_FULL_SCREEN_INTENT",
         "android.permission.VIBRATE",
-        "android.permission.WAKE_LOCK"
+        "android.permission.WAKE_LOCK",
+        "android.permission.REQUEST_INSTALL_PACKAGES"
       ],
       "adaptiveIcon": {
         "backgroundColor": "#000000",
@@ -79,8 +80,25 @@
       ],
       "./plugins/withFullScreenAlarm",
       "./plugins/withNotifeeRepo",
+      "./plugins/withWidgetExported",
       "expo-speech-recognition",
-      "expo-image"
+      "expo-image",
+      [
+        "react-native-android-widget",
+        {
+          "widgets": [
+            {
+              "name": "TodayTasksWidget",
+              "label": "Today Tasks",
+              "minWidth": "110dp",
+              "minHeight": "110dp",
+              "resizeMode": "horizontal|vertical",
+              "description": "View today's tasks from LifePilot",
+              "updatePeriodMillis": 3600000
+            }
+          ]
+        }
+      ]
     ],
     "jsEngine": "hermes",
     "experiments": {

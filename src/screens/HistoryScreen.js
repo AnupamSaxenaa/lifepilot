@@ -22,7 +22,7 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { GlassSidebar } from '../components/GlassSidebar';
-import { loadProfile, loadTasks } from '../lib/dataManager';
+import { cacheTasks, loadProfile, loadTasks } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
 import { syncToSupabase } from '../lib/syncQueue';
 import { Storage } from '../utils/storage';
@@ -72,8 +72,7 @@ export const HistoryScreen = ({ navigation }) => {
         : t
     );
     
-    await Storage.set(`tasks_${userId}`, updated);
-    await Storage.set('last_local_write_time', Date.now().toString());
+    await cacheTasks(userId, updated);
     
     syncToSupabase('tasks', 'update',
       { is_completed: false, completed_at: null },

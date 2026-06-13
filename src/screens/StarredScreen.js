@@ -7,7 +7,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { BackgroundWrapper } from '../components/BackgroundWrapper';
 import { GlassSidebar } from '../components/GlassSidebar';
 import { ScribbleStrike } from '../components/ScribbleStrike';
-import { loadProfile, loadTasks, reorderTasks, toggleTaskImportance } from '../lib/dataManager';
+import { cacheTasks, loadProfile, loadTasks, reorderTasks, toggleTaskImportance } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
 import { syncToSupabase } from '../lib/syncQueue';
 import { COLORS } from '../theme/theme';
@@ -110,8 +110,7 @@ export const StarredScreen = ({ navigation }) => {
             t.id === taskId ? { ...t, is_completed: true, completed_at: completedAt } : t
           );
           
-          await Storage.set(`tasks_${userId}`, updatedAll);
-          await Storage.set('last_local_write_time', Date.now().toString());
+          await cacheTasks(userId, updatedAll);
           
           syncToSupabase('tasks', 'update',
             { is_completed: true, completed_at: completedAt },
@@ -135,8 +134,7 @@ export const StarredScreen = ({ navigation }) => {
           t.id === taskId ? { ...t, is_completed: false, completed_at: null } : t
         );
         
-        await Storage.set(`tasks_${userId}`, updatedAll);
-        await Storage.set('last_local_write_time', Date.now().toString());
+        await cacheTasks(userId, updatedAll);
         
         syncToSupabase('tasks', 'update',
           { is_completed: false, completed_at: null },
@@ -168,7 +166,7 @@ export const StarredScreen = ({ navigation }) => {
       const allTasks = await Storage.get(`tasks_${userId}`);
       if (allTasks) {
         const fullTasks = allTasks.filter(t => t.id !== taskId);
-        await Storage.set(`tasks_${userId}`, fullTasks);
+        await cacheTasks(userId, fullTasks);
       }
     }
   };

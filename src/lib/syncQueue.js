@@ -66,13 +66,19 @@ export const getQueueLength = async () => {
  * @returns {object|null} - Supabase response data on success, null on queued
  */
 export const syncToSupabase = async (table, operation, data = {}, filter = null) => {
+  // 1. Synchronously save to queue FIRST to protect against app kills during network request
+  const queueId = await enqueue(table, operation, data, filter);
+
   try {
+    // 2. Try to execute
     const result = await executeOperation(table, operation, data, filter);
+    
+    // 3. If successful, remove from queue
+    await dequeue(queueId);
     return result;
   } catch (error) {
-    // Network error or Supabase down → queue for retry
-    console.log(`[SyncQueue] Queuing ${operation} on ${table}:`, error.message || error);
-    await enqueue(table, operation, data, filter);
+    // Network error or Supabase down → leave in queue for retry
+    console.log(`[SyncQueue] Left ${operation} on ${table} in queue due to error:`, error.message || error);
     return null;
   }
 };
@@ -147,8 +153,9 @@ export const clearSyncQueue = async () => {
 
 const enqueue = async (table, operation, data, filter) => {
   const queue = await loadQueue();
+  const id = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   queue.push({
-    id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    id,
     table,
     operation,
     data,
@@ -157,6 +164,13 @@ const enqueue = async (table, operation, data, filter) => {
     retryCount: 0,
   });
   await saveQueue(queue);
+  return id;
+};
+
+const dequeue = async (id) => {
+  const queue = await loadQueue();
+  const filtered = queue.filter(entry => entry.id !== id);
+  await saveQueue(filtered);
 };
 
 const executeOperation = async (table, operation, data, filter) => {
