@@ -4,14 +4,13 @@ import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Animated, BackHandler, ScrollView, StyleSheet, Text, TouchableOpacity, useColorScheme, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { AIAuraOverlay } from '../components/AIAuraOverlay';
-import { PermissionsOnboarding } from '../components/PermissionsOnboarding';
 import { AlarmOverlay } from '../components/AlarmOverlay';
 import { BackgroundWrapper } from '../components/BackgroundWrapper';
-import { DailyPromiseOverlay } from '../components/DailyPromiseOverlay';
 import { GlassSidebar } from '../components/GlassSidebar';
 import { LifetimeProgressRing } from '../components/LifetimeProgressRing';
 import { LifetimeStatsModal } from '../components/LifetimeStatsModal';
-import { loadProfile, loadTasks, performInitialSync } from '../lib/dataManager';
+import { PermissionsOnboarding } from '../components/PermissionsOnboarding';
+import { cacheTasks, loadProfile, loadTasks, performInitialSync } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
 import { syncToSupabase } from '../lib/syncQueue';
 import { COLORS } from '../theme/theme';
@@ -203,8 +202,7 @@ export const DashboardScreen = ({ navigation }) => {
         : t
     );
     
-    await Storage.set(`tasks_${profile.id}`, updatedAll);
-    await Storage.set('last_local_write_time', Date.now().toString());
+    await cacheTasks(profile.id, updatedAll);
     
     syncToSupabase('tasks', 'update',
       { is_completed: newStatus, completed_at: completedAt },
@@ -215,6 +213,8 @@ export const DashboardScreen = ({ navigation }) => {
 
     // Gamification XP
     await Gamification.addXP(profile.id, newStatus ? 10 : -10);
+
+
   };
 
   const handleLogout = async () => {
@@ -372,9 +372,6 @@ export const DashboardScreen = ({ navigation }) => {
         navigation={navigation}
         currentRoute="Dashboard"
       />
-      
-      {/* The Daily Promise Popup */}
-      <DailyPromiseOverlay userId={profile?.id} />
 
       {/* The Detailed Lifetime Matrix */}
       <LifetimeStatsModal 

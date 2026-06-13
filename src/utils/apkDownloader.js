@@ -1,4 +1,4 @@
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as IntentLauncher from 'expo-intent-launcher';
 import { Platform } from 'react-native';
 
@@ -74,20 +74,33 @@ export const installAPK = async (fileUri) => {
   try {
     console.log('[APK] Triggering install for:', fileUri);
 
+    // Verify file exists
+    const fileInfo = await FileSystem.getInfoAsync(fileUri);
+    console.log('[APK] File info:', JSON.stringify(fileInfo, null, 2));
+    
+    if (!fileInfo.exists) {
+      throw new Error('APK file not found at path: ' + fileUri);
+    }
+
+    if (fileInfo.size < 1000000) { // Less than 1MB is suspicious
+      console.warn('[APK] File size seems too small:', fileInfo.size);
+    }
+
     // Convert file:// URI to content:// URI for Android 11+
     const contentUri = await FileSystem.getContentUriAsync(fileUri);
     console.log('[APK] Content URI:', contentUri);
 
-    // Open install prompt
+    // Open install prompt with proper flags
     await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
       data: contentUri,
       flags: 1, // FLAG_GRANT_READ_URI_PERMISSION
       type: 'application/vnd.android.package-archive',
     });
 
-    console.log('[APK] Install prompt opened');
+    console.log('[APK] Install prompt opened successfully');
   } catch (error) {
     console.error('[APK] Install error:', error);
+    console.error('[APK] Error details:', JSON.stringify(error, null, 2));
     throw error;
   }
 };

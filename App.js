@@ -1,14 +1,15 @@
+import NetInfo from '@react-native-community/netinfo';
 import { DarkTheme, NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import NetInfo from '@react-native-community/netinfo';
 
 import { PlaywriteGBJ_400Regular, useFonts } from '@expo-google-fonts/playwrite-gb-j';
 import notifee, { EventType } from '@notifee/react-native';
 import { AppRegistry, Platform } from 'react-native';
+import { DailyPromiseOverlay } from './src/components/DailyPromiseOverlay';
 import { ErrorBoundary } from './src/components/ErrorBoundary';
 import { ForceUpdateBlocker } from './src/components/ForceUpdateBlocker';
 import { UpdateProgress } from './src/components/UpdateProgress';
@@ -56,8 +57,15 @@ notifee.onBackgroundEvent(async ({ type, detail }) => {
 
 const Stack = createNativeStackNavigator();
 
+// 📱 Register Android Widgets at the top level for Headless JS background tasks
+if (Platform.OS === 'android') {
+  console.log('[App] Registering Android widgets...');
+  registerAllWidgets();
+}
+
 export default function App() {
   const [initialRoute, setInitialRoute] = useState(null);
+  const [userId, setUserId] = useState(null);
   const [fontsLoaded, fontError] = useFonts({
     PlaywriteGBJ_400Regular,
   });
@@ -70,14 +78,6 @@ export default function App() {
   const [forceUpdateRequired, setForceUpdateRequired] = useState(false);
   const [forceUpdateInfo, setForceUpdateInfo] = useState(null);
   const [checkingForceUpdate, setCheckingForceUpdate] = useState(true);
-
-  // 📱 Register Android Widgets on app startup
-  useEffect(() => {
-    if (Platform.OS === 'android') {
-      console.log('[App] Registering Android widgets...');
-      registerAllWidgets();
-    }
-  }, []);
 
   // 🌐 Network Monitoring — Auto-sync when coming online
   useEffect(() => {
@@ -101,6 +101,7 @@ export default function App() {
       if (session) {
         // Drain any offline mutations from previous session
         drainSyncQueue().catch(() => {});
+        setUserId(session.user.id); // ← Store userId for DailyPromiseOverlay
         setInitialRoute('Dashboard');
       } else {
         setInitialRoute('Onboarding');
@@ -127,6 +128,19 @@ export default function App() {
     };
 
     checkVersion();
+  }, []);
+
+  // Check for success toast after reload
+  useEffect(() => {
+    const checkSuccessToast = async () => {
+      const { Storage } = require('./src/utils/storage');
+      const showToast = await Storage.get('showUpdateSuccessToast');
+      if (showToast === 'true') {
+        setUpdateStatus('success_toast');
+        await Storage.remove('showUpdateSuccessToast');
+      }
+    };
+    checkSuccessToast();
   }, []);
 
   // Check for OTA updates on app launch (only if no force update required)
@@ -204,6 +218,9 @@ export default function App() {
               />
             </Stack.Navigator>
           </NavigationContainer>
+
+          {/* Daily Promise Popup - Shows once per day on app launch */}
+          {userId && <DailyPromiseOverlay userId={userId} />}
 
           {/* OTA Update Progress UI - Shows at bottom when updating */}
           <UpdateProgress status={updateStatus} progress={updateProgress} />

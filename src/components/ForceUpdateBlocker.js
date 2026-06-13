@@ -1,288 +1,218 @@
-import { BlurView } from 'expo-blur';
-import { AlertCircle, Download } from 'lucide-react-native';
+import { Download } from 'lucide-react-native';
 import React, { useState } from 'react';
-import { Alert, Animated, Dimensions, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Animated, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { downloadAndInstallAPK } from '../utils/apkDownloader';
 
-const { width, height } = Dimensions.get('window');
-
-/**
- * Force Update Blocker
- * Full-screen overlay that blocks app usage when APK update is required
- * Shows version info, download button with progress, and auto-triggers install
- */
 export const ForceUpdateBlocker = ({ updateInfo, visible }) => {
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
+
   const [fadeAnim] = useState(new Animated.Value(0));
-  const [pulseAnim] = useState(new Animated.Value(1));
 
   React.useEffect(() => {
     if (visible) {
-      // Fade in
       Animated.timing(fadeAnim, {
         toValue: 1,
-        duration: 300,
+        duration: 400,
         useNativeDriver: true,
       }).start();
-
-      // Pulse animation for alert icon
-      Animated.loop(
-        Animated.sequence([
-          Animated.timing(pulseAnim, {
-            toValue: 1.2,
-            duration: 1000,
-            useNativeDriver: true,
-          }),
-          Animated.timing(pulseAnim, {
-            toValue: 1,
-            duration: 1000,
-            useNativeDriver: true,
-          }),
-        ])
-      ).start();
     }
   }, [visible]);
 
   const handleDownload = async () => {
-    if (!updateInfo?.downloadUrl) {
+    // The database column is download_url, but sometimes it's mapped to downloadUrl
+    const url = updateInfo?.downloadUrl || updateInfo?.download_url;
+    
+    console.log('[ForceUpdate] Download button clicked');
+    console.log('[ForceUpdate] Update info:', JSON.stringify(updateInfo, null, 2));
+    console.log('[ForceUpdate] Download URL:', url);
+    
+    if (!url) {
+      console.error('[ForceUpdate] No download URL available!');
       Alert.alert('Error', 'Download URL not available. Please contact support.');
       return;
     }
 
     try {
+      console.log('[ForceUpdate] Starting download...');
       setDownloading(true);
       setDownloadProgress(0);
 
-      await downloadAndInstallAPK(
-        updateInfo.downloadUrl,
-        (progress) => {
-          setDownloadProgress(progress);
-        }
-      );
-
-      // Install prompt opened - user will install manually
-      // After install, app will restart with new version
+      await downloadAndInstallAPK(url, (progress) => {
+        console.log('[ForceUpdate] Progress:', Math.round(progress * 100) + '%');
+        setDownloadProgress(progress);
+      });
+      
+      console.log('[ForceUpdate] Download completed, installer should open');
     } catch (error) {
+      console.error('[ForceUpdate] Download failed:', error);
       setDownloading(false);
       Alert.alert(
-        'Download Failed',
-        error.message || 'Failed to download update. Please check your internet connection and try again.',
-        [{ text: 'Retry', onPress: handleDownload }]
+        'Download Failed', 
+        error.message || 'Failed to download update. Please check your internet connection and try again.'
       );
     }
   };
 
-  if (!visible || !updateInfo) {
-    return null;
-  }
+  if (!visible || !updateInfo) return null;
+
+  const currentVer = updateInfo.currentVersion || updateInfo.current_version;
+  const latestVer = updateInfo.latestVersion || updateInfo.latest_version;
 
   return (
-    <Animated.View style={[styles.container, { opacity: fadeAnim }]}>
-      {/* Background blur overlay */}
-      <BlurView intensity={100} style={styles.backdrop} tint="dark">
-        <View style={styles.darkOverlay} />
-      </BlurView>
-
-      {/* Content */}
-      <View style={styles.content}>
-        {/* Alert Icon */}
-        <Animated.View style={[styles.iconContainer, { transform: [{ scale: pulseAnim }] }]}>
-          <AlertCircle color="#EF4444" size={64} strokeWidth={2} />
-        </Animated.View>
-
-        {/* Title */}
-        <Text style={styles.title}>Update Required</Text>
-        
-        {/* Description */}
-        <Text style={styles.description}>
-          A new version of LifePilot is available. Please update to continue using the app.
-        </Text>
-
-        {/* Version Info */}
-        <View style={styles.versionBox}>
-          <Text style={styles.versionLabel}>Version Information</Text>
-          <Text style={styles.versionText}>
-            Current: v{updateInfo.currentVersion}
-          </Text>
-          <Text style={styles.versionText}>
-            Latest: v{updateInfo.latestVersion}
-          </Text>
-        </View>
-
-        {/* Release Notes (if available) */}
-        {updateInfo.releaseNotes && (
-          <View style={styles.notesBox}>
-            <Text style={styles.notesLabel}>What's New</Text>
-            <Text style={styles.notesText}>{updateInfo.releaseNotes}</Text>
-          </View>
-        )}
-
-        {/* Download Button / Progress */}
-        {!downloading ? (
-          <TouchableOpacity
-            style={styles.downloadButton}
-            onPress={handleDownload}
-            activeOpacity={0.8}
-          >
-            <Download color="#FFF" size={24} />
-            <Text style={styles.downloadButtonText}>Download Update</Text>
-          </TouchableOpacity>
-        ) : (
-          <View style={styles.progressContainer}>
-            <View style={styles.progressHeader}>
-              <Text style={styles.progressLabel}>Downloading...</Text>
-              <Text style={styles.progressPercent}>{Math.round(downloadProgress * 100)}%</Text>
+    <Modal 
+      visible={visible} 
+      animationType="none" 
+      transparent={false}
+      statusBarTranslucent
+      hardwareAccelerated
+    >
+      <Animated.View style={[styles.container, { opacity: fadeAnim }]}>
+        <View style={styles.content}>
+          {/* Minimal Header */}
+          <View style={styles.header}>
+            <Text style={styles.updateLabel}>UPDATE REQUIRED</Text>
+            <View style={styles.versionRow}>
+              <Text style={styles.versionSmall}>{currentVer}</Text>
+              <Text style={styles.arrow}>→</Text>
+              <Text style={styles.versionHighlight}>{latestVer}</Text>
             </View>
-            
-            {/* Progress Bar */}
-            <View style={styles.progressBarContainer}>
+          </View>
+
+          {/* Divider */}
+          <View style={styles.divider} />
+
+          {/* Message */}
+          <Text style={styles.message}>
+            A new version is required to continue.{'\n'}
+            Please update now.
+          </Text>
+
+          {/* Download Button or Progress */}
+          {!downloading ? (
+            <TouchableOpacity style={styles.downloadButton} onPress={handleDownload} activeOpacity={0.7}>
+              <Download color="#000" size={20} strokeWidth={2.5} />
+              <Text style={styles.downloadButtonText}>Download Update</Text>
+            </TouchableOpacity>
+          ) : (
+            <View style={styles.progressContainer}>
+              <View style={styles.progressHeader}>
+                <Text style={styles.progressLabel}>Downloading</Text>
+                <Text style={styles.progressPercent}>{Math.round(downloadProgress * 100)}%</Text>
+              </View>
               <View style={styles.progressBarBackground}>
-                <Animated.View
+                <Animated.View 
                   style={[
-                    styles.progressBarFill,
-                    {
-                      width: `${downloadProgress * 100}%`,
-                    },
-                  ]}
+                    styles.progressBarFill, 
+                    { width: `${downloadProgress * 100}%` }
+                  ]} 
                 />
               </View>
+              {downloadProgress === 1 && (
+                <Text style={styles.installHint}>Opening installer...</Text>
+              )}
             </View>
+          )}
 
-            {downloadProgress === 1 && (
-              <Text style={styles.installHint}>
-                Opening installer... Please allow installation from unknown sources if prompted.
-              </Text>
-            )}
-          </View>
-        )}
-
-        {/* Help Text */}
-        <Text style={styles.helpText}>
-          This update contains critical improvements and is required to continue.
-        </Text>
-      </View>
-    </Animated.View>
+          {/* Footer Note */}
+          <Text style={styles.footerNote}>
+            This update contains critical improvements
+          </Text>
+        </View>
+      </Animated.View>
+    </Modal>
   );
 };
 
 const styles = StyleSheet.create({
   container: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    zIndex: 9999,
-  },
-  backdrop: {
-    ...StyleSheet.absoluteFillObject,
-  },
-  darkOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+    flex: 1,
+    backgroundColor: '#000000',
   },
   content: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 32,
+    paddingHorizontal: 24,
   },
-  iconContainer: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    backgroundColor: 'rgba(239, 68, 68, 0.1)',
-    justifyContent: 'center',
+  
+  // Header Section
+  header: {
     alignItems: 'center',
-    marginBottom: 32,
-    borderWidth: 2,
-    borderColor: 'rgba(239, 68, 68, 0.3)',
+    marginBottom: 40,
   },
-  title: {
-    fontSize: 32,
+  updateLabel: {
+    fontSize: 11,
     fontWeight: '700',
-    color: '#FFF',
-    marginBottom: 16,
-    textAlign: 'center',
+    color: '#555',
+    letterSpacing: 2,
+    marginBottom: 24,
   },
-  description: {
+  versionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+  },
+  versionSmall: {
     fontSize: 16,
-    color: '#A1A1AA',
-    textAlign: 'center',
-    lineHeight: 24,
-    marginBottom: 32,
-  },
-  versionBox: {
-    backgroundColor: '#18181B',
-    borderRadius: 16,
-    padding: 20,
-    width: '100%',
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: '#27272A',
-  },
-  versionLabel: {
-    fontSize: 12,
-    color: '#71717A',
+    color: '#555',
     fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    marginBottom: 12,
-  },
-  versionText: {
-    fontSize: 16,
-    color: '#FFF',
-    marginBottom: 6,
     fontFamily: 'monospace',
   },
-  notesBox: {
-    backgroundColor: 'rgba(167, 139, 250, 0.1)',
-    borderRadius: 16,
-    padding: 20,
-    width: '100%',
-    marginBottom: 24,
-    borderWidth: 1,
-    borderColor: 'rgba(167, 139, 250, 0.3)',
+  arrow: {
+    fontSize: 20,
+    color: '#FFF',
+    fontWeight: '300',
   },
-  notesLabel: {
-    fontSize: 12,
-    color: '#A78BFA',
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    marginBottom: 8,
+  versionHighlight: {
+    fontSize: 24,
+    color: '#FFF',
+    fontWeight: '700',
+    fontFamily: 'monospace',
   },
-  notesText: {
-    fontSize: 14,
-    color: '#E4E4E7',
-    lineHeight: 20,
+  
+  // Divider
+  divider: {
+    width: 60,
+    height: 1,
+    backgroundColor: '#222',
+    marginBottom: 40,
   },
+  
+  // Message
+  message: {
+    fontSize: 15,
+    color: '#888',
+    textAlign: 'center',
+    lineHeight: 22,
+    marginBottom: 48,
+    maxWidth: 280,
+  },
+  
+  // Download Button
   downloadButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#A78BFA',
-    paddingVertical: 18,
+    backgroundColor: '#FFF',
+    paddingVertical: 16,
     paddingHorizontal: 32,
-    borderRadius: 16,
+    borderRadius: 12,
     width: '100%',
-    marginTop: 16,
-    shadowColor: '#A78BFA',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.4,
-    shadowRadius: 16,
-    elevation: 10,
-    gap: 12,
+    maxWidth: 320,
+    gap: 10,
   },
   downloadButtonText: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '700',
-    color: '#FFF',
+    color: '#000',
+    letterSpacing: 0.5,
   },
+  
+  // Progress
   progressContainer: {
     width: '100%',
-    marginTop: 16,
+    maxWidth: 320,
   },
   progressHeader: {
     flexDirection: 'row',
@@ -291,42 +221,39 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   progressLabel: {
-    fontSize: 16,
+    fontSize: 14,
     color: '#FFF',
     fontWeight: '600',
   },
   progressPercent: {
-    fontSize: 16,
-    color: '#A78BFA',
+    fontSize: 14,
+    color: '#FFF',
     fontWeight: '700',
     fontFamily: 'monospace',
   },
-  progressBarContainer: {
-    marginBottom: 12,
-  },
   progressBarBackground: {
-    height: 8,
-    backgroundColor: '#27272A',
-    borderRadius: 4,
+    height: 4,
+    backgroundColor: '#222',
+    borderRadius: 2,
     overflow: 'hidden',
   },
   progressBarFill: {
     height: '100%',
-    backgroundColor: '#A78BFA',
-    borderRadius: 4,
+    backgroundColor: '#FFF',
+    borderRadius: 2,
   },
   installHint: {
-    fontSize: 13,
-    color: '#71717A',
-    textAlign: 'center',
-    fontStyle: 'italic',
-    marginTop: 8,
-  },
-  helpText: {
     fontSize: 12,
-    color: '#52525B',
+    color: '#555',
     textAlign: 'center',
-    marginTop: 24,
-    lineHeight: 18,
+    marginTop: 12,
+  },
+  
+  // Footer
+  footerNote: {
+    fontSize: 12,
+    color: '#444',
+    textAlign: 'center',
+    marginTop: 32,
   },
 });

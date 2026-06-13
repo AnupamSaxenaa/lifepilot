@@ -9,7 +9,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Alert, Animated, BackHandler, Easing, KeyboardAvoidingView, Modal, Platform, StyleSheet, Text, TextInput, TouchableOpacity, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getCoachAdvice } from '../lib/AIEngine';
-import { addTask } from '../lib/dataManager';
+import { addTask, cacheTasks } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
 import { syncToSupabase } from '../lib/syncQueue';
 import { Storage } from '../utils/storage';
@@ -279,8 +279,7 @@ export default function FocusModeScreen() {
           console.log('[FocusMode] Updating task completion in cache');
           
           // Save back to cache
-          await Storage.set(`tasks_${session.user.id}`, updatedTasks);
-          await Storage.set('last_local_write_time', Date.now().toString());
+          await cacheTasks(session.user.id, updatedTasks);
           
           // Sync to Supabase (fire and forget)
           syncToSupabase('tasks', 'update',

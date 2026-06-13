@@ -11,8 +11,8 @@
  */
 import { supabase } from '../lib/supabase';
 import { Storage } from '../utils/storage';
-import { drainSyncQueue, getQueueLength, syncToSupabase } from './syncQueue';
 import { updateAllWidgets } from '../utils/widgetUpdater';
+import { drainSyncQueue, getQueueLength, syncToSupabase } from './syncQueue';
 
 // RFC4122 v4 compliant UUID generator for offline-first primary keys
 const generateUUID = () => {
@@ -91,7 +91,7 @@ export const loadTasks = async (userId, onFresh) => {
         // 1. No pending mutations in sync queue
         // 2. NO local writes occurred during the fetch (prevents overwriting edits)
         if (qLen === 0 && lastWriteTime === lastWriteTimeAfter) {
-          await Storage.set(`tasks_${userId}`, data);
+          await cacheTasks(userId, data);
           if (onFresh) onFresh(data);
         } else {
           console.log('[DataManager] Skipping cache update - local writes detected or sync queue not empty');
@@ -117,7 +117,7 @@ export const cacheTasks = async (userId, tasks) => {
   }
   await Storage.set(`tasks_${userId}`, tasks);
   await Storage.set('last_local_write_time', Date.now().toString());
-  updateAllWidgets();
+  await updateAllWidgets(); // ← AWAIT the widget update!
 };
 
 /**
@@ -408,11 +408,13 @@ export const loadProfile = async (userId, onFresh) => {
 
   const fetchBackground = async () => {
     try {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('profiles')
         .select('*')
         .eq('id', userId)
         .single();
+
+      if (error) throw error;
 
       if (data) {
         // Auto-heal missing avatar_url if the user uploaded directly via Supabase dashboard
@@ -474,24 +476,42 @@ export const loadProfile = async (userId, onFresh) => {
       if (err.code === 'PGRST116' || err.message?.includes('0 rows')) {
         const { data: { session } } = await supabase.auth.getSession();
         if (session) {
+          let recoveredAvatarUrl = null;
+          
+          // 🛡️ Auto-Heal: Recover orphaned avatar from storage before creating profile
+          try {
+            const { data: files } = await supabase.storage.from('avatar').list(userId);
+            const avatarFile = files?.find(f => f.name === 'avatar.jpg' || f.name === 'avatar.png' || f.name === 'avatar.jpeg');
+            if (avatarFile) {
+               const { data: urlData } = supabase.storage.from('avatar').getPublicUrl(`${userId}/${avatarFile.name}`);
+               recoveredAvatarUrl = urlData.publicUrl + `?t=${Date.now()}`;
+            }
+          } catch (e) {
+            console.log('Error checking avatar bucket during recovery:', e);
+          }
+
           const newProfile = {
             id: userId,
             display_name: cached?.display_name || session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || 'User',
             username: cached?.username || session.user.user_metadata?.username || session.user.email?.split('@')[0] || 'user',
-            avatar_url: cached?.avatar_url || null,
+            avatar_url: cached?.avatar_url || recoveredAvatarUrl || null,
             avatar_seed: cached?.avatar_seed || Math.random().toString(36).substring(7),
           };
           
-          const { data: insertedData } = await supabase
+          const { data: insertedData, error: upsertError } = await supabase
             .from('profiles')
             .upsert(newProfile)
             .select()
             .single();
             
-          if (insertedData) {
-            await Storage.set(`profile_${userId}`, insertedData);
-            if (onFresh) onFresh(insertedData);
+          if (upsertError) {
+            console.warn('[DataManager] Failed to upsert profile, falling back to local memory:', upsertError.message);
           }
+            
+          // 🚀 GUARANTEE UI FIX: Even if upsert fails, update local cache and UI!
+          const profileToSave = insertedData || newProfile;
+          await Storage.set(`profile_${userId}`, profileToSave);
+          if (onFresh) onFresh(profileToSave);
         }
       }
     }
@@ -507,7 +527,9 @@ export const loadProfile = async (userId, onFresh) => {
     return {
       id: userId,
       display_name: session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || 'User',
-      username: session.user.user_metadata?.username || session.user.email?.split('@')[0] || 'user'
+      username: session.user.user_metadata?.username || session.user.email?.split('@')[0] || 'user',
+      avatar_url: null,
+      avatar_seed: Math.random().toString(36).substring(7)
     };
   }
 

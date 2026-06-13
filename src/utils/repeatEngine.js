@@ -1,5 +1,6 @@
 import { Storage } from './storage';
 import { supabase } from '../lib/supabase';
+import { cacheTasks } from '../lib/dataManager';
 
 /**
  * Repeat Engine — Resets completed repeating tasks when they are due again.
@@ -166,7 +167,7 @@ export const runRepeatEngine = async (userId) => {
     const updatedTasks = tasks.map(t =>
       resetIds.includes(t.id) ? { ...t, is_completed: false, last_reset_date: todayStr } : t
     );
-    await Storage.set(`tasks_${userId}`, updatedTasks);
+    await cacheTasks(userId, updatedTasks);
 
     // Mark engine as run for today
     await Storage.set(`repeatEngine_lastRun_${userId}`, todayStr);

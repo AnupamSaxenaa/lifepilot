@@ -1,4 +1,5 @@
 import * as Updates from 'expo-updates';
+import { Storage } from './storage';
 
 /**
  * OTA Update Manager
@@ -55,6 +56,8 @@ export const UpdateManager = {
 
       if (result.isNew) {
         console.log('[OTA] New update downloaded, reloading app...');
+        // Save flag to show success toast after reload
+        await Storage.set('showUpdateSuccessToast', 'true');
         // Reload the app to apply the update
         await Updates.reloadAsync();
         return { success: true, isNew: true };

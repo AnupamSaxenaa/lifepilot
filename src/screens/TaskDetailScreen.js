@@ -29,7 +29,7 @@ import {
 import Animated, { FadeIn, Layout, SlideInDown, SlideOutDown } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BackgroundWrapper } from '../components/BackgroundWrapper';
-import { deleteTask as dmDeleteTask, toggleTaskImportance, updateTask } from '../lib/dataManager';
+import { cacheTasks, deleteTask as dmDeleteTask, toggleTaskImportance, updateTask } from '../lib/dataManager';
 import { syncToSupabase } from '../lib/syncQueue';
 import { Gamification } from '../utils/gamification';
 import { cancelTaskReminder, scheduleTaskReminder } from '../utils/notifications';
@@ -158,8 +158,7 @@ export const TaskDetailScreen = ({ route, navigation }) => {
         : t
     );
     
-    await Storage.set(`tasks_${userId}`, updated);
-    await Storage.set('last_local_write_time', Date.now().toString());
+    await cacheTasks(userId, updated);
     
     syncToSupabase('tasks', 'update',
       { is_completed: newStatus, completed_at: completedAt },
