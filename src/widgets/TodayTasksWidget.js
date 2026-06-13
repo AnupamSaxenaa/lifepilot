@@ -1,5 +1,4 @@
-import React from 'react';
-import { FlexWidget, TextWidget, OverlapWidget, ImageWidget, ListWidget } from 'react-native-android-widget';
+import { FlexWidget, ListWidget, TextWidget } from 'react-native-android-widget';
 import { Storage } from '../utils/storage';
 
 /**
@@ -82,8 +81,8 @@ export async function TodayTasksWidget(props) {
         <FlexWidget
           style={{
             flexDirection: 'row',
+            justifyContent: 'space-between',
             alignItems: 'center',
-            width: 'match_parent',
             marginBottom: 16,
             paddingBottom: 12,
             borderBottomWidth: 1,
@@ -99,8 +98,6 @@ export async function TodayTasksWidget(props) {
               letterSpacing: 1.5,
             }}
           />
-          {/* Explicit flex spacer to push the count to the right edge */}
-          <FlexWidget style={{ flex: 1 }} />
           <TextWidget
             text={`${todayTasks.length}`}
             style={{
@@ -166,7 +163,7 @@ export async function TodayTasksWidget(props) {
                       paddingVertical: 4,
                     }}
                   >
-                    {/* Checkbox - now clickable in the background! */}
+                    {/* Checkbox - clickable with immediate visual feedback */}
                     <FlexWidget
                       clickAction="CUSTOM_ACTION"
                       clickActionData={{ action: 'TOGGLE_TASK', taskId: task.id, currentStatus: task.is_completed ? 'true' : 'false' }}
@@ -174,13 +171,16 @@ export async function TodayTasksWidget(props) {
                         paddingRight: 16,
                         justifyContent: 'center',
                         alignItems: 'center',
+                        width: 32,
+                        height: 32,
                       }}
                     >
                       <TextWidget
                         text="○"
                         style={{
-                          fontSize: 20,
+                          fontSize: 22,
                           color: '#FFFFFF',
+                          fontWeight: '300',
                         }}
                       />
                     </FlexWidget>
