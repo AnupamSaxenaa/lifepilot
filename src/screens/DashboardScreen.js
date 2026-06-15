@@ -108,8 +108,8 @@ export const DashboardScreen = ({ navigation }) => {
     const completed = taskList.filter(t => t.is_completed).length;
     setLifetimeStats({ completed, total: taskList.length });
 
-    // Show all uncompleted tasks to match the Dashboard view
-    const activeTasks = taskList.filter(t => !t.is_completed);
+    // Show uncompleted tasks: either general tasks OR custom list tasks added to today
+    const activeTasks = taskList.filter(t => !t.is_completed && (!t.list_id || t.added_to_today));
     
     // Sort them exactly like the custom sort in Today screen
     activeTasks.sort((a, b) => (a.order_index || 0) - (b.order_index || 0) || new Date(b.created_at) - new Date(a.created_at));
