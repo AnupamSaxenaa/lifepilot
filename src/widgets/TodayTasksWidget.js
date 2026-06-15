@@ -120,12 +120,14 @@ export async function TodayTasksWidget(props) {
               padding: 4,
               justifyContent: 'center',
               alignItems: 'center',
+              width: 36,
+              height: 36,
             }}
           >
             <TextWidget
               text="⚙️"
               style={{
-                fontSize: 14,
+                fontSize: 18,
               }}
             />
           </FlexWidget>
