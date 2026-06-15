@@ -17,7 +17,22 @@ export async function widgetTaskHandler(props) {
         renderWidget(widget);
       }
     } else if (widgetAction === 'WIDGET_CLICK' && clickAction === 'CUSTOM_ACTION') {
-      if (clickActionData && clickActionData.action === 'TOGGLE_TASK') {
+      if (clickActionData && clickActionData.action === 'CYCLE_OPACITY') {
+        const currentOpacity = await Storage.get('widget_bg_opacity') || '100';
+        let nextOpacity = '100';
+        if (currentOpacity === '100') nextOpacity = '75';
+        else if (currentOpacity === '75') nextOpacity = '50';
+        else if (currentOpacity === '50') nextOpacity = '25';
+        else if (currentOpacity === '25') nextOpacity = '0';
+        else if (currentOpacity === '0') nextOpacity = '100';
+        
+        await Storage.set('widget_bg_opacity', nextOpacity);
+        
+        if (widgetInfo.widgetName === 'TodayTasksWidget') {
+          const widget = await TodayTasksWidget(props);
+          renderWidget(widget);
+        }
+      } else if (clickActionData && clickActionData.action === 'TOGGLE_TASK') {
         const { taskId, currentStatus } = clickActionData;
         const userId = await Storage.get('current_user_id');
         if (userId) {

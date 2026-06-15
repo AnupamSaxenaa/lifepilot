@@ -18,6 +18,14 @@ export async function TodayTasksWidget(props) {
     // Load tasks from AsyncStorage (instant, no network)
     const allTasks = await Storage.get(`tasks_${userId}`) || [];
     
+    // Background Opacity logic
+    const opacityVal = await Storage.get('widget_bg_opacity') || '100';
+    let bgHex = '#FF000000'; // 100% solid black
+    if (opacityVal === '75') bgHex = '#BF000000';
+    if (opacityVal === '50') bgHex = '#80000000';
+    if (opacityVal === '25') bgHex = '#40000000';
+    if (opacityVal === '0') bgHex = '#00000000'; // transparent
+    
     // Load lists to resolve list names for tags
     const allLists = await Storage.get(`lists_${userId}`) || [];
     const listMap = {};
@@ -77,16 +85,19 @@ export async function TodayTasksWidget(props) {
         style={{
           height: height || 'match_parent',
           width: width || 'match_parent',
-          backgroundColor: '#000000',
+          backgroundColor: bgHex,
           borderRadius: 16,
           padding: 16,
         }}
         clickAction="OPEN_APP"
         clickActionData={{ screen: 'Today' }}
       >
-        {/* Header — clean, no counter */}
+        {/* Header — clean, no counter, with gear icon */}
         <FlexWidget
           style={{
+            flexDirection: 'row',
+            justifyContent: 'space-between',
+            alignItems: 'center',
             marginBottom: 16,
             paddingBottom: 12,
             borderBottomWidth: 1,
@@ -102,6 +113,22 @@ export async function TodayTasksWidget(props) {
               letterSpacing: 1.5,
             }}
           />
+          <FlexWidget
+            clickAction="CUSTOM_ACTION"
+            clickActionData={{ action: 'CYCLE_OPACITY' }}
+            style={{
+              padding: 4,
+              justifyContent: 'center',
+              alignItems: 'center',
+            }}
+          >
+            <TextWidget
+              text="⚙️"
+              style={{
+                fontSize: 14,
+              }}
+            />
+          </FlexWidget>
         </FlexWidget>
 
           {/* Task List or Empty State */}
