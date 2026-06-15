@@ -28,31 +28,33 @@ export async function TodayTasksWidget(props) {
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
     
-    const todayTasks = allTasks.filter(t => {
-      // Explicitly added to today
+    // isTaskForToday — same logic as TodayScreen
+    const isTaskForToday = (t) => {
       if (t.added_to_today) return true;
-      
-      // Has due date for today or overdue
       if (t.due_date) {
         const dueDate = new Date(t.due_date);
         if (dueDate < todayStart || dueDate.toDateString() === todayStr) return true;
       }
-      
-      // Has reminder for today or past
       if (t.reminder_time) {
         const reminderDate = new Date(t.reminder_time);
         if (reminderDate < todayStart || reminderDate.toDateString() === todayStr) return true;
       }
-      
-      // Default tasks (no list, no dates) belong to Today
       if (!t.list_id && !t.due_date && !t.reminder_time) return true;
-      
       return false;
-    });
+    };
 
-    // Separate active and completed tasks
-    const activeTasks = todayTasks.filter(t => !t.is_completed);
-    const completedTasks = todayTasks.filter(t => t.is_completed);
+    // Active tasks: today tasks that are not completed
+    const activeTasks = allTasks.filter(t => isTaskForToday(t) && !t.is_completed);
+
+    // Completed tasks: same logic as TodayScreen's completedTodayTasks
+    // Only show tasks completed TODAY (by completed_at date)
+    const completedTasks = allTasks.filter(t => {
+      if (!t.is_completed) return false;
+      const completedDate = t.completed_at ? new Date(t.completed_at).toDateString() : null;
+      if (completedDate !== todayStr) return false;
+      // Must be a today-relevant task OR was completed today
+      return isTaskForToday(t) || completedDate === todayStr;
+    });
 
     // Sort by order_index (custom sort)
     activeTasks.sort((a, b) => {
@@ -82,37 +84,24 @@ export async function TodayTasksWidget(props) {
         clickAction="OPEN_APP"
         clickActionData={{ screen: 'Today' }}
       >
-        {/* Header */}
+        {/* Header — clean, no counter */}
         <FlexWidget
           style={{
-            flexDirection: 'row',
             marginBottom: 16,
             paddingBottom: 12,
             borderBottomWidth: 1,
             borderBottomColor: '#444444',
           }}
         >
-          <FlexWidget style={{ flex: 1, justifyContent: 'center' }}>
-            <TextWidget
-              text="TODAY"
-              style={{
-                fontSize: 13,
-                color: '#BBBBBB',
-                fontWeight: 'bold',
-                letterSpacing: 1.5,
-              }}
-            />
-          </FlexWidget>
-          <FlexWidget style={{ justifyContent: 'center', alignItems: 'flex-end' }}>
-            <TextWidget
-              text={`${activeTasks.length}`}
-              style={{
-                fontSize: 24,
-                color: '#FFFFFF',
-                fontWeight: 'bold',
-              }}
-            />
-          </FlexWidget>
+          <TextWidget
+            text="TODAY"
+            style={{
+              fontSize: 13,
+              color: '#BBBBBB',
+              fontWeight: 'bold',
+              letterSpacing: 1.5,
+            }}
+          />
         </FlexWidget>
 
           {/* Task List or Empty State */}
