@@ -21,27 +21,39 @@ export async function widgetTaskHandler(props) {
         const { taskId, currentStatus } = clickActionData;
         const userId = await Storage.get('current_user_id');
         if (userId) {
-          const allTasks = await Storage.get(`tasks_${userId}`) || [];
-          
-          // 1. OPTIMISTIC UPDATE: Do this instantly without importing Supabase/dataManager
+          // --- STEP 1: INSTANT OPTIMISTIC UPDATE ---
           const statusBool = currentStatus === 'true' || currentStatus === true;
           const newStatus = !statusBool;
           const completedAt = newStatus ? new Date().toISOString() : null;
+          
+          // Re-read storage RIGHT NOW to avoid stale closures if tapped rapidly
+          const allTasks = await Storage.get(`tasks_${userId}`) || [];
           const updatedTasks = allTasks.map(t =>
             t.id === taskId ? { ...t, is_completed: newStatus, completed_at: completedAt } : t
           );
+          
+          // Update local cache
           await Storage.set(`tasks_${userId}`, updatedTasks);
           
-          // 2. INSTANT REDRAW: Tell Android to render the new widget state immediately
+          // CRITICAL BUG FIX: Tell the app a local write happened so it doesn't overwrite us with stale Supabase data if the app is open
+          await Storage.set('last_local_write_time', Date.now().toString());
+          
+          // --- STEP 2: INSTANT REDRAW ---
           if (widgetInfo.widgetName === 'TodayTasksWidget') {
             const widget = await TodayTasksWidget(props);
             renderWidget(widget);
           }
 
-          // 3. BACKGROUND SYNC: Dynamically import heavy dependencies ONLY AFTER rendering
-          // This saves ~500ms of JS engine blocking time!
-          const { toggleTaskCompletion } = require('../lib/dataManager');
-          await toggleTaskCompletion(userId, allTasks, taskId, statusBool);
+          // --- STEP 3: BACKGROUND SYNC (Heavy imports delayed) ---
+          const { syncToSupabase } = require('../lib/syncQueue');
+          await syncToSupabase('tasks', 'update',
+            { is_completed: newStatus, completed_at: completedAt },
+            { column: 'id', value: taskId }
+          );
+          
+          // Trigger global native widget update in case there are multiple widget instances
+          const { updateAllWidgets } = require('../utils/widgetUpdater');
+          await updateAllWidgets();
         }
       }
     }
