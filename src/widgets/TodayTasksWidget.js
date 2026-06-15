@@ -29,9 +29,6 @@ export async function TodayTasksWidget(props) {
     todayStart.setHours(0, 0, 0, 0);
     
     const todayTasks = allTasks.filter(t => {
-      // Skip completed tasks entirely from the widget view
-      if (t.is_completed) return false;
-      
       // Explicitly added to today
       if (t.added_to_today) return true;
       
@@ -53,15 +50,23 @@ export async function TodayTasksWidget(props) {
       return false;
     });
 
+    // Separate active and completed tasks
+    const activeTasks = todayTasks.filter(t => !t.is_completed);
+    const completedTasks = todayTasks.filter(t => t.is_completed);
+
     // Sort by order_index (custom sort)
-    todayTasks.sort((a, b) => {
+    activeTasks.sort((a, b) => {
       const indexA = a.order_index ?? Infinity;
       const indexB = b.order_index ?? Infinity;
       return indexA - indexB || new Date(b.created_at) - new Date(a.created_at);
     });
 
-    // Support up to 50 tasks using ListWidget
-    const displayTasks = todayTasks.slice(0, 50);
+    // Sort completed by completion time (most recent first)
+    completedTasks.sort((a, b) => new Date(b.completed_at || 0) - new Date(a.completed_at || 0));
+
+    // Support up to 50 tasks total (active + completed)
+    const displayActiveTasks = activeTasks.slice(0, 40);
+    const displayCompletedTasks = completedTasks.slice(0, 10);
 
     const { width, height } = props.widgetInfo || {};
 
@@ -70,7 +75,7 @@ export async function TodayTasksWidget(props) {
         style={{
           height: height || 'match_parent',
           width: width || 'match_parent',
-          backgroundColor: 'rgba(0, 0, 0, 0.66)',
+          backgroundColor: '#000000',
           borderRadius: 16,
           padding: 16,
         }}
@@ -81,35 +86,37 @@ export async function TodayTasksWidget(props) {
         <FlexWidget
           style={{
             flexDirection: 'row',
-            justifyContent: 'space-between',
-            alignItems: 'center',
             marginBottom: 16,
             paddingBottom: 12,
             borderBottomWidth: 1,
             borderBottomColor: '#444444',
           }}
         >
-          <TextWidget
-            text="TODAY"
-            style={{
-              fontSize: 13,
-              color: '#BBBBBB',
-              fontWeight: 'bold',
-              letterSpacing: 1.5,
-            }}
-          />
-          <TextWidget
-            text={`${todayTasks.length}`}
-            style={{
-              fontSize: 24,
-              color: '#FFFFFF',
-              fontWeight: 'bold',
-            }}
-          />
+          <FlexWidget style={{ flex: 1, justifyContent: 'center' }}>
+            <TextWidget
+              text="TODAY"
+              style={{
+                fontSize: 13,
+                color: '#BBBBBB',
+                fontWeight: 'bold',
+                letterSpacing: 1.5,
+              }}
+            />
+          </FlexWidget>
+          <FlexWidget style={{ justifyContent: 'center', alignItems: 'flex-end' }}>
+            <TextWidget
+              text={`${activeTasks.length}`}
+              style={{
+                fontSize: 24,
+                color: '#FFFFFF',
+                fontWeight: 'bold',
+              }}
+            />
+          </FlexWidget>
         </FlexWidget>
 
           {/* Task List or Empty State */}
-          {displayTasks.length === 0 ? (
+          {displayActiveTasks.length === 0 && displayCompletedTasks.length === 0 ? (
             <FlexWidget
               style={{
                 flex: 1,
@@ -137,7 +144,8 @@ export async function TodayTasksWidget(props) {
             </FlexWidget>
           ) : (
             <ListWidget style={{ flex: 1 }}>
-              {displayTasks.map((task, index) => {
+              {/* Active Tasks */}
+              {displayActiveTasks.map((task, index) => {
                 const isOverdue = task.due_date && new Date(task.due_date) < todayStart;
                 
                 const tags = [];
@@ -159,7 +167,7 @@ export async function TodayTasksWidget(props) {
                     style={{
                       flexDirection: 'row',
                       alignItems: 'center',
-                      marginBottom: index < displayTasks.length - 1 ? 16 : 0,
+                      marginBottom: 16,
                       paddingVertical: 4,
                     }}
                   >
@@ -243,6 +251,105 @@ export async function TodayTasksWidget(props) {
                   </FlexWidget>
                 );
               })}
+              
+              {/* Completed Tasks Section */}
+              {displayCompletedTasks.length > 0 && (
+                <FlexWidget style={{ width: 'match_parent' }}>
+                  <FlexWidget
+                    style={{
+                      marginTop: 24,
+                      marginBottom: 16,
+                      paddingTop: 12,
+                      borderTopWidth: 1,
+                      borderTopColor: '#333333',
+                    }}
+                  >
+                    <TextWidget
+                      text={`COMPLETED (${completedTasks.length})`}
+                      style={{
+                        fontSize: 11,
+                        color: '#666666',
+                        fontWeight: 'bold',
+                        letterSpacing: 1.2,
+                      }}
+                    />
+                  </FlexWidget>
+                  
+                  {displayCompletedTasks.map((task, index) => {
+                    const tags = [];
+                    if (task.due_date) tags.push(new Date(task.due_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+                    if (task.list_id && listMap[task.list_id]) {
+                      tags.push(listMap[task.list_id]);
+                    }
+                    const tagsString = tags.join(' • ');
+
+                    return (
+                      <FlexWidget
+                        key={task.id}
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          marginBottom: 12,
+                          paddingVertical: 2,
+                        }}
+                      >
+                        {/* Checkmark for completed */}
+                        <FlexWidget
+                          clickAction="CUSTOM_ACTION"
+                          clickActionData={{ action: 'TOGGLE_TASK', taskId: task.id, currentStatus: 'true' }}
+                          style={{
+                            paddingRight: 16,
+                            justifyContent: 'center',
+                            alignItems: 'center',
+                            width: 32,
+                            height: 32,
+                          }}
+                        >
+                          <TextWidget
+                            text="✓"
+                            style={{
+                              fontSize: 18,
+                              color: '#10B981',
+                              fontWeight: 'bold',
+                            }}
+                          />
+                        </FlexWidget>
+                        
+                        {/* Task Title with strikethrough effect (via gray color) */}
+                        <FlexWidget 
+                          style={{ flex: 1 }}
+                          clickAction="OPEN_APP"
+                          clickActionData={{ screen: 'TaskDetail', taskId: task.id }}
+                        >
+                          <TextWidget
+                            text={task.title}
+                            style={{
+                              fontSize: 15,
+                              color: '#666666',
+                              fontWeight: '400',
+                              lineHeight: 20,
+                            }}
+                            maxLines={1}
+                          />
+                          
+                          {/* Tags for completed tasks */}
+                          {tagsString.length > 0 && (
+                            <TextWidget
+                               text={tagsString}
+                               style={{
+                                 fontSize: 10,
+                                 color: '#555555',
+                                 marginTop: 2,
+                               }}
+                               maxLines={1}
+                             />
+                          )}
+                        </FlexWidget>
+                      </FlexWidget>
+                    );
+                  })}
+                </FlexWidget>
+              )}
             </ListWidget>
           )}
 
@@ -271,7 +378,7 @@ function EmptyStateWidget({ message }) {
       style={{
         height: 'match_parent',
         width: 'match_parent',
-        backgroundColor: 'rgba(0, 0, 0, 0.66)',
+        backgroundColor: '#000000',
         borderRadius: 16,
         padding: 16,
         justifyContent: 'center',
