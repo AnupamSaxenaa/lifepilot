@@ -20,10 +20,10 @@ export async function TodayTasksWidget(props) {
     
     // Background Opacity logic
     const opacityVal = await Storage.get('widget_bg_opacity') || '100';
-    let bgHex = '#FF000000'; // 100% solid black
-    if (opacityVal === '75') bgHex = '#BF000000';
-    if (opacityVal === '50') bgHex = '#80000000';
-    if (opacityVal === '25') bgHex = '#40000000';
+    let bgHex = '#000000FF'; // 100% solid black
+    if (opacityVal === '75') bgHex = '#000000BF';
+    if (opacityVal === '50') bgHex = '#00000080';
+    if (opacityVal === '25') bgHex = '#00000040';
     if (opacityVal === '0') bgHex = '#00000000'; // transparent
     
     // Load lists to resolve list names for tags
