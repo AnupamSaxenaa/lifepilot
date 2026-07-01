@@ -1,6 +1,6 @@
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
-import { ArrowUp, Bell, Calendar, Check, CheckCircle2, ChevronDown, ChevronRight, Circle, FileText, GripVertical, ListChecks, Menu, MoreVertical, Plus, Repeat, Star, Trash2, Wand2, X, Zap } from 'lucide-react-native';
+import { ArrowUp, Bell, Calendar, Check, CheckCircle2, ChevronDown, ChevronRight, Circle, FileText, Flag, GripVertical, ListChecks, Menu, MoreVertical, Plus, Repeat, Star, Trash2, Wand2, X, Zap } from 'lucide-react-native';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BackHandler, Keyboard, KeyboardAvoidingView, Modal, Platform, ScrollView, Share, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { NestableDraggableFlatList, NestableScrollContainer, ScaleDecorator } from 'react-native-draggable-flatlist';
@@ -14,6 +14,8 @@ import { cacheTasks, addTask as dmAddTask, deleteTask as dmDeleteTask, loadProfi
 import { supabase } from '../lib/supabase';
 import { syncToSupabase } from '../lib/syncQueue';
 import { COLORS } from '../theme/theme';
+import { getPriorityColor, shouldShowFlag, PRIORITY_LEVELS, PRIORITY_CONFIG } from '../config/priorityConfig';
+import { LevelUpModal } from '../components/LevelUpModal';
 import { Gamification } from '../utils/gamification';
 import { cancelTaskReminder, scheduleTaskReminder } from '../utils/notifications';
 import { Storage } from '../utils/storage';
@@ -59,7 +61,7 @@ const SkeletonTask = () => {
   );
 };
 
-export const TodayScreen = ({ navigation }) => {
+export const TodayScreen = ({ navigation, route }) => {
   // Force dark theme only
   const theme = COLORS.dark;
   const insets = useSafeAreaInsets();
@@ -81,6 +83,7 @@ export const TodayScreen = ({ navigation }) => {
   const [generatedPlan, setGeneratedPlan] = useState(null);
   const [isAddingTask, setIsAddingTask] = useState(false);
   const [activeToolbarMenu, setActiveToolbarMenu] = useState(null);
+  const [levelUpData, setLevelUpData] = useState(null);
   const [showCompleted, setShowCompleted] = useState(true);
   const [completingTaskIds, setCompletingTaskIds] = useState([]);
 
@@ -88,9 +91,11 @@ export const TodayScreen = ({ navigation }) => {
   const [pendingDueDate, setPendingDueDate] = useState(null);
   const [pendingReminder, setPendingReminder] = useState(null);
   const [pendingRepeatRule, setPendingRepeatRule] = useState(null);
+  const [pendingPriority, setPendingPriority] = useState(1);
 
   // ─── Keyboard state for Android fallback ──────────────
   const [androidKeyboardHeight, setAndroidKeyboardHeight] = useState(0);
+  const completingTimeouts = useRef({});
 
   // ─── Native Picker State ──────────────────────────────
   const [showDatePicker, setShowDatePicker] = useState(false);
@@ -152,6 +157,13 @@ export const TodayScreen = ({ navigation }) => {
       }
     };
     init();
+
+    // Check for deep link actions
+    if (route?.params?.action === 'NEW_TASK') {
+      setIsAddingTask(true);
+      // Clear the param so it doesn't trigger again on subsequent renders
+      navigation.setParams({ action: null });
+    }
 
     const kShow = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', (e) => {
       if (Platform.OS === 'android') setAndroidKeyboardHeight(e.endCoordinates.height);
@@ -254,7 +266,12 @@ export const TodayScreen = ({ navigation }) => {
       const s = [...arr];
       switch (sortBy) {
         case 'importance':
-          s.sort((a, b) => (b.is_important ? 1 : 0) - (a.is_important ? 1 : 0));
+          s.sort((a, b) => {
+            const pa = a.priority ?? 1;
+            const pb = b.priority ?? 1;
+            if (pb !== pa) return pb - pa;
+            return (b.is_important ? 1 : 0) - (a.is_important ? 1 : 0);
+          });
           break;
         case 'due_date':
           s.sort((a, b) => {
@@ -288,7 +305,12 @@ export const TodayScreen = ({ navigation }) => {
       const s = [...arr];
       switch (sortBy) {
         case 'importance':
-          s.sort((a, b) => (b.is_important ? 1 : 0) - (a.is_important ? 1 : 0));
+          s.sort((a, b) => {
+            const pa = a.priority ?? 1;
+            const pb = b.priority ?? 1;
+            if (pb !== pa) return pb - pa;
+            return (b.is_important ? 1 : 0) - (a.is_important ? 1 : 0);
+          });
           break;
         case 'due_date':
           s.sort((a, b) => {
@@ -318,8 +340,9 @@ export const TodayScreen = ({ navigation }) => {
   // ⚡ PERFORMANCE: Memoize completed tasks filter
   const completedTodayTasks = useMemo(() => {
     return tasks.filter(t => {
-      if (!isTaskForToday(t) && new Date(t.completed_at).toDateString() !== todayStr) return false;
       if (!t.is_completed) return false;
+      // Only show tasks that actually belong to Today's list
+      if (!isTaskForToday(t)) return false;
       const completedDate = t.completed_at ? new Date(t.completed_at).toDateString() : null;
       return completedDate === todayStr;
     });
@@ -379,6 +402,7 @@ export const TodayScreen = ({ navigation }) => {
       due_date: pendingDueDate ? pendingDueDate.toISOString() : null,
       reminder_time: pendingReminder ? pendingReminder.toISOString() : null,
       repeat_rule: pendingRepeatRule,
+      priority: pendingPriority,
       added_to_today: true,
     };
 
@@ -396,6 +420,7 @@ export const TodayScreen = ({ navigation }) => {
     setPendingDueDate(null);
     setPendingReminder(null);
     setPendingRepeatRule(null);
+    setPendingPriority(1);
     setActiveToolbarMenu(null);
     setIsAddingTask(false);
 
@@ -409,23 +434,21 @@ export const TodayScreen = ({ navigation }) => {
       // 1. Mark as "completing" so scribble animation triggers
       setCompletingTaskIds(prev => [...prev, id]);
 
-      // 2. IMPORTANT: Capture current tasks NOW to avoid race condition
-      //    Don't use latestTasksRef.current inside setTimeout - it may be stale
-      const taskSnapshot = [...latestTasksRef.current];
-
       // 3. After scribble animation finishes (~800ms), actually move to completed
-      setTimeout(() => {
+      completingTimeouts.current[id] = setTimeout(async () => {
         if (userId) {
           const completedAt = new Date().toISOString();
           
-          // Use the snapshot we captured earlier, not latestTasksRef.current
-          const updated = taskSnapshot.map(t =>
+          // Use absolute freshest tasks from Storage, not a stale snapshot
+          const freshTasks = await Storage.get(`tasks_${userId}`) || [];
+          const updated = freshTasks.map(t =>
             t.id === id ? { ...t, is_completed: true, completed_at: completedAt } : t
           );
 
           // Update local state and clear animation state together
           setTasks(updated);
           setCompletingTaskIds(prev => prev.filter(tid => tid !== id));
+          delete completingTimeouts.current[id];
 
           // Run cache and sync tasks in the background asynchronously
           cacheTasks(userId, updated);
@@ -434,18 +457,41 @@ export const TodayScreen = ({ navigation }) => {
             { column: 'id', value: id }
           );
 
-          const task = taskSnapshot.find(t => t.id === id);
+          const task = freshTasks.find(t => t.id === id);
           if (task?.reminder_time) cancelTaskReminder(id);
-          Gamification.addXP(userId, 10);
+          
+          let xpAmount = 10;
+          if (task) {
+            if (task.priority === 3) xpAmount = 50;
+            else if (task.priority === 2) xpAmount = 40;
+            else if (task.priority === 0) xpAmount = 5;
+          }
+          
+          const oldState = await Gamification.checkStreak(userId);
+          const prevLevel = oldState?.level || 1;
+          
+          const newState = await Gamification.addXP(userId, xpAmount);
+          
+          if (newState && newState.level > prevLevel) {
+            setLevelUpData({ oldLevel: prevLevel, newLevel: newState.level });
+          }
 
 
         }
       }, 800);
     } else {
       // Un-completing: instant (no animation delay needed)
+      let shouldSubtractXP = true;
+      if (completingTimeouts.current[id]) {
+        clearTimeout(completingTimeouts.current[id]);
+        delete completingTimeouts.current[id];
+        shouldSubtractXP = false; // We cancelled the completion before XP was awarded
+      }
+      setCompletingTaskIds(prev => prev.filter(tid => tid !== id));
+
       if (userId) {
-        const currentTasks = latestTasksRef.current;
-        const updated = currentTasks.map(t =>
+        const freshTasks = await Storage.get(`tasks_${userId}`) || [];
+        const updated = freshTasks.map(t =>
           t.id === id ? { ...t, is_completed: false, completed_at: null } : t
         );
         
@@ -459,9 +505,19 @@ export const TodayScreen = ({ navigation }) => {
           { column: 'id', value: id }
         );
 
-        const task = currentTasks.find(t => t.id === id);
+        const task = freshTasks.find(t => t.id === id);
         if (task?.reminder_time) scheduleTaskReminder(id, task.title, task.reminder_time);
-        Gamification.addXP(userId, -10);
+        
+        let xpAmount = 10;
+        if (task) {
+          if (task.priority === 3) xpAmount = 50;
+          else if (task.priority === 2) xpAmount = 40;
+          else if (task.priority === 0) xpAmount = 5;
+        }
+        
+        if (shouldSubtractXP) {
+          await Gamification.addXP(userId, -xpAmount);
+        }
 
 
       }
@@ -637,7 +693,7 @@ export const TodayScreen = ({ navigation }) => {
         </View>
 
         <KeyboardAvoidingView 
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined} 
+          behavior={Platform.OS === 'ios' ? 'padding' : 'padding'} 
           style={styles.container}
         >
 
@@ -697,7 +753,7 @@ export const TodayScreen = ({ navigation }) => {
                 renderItem={({ item: task, drag, isActive }) => {
                   const hasSubtasks = task.subtasks && task.subtasks.length > 0;
                   const hasNotes = task.notes && task.notes.trim().length > 0;
-                  const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes;
+                  const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes || true; // always true since we show flag for all
                   const todayStart = new Date();
                   todayStart.setHours(0, 0, 0, 0);
                   const isOverdue = task.due_date && new Date(task.due_date) < todayStart && !task.is_completed;
@@ -717,11 +773,6 @@ export const TodayScreen = ({ navigation }) => {
                           isActive && { backgroundColor: 'rgba(255,255,255,0.08)', elevation: 12 }
                         ]}>
                         
-                        <View style={[
-                          styles.cardIndicator,
-                          task.is_important && { backgroundColor: '#FFFFFF' }
-                        ]} />
-
                         {/* Left: drag handle + checkbox */}
                         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                           {!task.is_completed && !completingTaskIds.includes(task.id) && (
@@ -730,7 +781,7 @@ export const TodayScreen = ({ navigation }) => {
                             </TouchableOpacity>
                           )}
                           <TouchableOpacity 
-                            onPress={() => toggleTask(task.id, task.is_completed)} 
+                            onPress={() => toggleTask(task.id, task.is_completed || completingTaskIds.includes(task.id))} 
                             disabled={completingTaskIds.includes(task.id)} 
                             style={[
                               styles.checkbox, 
@@ -761,6 +812,11 @@ export const TodayScreen = ({ navigation }) => {
 
                           {hasMeta && (
                             <View style={styles.taskMetaRow}>
+                              {shouldShowFlag(task.priority) && (
+                                <View style={styles.metaPill}>
+                                  <Flag color={getPriorityColor(task.priority)} size={11} fill={getPriorityColor(task.priority)} />
+                                </View>
+                              )}
                               {task.due_date && (
                                 <View style={styles.metaPill}>
                                   <Calendar color={isOverdue ? '#EF4444' : '#888'} size={11} />
@@ -846,7 +902,7 @@ export const TodayScreen = ({ navigation }) => {
                   {showCompleted && completedTodayTasks.map(task => {
                     const hasSubtasks = task.subtasks && task.subtasks.length > 0;
                     const hasNotes = task.notes && task.notes.trim().length > 0;
-                    const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes;
+                    const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes || true;
                     const completedSubs = hasSubtasks ? task.subtasks.filter(s => s.is_completed).length : 0;
                     const totalSubs = hasSubtasks ? task.subtasks.length : 0;
 
@@ -871,7 +927,7 @@ export const TodayScreen = ({ navigation }) => {
                           {/* Removed green indicator bar */}
 
                           <TouchableOpacity
-                            onPress={() => toggleTask(task.id, task.is_completed)}
+                            onPress={() => toggleTask(task.id, task.is_completed || completingTaskIds.includes(task.id))}
                             style={[styles.checkbox, { marginLeft: 28 }]}
                           >
                             <CheckCircle2 color="#10B981" size={24} />
@@ -926,8 +982,7 @@ export const TodayScreen = ({ navigation }) => {
           {/* ─── Bottom Input Area ────────────────────── */}
           {isAddingTask ? (
             <View style={[styles.bottomInputWrapper, {
-              paddingBottom: Platform.OS === 'android' && androidKeyboardHeight > 0 ? 32 : Math.max(insets.bottom, 16),
-              marginBottom: Platform.OS === 'android' && androidKeyboardHeight > 0 ? androidKeyboardHeight : 0,
+              paddingBottom: Math.max(insets.bottom, 16),
             }]}>
 
               {/* Due Date Pop-up */}
@@ -1007,6 +1062,18 @@ export const TodayScreen = ({ navigation }) => {
                 </Animated.View>
               )}
 
+              {activeToolbarMenu === 'priority' && (
+                <Animated.View entering={FadeIn.duration(200)} exiting={FadeOut.duration(150)} style={[styles.toolbarMenu, { bottom: 85, right: 16 }]}>
+                  {Object.entries(PRIORITY_CONFIG).reverse().map(([value, config]) => (
+                    <TouchableOpacity key={value} style={styles.toolbarMenuItem} onPress={() => { setPendingPriority(Number(value)); setActiveToolbarMenu(null); }}>
+                      <Flag color={config.color} size={20} fill={Number(value) !== 1 ? config.color : 'transparent'} style={styles.toolbarMenuIcon} />
+                      <Text style={styles.toolbarMenuText}>{config.label}</Text>
+                      {pendingPriority === Number(value) && <Text style={{ color: '#fff', marginLeft: 'auto' }}>✓</Text>}
+                    </TouchableOpacity>
+                  ))}
+                </Animated.View>
+              )}
+
               {/* Pending Tags */}
               {renderPendingTags()}
 
@@ -1042,6 +1109,10 @@ export const TodayScreen = ({ navigation }) => {
                 <TouchableOpacity style={[styles.toolbarButton, pendingRepeatRule && styles.toolbarButtonActive]} onPress={() => setActiveToolbarMenu(activeToolbarMenu === 'repeat' ? null : 'repeat')}>
                   <Repeat color={pendingRepeatRule ? '#fff' : '#888'} size={18} />
                   <Text style={[styles.toolbarText, pendingRepeatRule && { color: '#fff' }]}>Repeat</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.toolbarButton, pendingPriority !== 1 && styles.toolbarButtonActive]} onPress={() => setActiveToolbarMenu(activeToolbarMenu === 'priority' ? null : 'priority')}>
+                  <Flag color={pendingPriority !== 1 ? getPriorityColor(pendingPriority) : '#888'} size={18} fill={pendingPriority !== 1 ? getPriorityColor(pendingPriority) : 'transparent'} />
+                  <Text style={[styles.toolbarText, pendingPriority !== 1 && { color: '#fff' }]}>Priority</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -1215,6 +1286,12 @@ export const TodayScreen = ({ navigation }) => {
           }
         }}
         onToggleTask={toggleTask}
+      />
+      <LevelUpModal
+        isVisible={!!levelUpData}
+        oldLevel={levelUpData?.oldLevel || 1}
+        newLevel={levelUpData?.newLevel || 2}
+        onClose={() => setLevelUpData(null)}
       />
     </BackgroundWrapper>
   );

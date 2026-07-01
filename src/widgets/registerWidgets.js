@@ -17,16 +17,26 @@ export async function widgetTaskHandler(props) {
         renderWidget(widget);
       }
     } else if (widgetAction === 'WIDGET_CLICK' && clickAction === 'CUSTOM_ACTION') {
-      if (clickActionData && clickActionData.action === 'CYCLE_OPACITY') {
-        const currentOpacity = await Storage.get('widget_bg_opacity') || '100';
-        let nextOpacity = '100';
-        if (currentOpacity === '100') nextOpacity = '75';
-        else if (currentOpacity === '75') nextOpacity = '50';
-        else if (currentOpacity === '50') nextOpacity = '25';
-        else if (currentOpacity === '25') nextOpacity = '0';
-        else if (currentOpacity === '0') nextOpacity = '100';
+      if (clickActionData && clickActionData.action === 'TOGGLE_WIDGET_SETTINGS') {
+        const current = await Storage.get('widget_settings_open');
+        const newVal = current === 'true' ? 'false' : 'true';
+        await Storage.set('widget_settings_open', newVal);
         
-        await Storage.set('widget_bg_opacity', nextOpacity);
+        if (widgetInfo.widgetName === 'TodayTasksWidget') {
+          const widget = await TodayTasksWidget(props);
+          renderWidget(widget);
+        }
+      } else if (clickActionData && clickActionData.action === 'SET_OPACITY') {
+        await Storage.set('widget_bg_opacity', clickActionData.value);
+        
+        if (widgetInfo.widgetName === 'TodayTasksWidget') {
+          const widget = await TodayTasksWidget(props);
+          renderWidget(widget);
+        }
+      } else if (clickActionData && clickActionData.action === 'TOGGLE_HIDE_COMPLETED') {
+        const current = await Storage.get('widget_hide_completed');
+        const newVal = current === 'true' ? 'false' : 'true';
+        await Storage.set('widget_hide_completed', newVal);
         
         if (widgetInfo.widgetName === 'TodayTasksWidget') {
           const widget = await TodayTasksWidget(props);

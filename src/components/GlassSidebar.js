@@ -1,20 +1,25 @@
 import { BlurView } from 'expo-blur';
 import Constants from 'expo-constants';
 import {
+    Award,
+    Bell,
+    Brain,
     Calendar,
     Heart,
     History,
-    Home, LayoutGrid,
-    List, Inbox,
+    Home,
+    Inbox,
+    Key,
+    LayoutGrid,
+    List,
     LogOut,
     Plus,
     Settings,
-    ShieldCheck,
     Star,
     X
 } from 'lucide-react-native';
 import { useEffect, useState } from 'react';
-import { Alert, Animated, Dimensions, Image, Platform, StyleSheet, Switch, Text, TextInput, TouchableOpacity, TouchableWithoutFeedback, useColorScheme, View } from 'react-native';
+import { Alert, Animated, Dimensions, Linking, Platform, StyleSheet, Switch, Text, TextInput, TouchableOpacity, TouchableWithoutFeedback, useColorScheme, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { addList, loadLists } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
@@ -23,12 +28,17 @@ import {
     isCalendarConnected,
     requestCalendarPermissions,
 } from '../utils/calendarSync';
+import { Gamification } from '../utils/gamification';
 import { Storage } from '../utils/storage';
+import { GamificationGuideModal } from './GamificationGuideModal';
+import { GamificationStatsModal } from './GamificationStatsModal';
+import { UpdatesModal } from './UpdatesModal';
+import { XPAvatarRing } from './XPAvatarRing';
 
 const { width, height } = Dimensions.get('window');
 const SIDEBAR_WIDTH = width * 0.75;
 
-export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigation, currentRoute }) => {
+export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigation, currentRoute, gamestate: parentGamestate }) => {
   const colorScheme = useColorScheme();
   const theme = colorScheme === 'dark' ? COLORS.dark : COLORS.light;
   const insets = useSafeAreaInsets();
@@ -41,11 +51,30 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
   const [starredCount, setStarredCount] = useState(0);
   const [plannedCount, setPlannedCount] = useState(0);
   const [overdueCount, setOverdueCount] = useState(0);
+  const [starredOverdueCount, setStarredOverdueCount] = useState(0);
+  const [plannedOverdueCount, setPlannedOverdueCount] = useState(0);
+  const [listCounts, setListCounts] = useState({});
+  const [listOverdueCounts, setListOverdueCounts] = useState({});
   const [isCalendarLinked, setIsCalendarLinked] = useState(false);
   const [userId, setUserId] = useState(null);
   const [customLists, setCustomLists] = useState([]);
   const [isAddingList, setIsAddingList] = useState(false);
   const [newListName, setNewListName] = useState('');
+  const [gamestate, setGamestate] = useState({ xp: 0, level: 1, streak: 0 });
+  const [isStatsModalOpen, setIsStatsModalOpen] = useState(false);
+  const [isGuideModalOpen, setIsGuideModalOpen] = useState(false);
+  
+  // Updates State
+  const [isUpdatesModalOpen, setIsUpdatesModalOpen] = useState(false);
+  const [latestUpdate, setLatestUpdate] = useState(null);
+  const [isFetchingUpdate, setIsFetchingUpdate] = useState(false);
+  const [hasUnreadUpdate, setHasUnreadUpdate] = useState(false);
+
+  useEffect(() => {
+    if (parentGamestate) {
+      setGamestate(parentGamestate);
+    }
+  }, [parentGamestate]);
 
   useEffect(() => {
     const fetchCounts = async () => {
@@ -55,6 +84,9 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
       
       const calState = await isCalendarConnected();
       setIsCalendarLinked(calState);
+
+      const state = await Gamification.getState(session.user.id);
+      if (state) setGamestate(state);
 
       const cached = await Storage.get(`tasks_${session.user.id}`);
       if (cached) {
@@ -99,20 +131,69 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
           return d < todayStart;
         });
         setOverdueCount(overdueTasks.length);
+
+        // Starred overdue count
+        setStarredOverdueCount(starredTasks.filter(t => {
+          if (!t.due_date) return false;
+          const d = new Date(t.due_date);
+          d.setHours(0, 0, 0, 0);
+          return d < todayStart;
+        }).length);
+
+        // Planned overdue count
+        setPlannedOverdueCount(overdueTasks.length);
+
+        // Per-list counts and overdue counts
+        const counts = {};
+        const overdueCts = {};
+        uncompleted.forEach(t => {
+          if (t.list_id) {
+            counts[t.list_id] = (counts[t.list_id] || 0) + 1;
+            if (t.due_date) {
+              const d = new Date(t.due_date);
+              d.setHours(0, 0, 0, 0);
+              if (d < todayStart) {
+                overdueCts[t.list_id] = (overdueCts[t.list_id] || 0) + 1;
+              }
+            }
+          }
+        });
+        setListCounts(counts);
+        setListOverdueCounts(overdueCts);
       }
       
       const fetchedLists = await loadLists(session.user.id, (fresh) => setCustomLists(fresh));
       if (fetchedLists) setCustomLists(fetchedLists);
+
+      // Fetch Latest Update
+      try {
+        const { data: updateData, error } = await supabase
+          .from('app_updates')
+          .select('*')
+          .eq('is_published', true)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .single();
+          
+        if (updateData) {
+          setLatestUpdate(updateData);
+          const lastReadId = await Storage.get('last_read_update_id');
+          if (lastReadId !== updateData.id) {
+            setHasUnreadUpdate(true);
+          }
+        }
+      } catch (err) {
+        // Table might not exist yet, ignore
+      }
     };
 
     if (isOpen) {
       fetchCounts();
       Animated.parallel([
-        Animated.spring(slideAnim, {
+        Animated.timing(slideAnim, {
           toValue: 0,
+          duration: 200,
           useNativeDriver: true,
-          tension: 50,
-          friction: 8,
         }),
         Animated.timing(fadeAnim, {
           toValue: 1,
@@ -122,7 +203,7 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
         Animated.stagger(30, [
           Animated.timing(menuItemsAnim, {
             toValue: 1,
-            duration: 400,
+            duration: 200,
             useNativeDriver: true,
           })
         ])
@@ -161,17 +242,16 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
       if (granted) {
         setIsCalendarLinked(true);
         Alert.alert('Connected', 'Your device calendars are now synced!');
-        
-        // Verify by checking permission again
-        setTimeout(async () => {
-          const verified = await isCalendarConnected();
-          console.log('[GlassSidebar] Verification check:', verified);
-          if (!verified) {
-            console.warn('[GlassSidebar] WARNING: Permission verification failed!');
-          }
-        }, 500);
       } else {
-        Alert.alert('Permission Denied', 'Please enable calendar access in your OS settings.');
+        // OS didn't show dialog — redirect to Settings
+        Alert.alert(
+          'Permission Required',
+          'Please enable Calendar access for LifePilot in Settings.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Open Settings', onPress: () => Linking.openSettings() }
+          ]
+        );
       }
     }
   };
@@ -198,6 +278,14 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
     return { uri: `https://api.dicebear.com/7.x/adventurer/png?seed=${seed}&backgroundColor=b6e3f4,c0aede,d1d4f9` };
   };
 
+  const handleOpenUpdates = async () => {
+    setIsUpdatesModalOpen(true);
+    if (hasUnreadUpdate && latestUpdate) {
+      setHasUnreadUpdate(false);
+      await Storage.set('last_read_update_id', latestUpdate.id);
+    }
+  };
+
   // We use absoluteFill but disable touches when closed
   return (
     <View style={[StyleSheet.absoluteFill, { elevation: 100, zIndex: 100 }]} pointerEvents={isOpen ? 'auto' : 'none'}>
@@ -213,7 +301,7 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
         style={[
           styles.sidebar, 
           { 
-            backgroundColor: colorScheme === 'dark' ? 'rgba(0, 0, 0, 0.92)' : 'rgba(255, 255, 255, 0.75)',
+            backgroundColor: colorScheme === 'dark' ? '#000000' : 'rgba(255, 255, 255, 0.75)',
             borderColor: theme.border,
             transform: [{ translateX: slideAnim }] 
           }
@@ -227,10 +315,24 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
           {/* Header */}
           <View style={styles.header}>
             <View style={styles.headerTopRow}>
-              <Image source={getAvatarSource()} style={[styles.avatar, { borderColor: theme.border }]} />
-              <TouchableOpacity onPress={onClose} style={[styles.closeBtn, { backgroundColor: theme.surface, borderColor: theme.border }]}>
-                <X color={theme.text} size={20} />
+              <TouchableOpacity onPress={() => setIsStatsModalOpen(true)} activeOpacity={0.8} style={{ marginBottom: 14 }}>
+                <XPAvatarRing 
+                  avatarSource={getAvatarSource()} 
+                  xp={gamestate.xp} 
+                  level={gamestate.level} 
+                  size={64} 
+                  strokeWidth={3.5} 
+                />
               </TouchableOpacity>
+              <View style={{ flexDirection: 'row', gap: 12, marginTop: 14 }}>
+                <TouchableOpacity onPress={handleOpenUpdates} style={[styles.closeBtn, { backgroundColor: theme.surface, borderColor: theme.border, overflow: 'visible' }]}>
+                  <Bell color={theme.text} size={20} />
+                  {hasUnreadUpdate && <View style={[styles.redDot, { position: 'absolute', top: -2, right: -2, marginRight: 0 }]} />}
+                </TouchableOpacity>
+                <TouchableOpacity onPress={onClose} style={[styles.closeBtn, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+                  <X color={theme.text} size={20} />
+                </TouchableOpacity>
+              </View>
             </View>
             
             <View style={styles.profileInfo}>
@@ -257,6 +359,7 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
               }]
             }]} 
             showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="always"
           >
             {/* Dashboard */}
             <TouchableOpacity
@@ -265,9 +368,10 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
                 currentRoute === 'Dashboard' && { backgroundColor: theme.primary + '22' },
               ]}
               onPress={() => {
-                onClose();
                 if (currentRoute !== 'Dashboard') {
                   navigation.replace('Dashboard');
+                } else {
+                  onClose();
                 }
               }}
             >
@@ -290,7 +394,6 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
                 currentRoute === 'CustomList' && navigation.getState()?.routes?.find(r => r.name === 'CustomList')?.params?.listId === 'inbox' && { backgroundColor: theme.primary + '22' },
               ]}
               onPress={() => {
-                onClose();
                 navigation.replace('CustomList', { listId: 'inbox', listName: 'Inbox' });
               }}
             >
@@ -314,9 +417,10 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
                 currentRoute === 'Today' && { backgroundColor: theme.primary + '22' },
               ]}
               onPress={() => {
-                onClose();
                 if (currentRoute !== 'Today') {
                   navigation.replace('Today');
+                } else {
+                  onClose();
                 }
               }}
             >
@@ -348,9 +452,10 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
                 currentRoute === 'Starred' && { backgroundColor: theme.primary + '22' },
               ]}
               onPress={() => {
-                onClose();
                 if (currentRoute !== 'Starred') {
                   navigation.replace('Starred');
+                } else {
+                  onClose();
                 }
               }}
             >
@@ -365,6 +470,9 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
                 currentRoute === 'Starred' && { fontWeight: '700' },
                 { flex: 1 }
               ]}>Starred</Text>
+              {starredOverdueCount > 0 && (
+                <View style={[styles.redDot, { marginRight: 8 }]} />
+              )}
               {starredCount > 0 && (
                 <View style={[styles.badge, { backgroundColor: theme.text }]}>
                   <Text style={[styles.badgeText, { color: theme.background }]}>{starredCount}</Text>
@@ -379,9 +487,10 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
                 currentRoute === 'Planned' && { backgroundColor: theme.primary + '22' },
               ]}
               onPress={() => {
-                onClose();
                 if (currentRoute !== 'Planned') {
                   navigation.replace('Planned');
+                } else {
+                  onClose();
                 }
               }}
             >
@@ -396,6 +505,9 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
                 currentRoute === 'Planned' && { fontWeight: '700' },
                 { flex: 1 }
               ]}>Planned</Text>
+              {plannedOverdueCount > 0 && (
+                <View style={[styles.redDot, { marginRight: 8 }]} />
+              )}
               {plannedCount > 0 && (
                 <View style={[styles.badge, { backgroundColor: '#27272A' }]}>
                   <Text style={[styles.badgeText, { color: '#ffffff' }]}>{plannedCount}</Text>
@@ -410,9 +522,10 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
                 currentRoute === 'Promises' && { backgroundColor: theme.primary + '22' },
               ]}
               onPress={() => {
-                onClose();
                 if (currentRoute !== 'Promises') {
                   navigation.replace('Promises');
+                } else {
+                  onClose();
                 }
               }}
             >
@@ -429,6 +542,48 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
               ]}>Promises</Text>
             </TouchableOpacity>
 
+            {/* Mindful Lock */}
+            <TouchableOpacity
+              style={[
+                styles.menuItem,
+                currentRoute === 'MindfulLock' && { backgroundColor: '#A855F7' + '22' },
+              ]}
+              onPress={async () => {
+                if (currentRoute !== 'MindfulLock') {
+                  const { getProfile } = require('../utils/mindfulLock');
+                  const prof = userId ? await getProfile(userId) : null;
+                  if (prof?.onboardingComplete) {
+                    navigation.replace('MindfulLock', { userId });
+                  } else {
+                    navigation.replace('MindfulLockSetup', { userId });
+                  }
+                } else {
+                  onClose();
+                }
+              }}
+            >
+              <Brain
+                color={currentRoute === 'MindfulLock' ? '#A855F7' : theme.textMuted}
+                size={24}
+                style={styles.menuIcon}
+              />
+              <Text style={[
+                styles.menuText,
+                { color: currentRoute === 'MindfulLock' ? '#A855F7' : theme.textMuted },
+                currentRoute === 'MindfulLock' && { fontWeight: '700' },
+                { flex: 1 }
+              ]}>Mindful Lock</Text>
+              <View style={{
+                backgroundColor: '#A855F7',
+                borderRadius: 6,
+                paddingHorizontal: 6,
+                paddingVertical: 2,
+                marginRight: 4,
+              }}>
+                <Text style={{ color: '#fff', fontSize: 9, fontWeight: '800', letterSpacing: 0.5 }}>NEW</Text>
+              </View>
+            </TouchableOpacity>
+
             <View style={[styles.divider, { backgroundColor: theme.border, marginVertical: 8 }]} />
 
             {/* Custom Lists */}
@@ -440,7 +595,6 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
                   currentRoute === 'CustomList' && navigation.getState()?.routes?.find(r => r.name === 'CustomList')?.params?.listId === list.id && { backgroundColor: theme.primary + '22' },
                 ]}
                 onPress={() => {
-                  onClose();
                   navigation.replace('CustomList', { listId: list.id, listName: list.name });
                 }}
               >
@@ -448,6 +602,14 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
                 <Text style={[styles.menuText, { color: theme.textMuted, flex: 1 }]} numberOfLines={1}>
                   {list.name}
                 </Text>
+                {(listOverdueCounts[list.id] || 0) > 0 && (
+                  <View style={[styles.redDot, { marginRight: 8 }]} />
+                )}
+                {(listCounts[list.id] || 0) > 0 && (
+                  <View style={[styles.badge, { backgroundColor: '#27272A' }]}>
+                    <Text style={[styles.badgeText, { color: '#ffffff' }]}>{listCounts[list.id]}</Text>
+                  </View>
+                )}
               </TouchableOpacity>
             ))}
 
@@ -481,9 +643,11 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
               ]}
               onPress={() => {
                 onClose();
-                if (currentRoute !== 'History') {
-                  navigation.replace('History');
-                }
+                setTimeout(() => {
+                  if (currentRoute !== 'History') {
+                    navigation.replace('History');
+                  }
+                }, 0);
               }}
             >
               <History
@@ -520,6 +684,23 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
               </View>
             </View>
 
+            {/* Gamification Guide */}
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => setIsGuideModalOpen(true)}
+            >
+              <Award
+                color="#A855F7"
+                size={24}
+                style={styles.menuIcon}
+              />
+              <Text style={[
+                styles.menuText,
+                { color: '#A855F7', fontWeight: '700' },
+                { flex: 1 }
+              ]}>XP & Rewards</Text>
+            </TouchableOpacity>
+
             {/* Permissions */}
             <TouchableOpacity
               style={[
@@ -528,12 +709,14 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
               ]}
               onPress={() => {
                 onClose();
-                if (currentRoute !== 'Permissions') {
-                  navigation.replace('Permissions');
-                }
+                setTimeout(() => {
+                  if (currentRoute !== 'Permissions') {
+                    navigation.replace('Permissions');
+                  }
+                }, 0);
               }}
             >
-              <ShieldCheck
+              <Key
                 color={currentRoute === 'Permissions' ? theme.primary : theme.textMuted}
                 size={24}
                 style={styles.menuIcon}
@@ -553,9 +736,11 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
               ]}
               onPress={() => {
                 onClose();
-                if (currentRoute !== 'Settings') {
-                  navigation.replace('Settings');
-                }
+                setTimeout(() => {
+                  if (currentRoute !== 'Settings') {
+                    navigation.replace('Settings');
+                  }
+                }, 0);
               }}
             >
               <Settings
@@ -586,6 +771,26 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
           </View>
         </View>
       </Animated.View>
+
+      <GamificationStatsModal 
+        isVisible={isStatsModalOpen} 
+        onClose={() => setIsStatsModalOpen(false)} 
+        gamestate={gamestate} 
+        profile={profile} 
+      />
+
+      <GamificationGuideModal
+        isVisible={isGuideModalOpen}
+        onClose={() => setIsGuideModalOpen(false)}
+        gamestate={gamestate}
+      />
+
+      <UpdatesModal 
+        isVisible={isUpdatesModalOpen} 
+        onClose={() => setIsUpdatesModalOpen(false)}
+        updateData={latestUpdate}
+        isLoading={isFetchingUpdate}
+      />
     </View>
   );
 };

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, Dimensions } from 'react-native';
+import { StyleSheet, View, Text, TouchableOpacity, Dimensions, AppState } from 'react-native';
 import Animated, { useSharedValue, useAnimatedStyle, withTiming, Easing, runOnJS } from 'react-native-reanimated';
 import { Storage } from '../utils/storage';
 import { FadeText } from './FadeText';
@@ -52,7 +52,20 @@ export const DailyPromiseOverlay = ({ userId }) => {
         containerOpacity.value = withTiming(1, { duration: 800 });
       }
     };
+
+    // Check immediately on mount
     checkPromise();
+
+    // Check when app comes to foreground
+    const subscription = AppState.addEventListener('change', nextAppState => {
+      if (nextAppState === 'active') {
+        checkPromise();
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
   }, [userId]);
 
   // Handle countdown logic

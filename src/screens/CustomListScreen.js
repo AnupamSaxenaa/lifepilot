@@ -1,6 +1,6 @@
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
-import { ArrowUp, Bell, Calendar, Check, CheckCircle2, ChevronDown, ChevronRight, Circle, FileText, GripVertical, ListChecks, Menu, MoreVertical, Plus, Repeat, Star, Sun, Trash2, X } from 'lucide-react-native';
+import { ArrowUp, Bell, Calendar, Check, CheckCircle2, ChevronDown, ChevronRight, Circle, FileText, Flag, GripVertical, ListChecks, Menu, MoreVertical, Plus, Repeat, Star, Sun, Trash2, X } from 'lucide-react-native';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, BackHandler, Keyboard, KeyboardAvoidingView, Modal, Platform, ScrollView, Share, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { NestableDraggableFlatList, NestableScrollContainer, ScaleDecorator } from 'react-native-draggable-flatlist';
@@ -14,6 +14,8 @@ import { cacheTasks, deleteList, addTask as dmAddTask, deleteTask as dmDeleteTas
 import { supabase } from '../lib/supabase';
 import { syncToSupabase } from '../lib/syncQueue';
 import { COLORS } from '../theme/theme';
+import { getPriorityColor, shouldShowFlag, PRIORITY_LEVELS, PRIORITY_CONFIG } from '../config/priorityConfig';
+import { LevelUpModal } from '../components/LevelUpModal';
 import { Gamification } from '../utils/gamification';
 import { cancelTaskReminder, scheduleTaskReminder } from '../utils/notifications';
 import { Storage } from '../utils/storage';
@@ -89,6 +91,8 @@ export const CustomListScreen = ({ navigation, route }) => {
   const [generatedPlan, setGeneratedPlan] = useState(null);
   const [isAddingTask, setIsAddingTask] = useState(false);
   const [activeToolbarMenu, setActiveToolbarMenu] = useState(null);
+  const [levelUpData, setLevelUpData] = useState(null);
+  const completingTimeouts = useRef({});
   const [showCompleted, setShowCompleted] = useState(true);
   const [completingTaskIds, setCompletingTaskIds] = useState([]);
 
@@ -96,6 +100,7 @@ export const CustomListScreen = ({ navigation, route }) => {
   const [pendingDueDate, setPendingDueDate] = useState(null);
   const [pendingReminder, setPendingReminder] = useState(null);
   const [pendingRepeatRule, setPendingRepeatRule] = useState(null);
+  const [pendingPriority, setPendingPriority] = useState(1);
 
   // ─── Keyboard state for Android fallback ──────────────
   const [androidKeyboardHeight, setAndroidKeyboardHeight] = useState(0);
@@ -240,7 +245,12 @@ export const CustomListScreen = ({ navigation, route }) => {
       const s = [...arr];
       switch (sortBy) {
         case 'importance':
-          s.sort((a, b) => (b.is_important ? 1 : 0) - (a.is_important ? 1 : 0));
+          s.sort((a, b) => {
+            const pa = a.priority ?? 1;
+            const pb = b.priority ?? 1;
+            if (pb !== pa) return pb - pa;
+            return (b.is_important ? 1 : 0) - (a.is_important ? 1 : 0);
+          });
           break;
         case 'due_date':
           s.sort((a, b) => {
@@ -274,7 +284,12 @@ export const CustomListScreen = ({ navigation, route }) => {
       const s = [...arr];
       switch (sortBy) {
         case 'importance':
-          s.sort((a, b) => (b.is_important ? 1 : 0) - (a.is_important ? 1 : 0));
+          s.sort((a, b) => {
+            const pa = a.priority ?? 1;
+            const pb = b.priority ?? 1;
+            if (pb !== pa) return pb - pa;
+            return (b.is_important ? 1 : 0) - (a.is_important ? 1 : 0);
+          });
           break;
         case 'due_date':
           s.sort((a, b) => {
@@ -403,6 +418,7 @@ export const CustomListScreen = ({ navigation, route }) => {
       due_date: pendingDueDate ? pendingDueDate.toISOString() : null,
       reminder_time: pendingReminder ? pendingReminder.toISOString() : null,
       repeat_rule: pendingRepeatRule,
+      priority: pendingPriority,
       list_id: listId,
     };
 
@@ -420,6 +436,7 @@ export const CustomListScreen = ({ navigation, route }) => {
     setPendingDueDate(null);
     setPendingReminder(null);
     setPendingRepeatRule(null);
+    setPendingPriority(1);
     setActiveToolbarMenu(null);
     setIsAddingTask(false);
   };
@@ -432,17 +449,19 @@ export const CustomListScreen = ({ navigation, route }) => {
       setCompletingTaskIds(prev => [...prev, id]);
 
       // 2. After scribble animation finishes (~800ms), actually move to completed
-      setTimeout(() => {
+      completingTimeouts.current[id] = setTimeout(async () => {
         if (userId) {
-          const currentTasks = latestTasksRef.current;
           const completedAt = new Date().toISOString();
-          const updated = currentTasks.map(t =>
+          
+          const freshTasks = await Storage.get(`tasks_${userId}`) || [];
+          const updated = freshTasks.map(t =>
             t.id === id ? { ...t, is_completed: true, completed_at: completedAt } : t
           );
 
           // Update local state and clear animation state together in the same render cycle
           setTasks(updated);
           setCompletingTaskIds(prev => prev.filter(tid => tid !== id));
+          delete completingTimeouts.current[id];
 
           // Run cache and sync tasks in the background asynchronously
           cacheTasks(userId, updated);
@@ -451,16 +470,36 @@ export const CustomListScreen = ({ navigation, route }) => {
             { column: 'id', value: id }
           );
 
-          const task = currentTasks.find(t => t.id === id);
+          const task = freshTasks.find(t => t.id === id);
           if (task?.reminder_time) cancelTaskReminder(id);
-          Gamification.addXP(userId, 10);
+          
+          let xpAmount = 10;
+          if (task) {
+            if (task.priority === 3) xpAmount = 50;
+            else if (task.priority === 2) xpAmount = 40;
+            else if (task.priority === 0) xpAmount = 5;
+          }
+          const oldState = await Gamification.checkStreak(userId);
+          const prevLevel = oldState?.level || 1;
+          
+          const newState = await Gamification.addXP(userId, xpAmount);
+          
+          if (newState && newState.level > prevLevel) {
+            setLevelUpData({ oldLevel: prevLevel, newLevel: newState.level });
+          }
         }
       }, 800);
     } else {
       // Un-completing: instant
+      if (completingTimeouts.current[id]) {
+        clearTimeout(completingTimeouts.current[id]);
+        delete completingTimeouts.current[id];
+      }
+      setCompletingTaskIds(prev => prev.filter(tid => tid !== id));
+
       if (userId) {
-        const currentTasks = latestTasksRef.current;
-        const updated = currentTasks.map(t =>
+        const freshTasks = await Storage.get(`tasks_${userId}`) || [];
+        const updated = freshTasks.map(t =>
           t.id === id ? { ...t, is_completed: false, completed_at: null } : t
         );
         
@@ -474,9 +513,16 @@ export const CustomListScreen = ({ navigation, route }) => {
           { column: 'id', value: id }
         );
 
-        const task = currentTasks.find(t => t.id === id);
+        const task = freshTasks.find(t => t.id === id);
         if (task?.reminder_time) scheduleTaskReminder(id, task.title, task.reminder_time);
-        Gamification.addXP(userId, -10);
+        
+        let xpAmount = 10;
+        if (task) {
+          if (task.priority === 3) xpAmount = 50;
+          else if (task.priority === 2) xpAmount = 40;
+          else if (task.priority === 0) xpAmount = 5;
+        }
+        await Gamification.addXP(userId, -xpAmount);
       }
     }
   };
@@ -647,7 +693,7 @@ export const CustomListScreen = ({ navigation, route }) => {
         </View>
 
         <KeyboardAvoidingView 
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined} 
+          behavior={Platform.OS === 'ios' ? 'padding' : 'padding'} 
           style={styles.container}
         >
 
@@ -702,7 +748,7 @@ export const CustomListScreen = ({ navigation, route }) => {
                 renderItem={({ item: task, drag, isActive }) => {
                   const hasSubtasks = task.subtasks && task.subtasks.length > 0;
                   const hasNotes = task.notes && task.notes.trim().length > 0;
-                  const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes;
+                  const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes || true;
                   const todayStart = new Date();
                   todayStart.setHours(0, 0, 0, 0);
                   const isOverdue = task.due_date && new Date(task.due_date) < todayStart && !task.is_completed;
@@ -722,11 +768,6 @@ export const CustomListScreen = ({ navigation, route }) => {
                           isActive && { backgroundColor: 'rgba(255,255,255,0.08)', elevation: 12 }
                         ]}>
                         
-                        <View style={[
-                          styles.cardIndicator,
-                          task.is_important && { backgroundColor: '#FFFFFF' }
-                        ]} />
-
                         {/* Left: drag handle + checkbox */}
                         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                           {!task.is_completed && !completingTaskIds.includes(task.id) && (
@@ -735,7 +776,7 @@ export const CustomListScreen = ({ navigation, route }) => {
                             </TouchableOpacity>
                           )}
                           <TouchableOpacity 
-                            onPress={() => toggleTask(task.id, task.is_completed)} 
+                            onPress={() => toggleTask(task.id, task.is_completed || completingTaskIds.includes(task.id))} 
                             disabled={completingTaskIds.includes(task.id)} 
                             style={[
                               styles.checkbox, 
@@ -766,6 +807,11 @@ export const CustomListScreen = ({ navigation, route }) => {
 
                           {hasMeta && (
                             <View style={styles.taskMetaRow}>
+                              {shouldShowFlag(task.priority) && (
+                                <View style={styles.metaPill}>
+                                  <Flag color={getPriorityColor(task.priority)} size={11} fill={getPriorityColor(task.priority)} />
+                                </View>
+                              )}
                               {task.due_date && (
                                 <View style={styles.metaPill}>
                                   <Calendar color={isOverdue ? '#EF4444' : '#888'} size={11} />
@@ -859,7 +905,7 @@ export const CustomListScreen = ({ navigation, route }) => {
                   {showCompleted && completedTodayTasks.map(task => {
                     const hasSubtasks = task.subtasks && task.subtasks.length > 0;
                     const hasNotes = task.notes && task.notes.trim().length > 0;
-                    const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes;
+                    const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes || true;
                     const completedSubs = hasSubtasks ? task.subtasks.filter(s => s.is_completed).length : 0;
                     const totalSubs = hasSubtasks ? task.subtasks.length : 0;
 
@@ -939,8 +985,7 @@ export const CustomListScreen = ({ navigation, route }) => {
           {/* ─── Bottom Input Area ────────────────────── */}
           {isAddingTask ? (
             <View style={[styles.bottomInputWrapper, {
-              paddingBottom: Platform.OS === 'android' && androidKeyboardHeight > 0 ? 32 : Math.max(insets.bottom, 16),
-              marginBottom: Platform.OS === 'android' && androidKeyboardHeight > 0 ? androidKeyboardHeight : 0,
+              paddingBottom: Math.max(insets.bottom, 16),
             }]}>
 
               {/* Due Date Pop-up */}
@@ -1020,6 +1065,19 @@ export const CustomListScreen = ({ navigation, route }) => {
                 </Animated.View>
               )}
 
+              {/* Priority Pop-up */}
+              {activeToolbarMenu === 'priority' && (
+                <Animated.View entering={FadeIn.duration(200)} exiting={FadeOut.duration(150)} style={[styles.toolbarMenu, { bottom: 85, right: 16 }]}>
+                  {Object.entries(PRIORITY_CONFIG).reverse().map(([value, config]) => (
+                    <TouchableOpacity key={value} style={styles.toolbarMenuItem} onPress={() => { setPendingPriority(Number(value)); setActiveToolbarMenu(null); }}>
+                      <Flag color={config.color} size={20} fill={Number(value) !== 1 ? config.color : 'transparent'} style={styles.toolbarMenuIcon} />
+                      <Text style={styles.toolbarMenuText}>{config.label}</Text>
+                      {pendingPriority === Number(value) && <Text style={{ color: '#fff', marginLeft: 'auto' }}>✓</Text>}
+                    </TouchableOpacity>
+                  ))}
+                </Animated.View>
+              )}
+
               {/* Pending Tags */}
               {renderPendingTags()}
 
@@ -1055,6 +1113,10 @@ export const CustomListScreen = ({ navigation, route }) => {
                 <TouchableOpacity style={[styles.toolbarButton, pendingRepeatRule && styles.toolbarButtonActive]} onPress={() => setActiveToolbarMenu(activeToolbarMenu === 'repeat' ? null : 'repeat')}>
                   <Repeat color={pendingRepeatRule ? '#fff' : '#888'} size={18} />
                   <Text style={[styles.toolbarText, pendingRepeatRule && { color: '#fff' }]}>Repeat</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.toolbarButton, pendingPriority !== 1 && styles.toolbarButtonActive]} onPress={() => setActiveToolbarMenu(activeToolbarMenu === 'priority' ? null : 'priority')}>
+                  <Flag color={pendingPriority !== 1 ? getPriorityColor(pendingPriority) : '#888'} size={18} fill={pendingPriority !== 1 ? getPriorityColor(pendingPriority) : 'transparent'} />
+                  <Text style={[styles.toolbarText, pendingPriority !== 1 && { color: '#fff' }]}>Priority</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -1261,6 +1323,12 @@ export const CustomListScreen = ({ navigation, route }) => {
         </KeyboardAvoidingView>
       </Modal>
 
+      <LevelUpModal
+        isVisible={!!levelUpData}
+        oldLevel={levelUpData?.oldLevel || 1}
+        newLevel={levelUpData?.newLevel || 2}
+        onClose={() => setLevelUpData(null)}
+      />
     </BackgroundWrapper>
   );
 };

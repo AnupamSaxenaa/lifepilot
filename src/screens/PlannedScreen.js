@@ -140,7 +140,14 @@ export const PlannedScreen = ({ navigation }) => {
             { column: 'id', value: taskId }
           );
           
-          await Gamification.addXP(userId, 25);
+          const targetTask = latestTasks.find(t => t.id === taskId);
+          let xpAmount = 10;
+          if (targetTask) {
+            if (targetTask.priority === 3) xpAmount = 50;
+            else if (targetTask.priority === 2) xpAmount = 40;
+            else if (targetTask.priority === 0) xpAmount = 5;
+          }
+          await Gamification.addXP(userId, xpAmount);
         }
         setCompletingTaskIds(prev => prev.filter(id => id !== taskId));
       }, 500);
@@ -164,7 +171,14 @@ export const PlannedScreen = ({ navigation }) => {
           { column: 'id', value: taskId }
         );
         
-        await Gamification.addXP(userId, -25);
+        const targetTask = latestTasks.find(t => t.id === taskId);
+        let xpAmount = 10;
+        if (targetTask) {
+          if (targetTask.priority === 3) xpAmount = 50;
+          else if (targetTask.priority === 2) xpAmount = 40;
+          else if (targetTask.priority === 0) xpAmount = 5;
+        }
+        await Gamification.addXP(userId, -xpAmount);
       }
     }
   };

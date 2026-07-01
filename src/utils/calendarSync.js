@@ -26,7 +26,11 @@ export const requestCalendarPermissions = async () => {
     const { status, granted, canAskAgain } = await Calendar.requestCalendarPermissions();
     console.log('[CalendarSync] Permission result:', { status, granted, canAskAgain });
     
-    return status === 'granted';
+    if (status === 'granted') return true;
+    
+    // If OS didn't show the dialog, canAskAgain will be false
+    // Return false so the caller can open Settings
+    return false;
   } catch (err) {
     console.error('[CalendarSync] Permission request failed:', err);
     console.error('[CalendarSync] Error details:', err.message);

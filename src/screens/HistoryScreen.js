@@ -7,7 +7,8 @@ import {
     Menu,
     RotateCcw,
     Search,
-    Star
+    Star,
+    Trash2
 } from 'lucide-react-native';
 import { useEffect, useMemo, useState } from 'react';
 import {
@@ -18,7 +19,8 @@ import {
     TextInput,
     TouchableOpacity,
     useColorScheme,
-    View
+    View,
+    Alert
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { GlassSidebar } from '../components/GlassSidebar';
@@ -82,9 +84,22 @@ export const HistoryScreen = ({ navigation }) => {
     setTasks(updated);
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
     navigation.reset({ index: 0, routes: [{ name: 'Onboarding' }] });
-    supabase.auth.signOut();
+  };
+
+  const handleClearHistory = () => {
+    Alert.alert('Clear History', 'Are you sure you want to permanently delete all your completed tasks?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: async () => {
+        setTasks(prev => prev.filter(t => !t.is_completed));
+        const latestTasks = await Storage.get(`tasks_${userId}`) || [];
+        const uncompleted = latestTasks.filter(t => !t.is_completed);
+        await cacheTasks(userId, uncompleted);
+        await supabase.from('tasks').delete().eq('is_completed', true);
+      }}
+    ]);
   };
 
   // ─── Timeline Grouping Logic ─────────────────────────────
@@ -225,7 +240,9 @@ export const HistoryScreen = ({ navigation }) => {
             <Menu color={THEME_COLOR} size={26} />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>History</Text>
-          <View style={{ width: 44 }} />
+          <TouchableOpacity onPress={handleClearHistory} style={styles.iconBtn}>
+            <Trash2 color="#EF4444" size={24} />
+          </TouchableOpacity>
         </View>
 
         {/* Search Bar */}

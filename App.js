@@ -1,4 +1,3 @@
-import NetInfo from '@react-native-community/netinfo';
 import { DarkTheme, NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { StatusBar } from 'expo-status-bar';
@@ -8,13 +7,14 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { PlaywriteGBJ_400Regular, useFonts } from '@expo-google-fonts/playwrite-gb-j';
 import notifee, { EventType } from '@notifee/react-native';
-import { AppRegistry, Platform } from 'react-native';
+import { AppRegistry, Platform, Linking, AppState } from 'react-native';
 import { DailyPromiseOverlay } from './src/components/DailyPromiseOverlay';
 import { ErrorBoundary } from './src/components/ErrorBoundary';
 import { ForceUpdateBlocker } from './src/components/ForceUpdateBlocker';
 import { UpdateProgress } from './src/components/UpdateProgress';
 import { supabase } from './src/lib/supabase';
-import { drainSyncQueue } from './src/lib/syncQueue';
+import { drainSyncQueue, setupNetworkListener } from './src/lib/syncQueue';
+import { scheduleInactiveReminder, cancelInactiveReminder } from './src/utils/InactiveNotifier';
 import { AlarmListScreen } from './src/screens/AlarmListScreen';
 import AlarmScreen from './src/screens/AlarmScreen';
 import { CustomListScreen } from './src/screens/CustomListScreen';
@@ -34,6 +34,10 @@ import { SettingsScreen } from './src/screens/SettingsScreen';
 import { StarredScreen } from './src/screens/StarredScreen';
 import { TaskDetailScreen } from './src/screens/TaskDetailScreen';
 import { TodayScreen } from './src/screens/TodayScreen';
+import { MindfulLockScreen } from './src/screens/MindfulLockScreen';
+import { MindfulLockSetupScreen } from './src/screens/MindfulLockSetupScreen';
+import { BlockedAppScreen } from './src/screens/BlockedAppScreen';
+import { WidgetSettingsScreen } from './src/screens/WidgetSettingsScreen';
 import { scheduleSnoozeAlarm } from './src/utils/AlarmManager';
 import { UpdateManager } from './src/utils/updateManager';
 import { checkForceUpdate } from './src/utils/versionChecker';
@@ -79,31 +83,62 @@ export default function App() {
   const [forceUpdateInfo, setForceUpdateInfo] = useState(null);
   const [checkingForceUpdate, setCheckingForceUpdate] = useState(true);
 
-  // 🌐 Network Monitoring — Auto-sync when coming online
+  // 🌐 Network Monitoring — Auto-sync when coming back online
   useEffect(() => {
-    const unsubscribe = NetInfo.addEventListener(state => {
-      if (state.isConnected && state.isInternetReachable) {
-        console.log('[NetInfo] Network connected, draining sync queue...');
-        drainSyncQueue().catch(err => {
-          console.error('[NetInfo] Sync queue drain failed:', err);
-        });
-      } else if (state.isConnected === false) {
-        console.log('[NetInfo] Network disconnected - app will continue working offline');
+    const unsubscribe = setupNetworkListener();
+    return () => { if (unsubscribe) unsubscribe(); };
+  }, []);
+
+  // 🔔 Inactive Reminder — Schedule when leaving, cancel when returning
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', nextAppState => {
+      if (nextAppState === 'active') {
+        cancelInactiveReminder();
+      } else if (nextAppState === 'background' || nextAppState === 'inactive') {
+        if (userId) {
+          scheduleInactiveReminder(userId);
+        }
       }
     });
 
-    return () => unsubscribe();
-  }, []);
+    return () => {
+      subscription.remove();
+    };
+  }, [userId]);
 
   useEffect(() => {
     const checkAuth = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session) {
-        // Drain any offline mutations from previous session
-        drainSyncQueue().catch(() => {});
-        setUserId(session.user.id); // ← Store userId for DailyPromiseOverlay
-        setInitialRoute('Dashboard');
-      } else {
+      try {
+        // Race against a 3-second timeout so the app doesn't hang offline
+        const result = await Promise.race([
+          supabase.auth.getSession(),
+          new Promise((resolve) => setTimeout(() => resolve({ data: { session: null }, timedOut: true }), 3000)),
+        ]);
+        const session = result?.data?.session;
+        if (session) {
+          // Drain any offline mutations from previous session
+          drainSyncQueue().catch(() => {});
+          setUserId(session.user.id); // ← Store userId for DailyPromiseOverlay
+          setInitialRoute('Dashboard');
+        } else if (result?.timedOut) {
+          // Timed out — check AsyncStorage for a cached session
+          const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+          const cached = await AsyncStorage.getItem('sb-' + process.env.EXPO_PUBLIC_SUPABASE_URL?.replace('https://', '').split('.')[0] + '-auth-token');
+          if (cached) {
+            try {
+              const parsed = JSON.parse(cached);
+              if (parsed?.user?.id) {
+                setUserId(parsed.user.id);
+                setInitialRoute('Dashboard');
+                return;
+              }
+            } catch {}
+          }
+          setInitialRoute('Onboarding');
+        } else {
+          setInitialRoute('Onboarding');
+        }
+      } catch {
         setInitialRoute('Onboarding');
       }
     };
@@ -111,19 +146,32 @@ export default function App() {
   }, []);
 
   // Check for FORCE UPDATE first (critical - blocks app if needed)
+  // Race against a 3-second timeout so offline users aren't blocked
   useEffect(() => {
     const checkVersion = async () => {
       console.log('[ForceUpdate] Checking version requirements...');
-      const { updateRequired, updateInfo } = await checkForceUpdate();
-      
-      setForceUpdateRequired(updateRequired);
-      setForceUpdateInfo(updateInfo);
-      setCheckingForceUpdate(false);
+      try {
+        const result = await Promise.race([
+          checkForceUpdate(),
+          new Promise((resolve) => setTimeout(() => resolve({ updateRequired: false, updateInfo: null, timedOut: true }), 3000)),
+        ]);
 
-      if (updateRequired) {
-        console.log('[ForceUpdate] Force update required!', updateInfo);
-      } else {
-        console.log('[ForceUpdate] App version is up to date');
+        if (result.timedOut) {
+          console.log('[ForceUpdate] Timed out (offline?) — skipping force update check');
+        }
+
+        setForceUpdateRequired(result.updateRequired);
+        setForceUpdateInfo(result.updateInfo);
+        setCheckingForceUpdate(false);
+
+        if (result.updateRequired) {
+          console.log('[ForceUpdate] Force update required!', result.updateInfo);
+        } else {
+          console.log('[ForceUpdate] App version is up to date');
+        }
+      } catch {
+        console.log('[ForceUpdate] Error checking — allowing app to proceed');
+        setCheckingForceUpdate(false);
       }
     };
 
@@ -181,7 +229,23 @@ export default function App() {
       <GestureHandlerRootView style={{ flex: 1, backgroundColor: '#000' }}>
         <SafeAreaProvider style={{ backgroundColor: '#000' }}>
           <StatusBar style="light" />
-          <NavigationContainer theme={DarkTheme}>
+          <NavigationContainer 
+            theme={DarkTheme}
+            linking={{
+              prefixes: ['lifepilot-alpha://'],
+              config: {
+                screens: {
+                  Today: 'today',
+                  Settings: 'settings',
+                  WidgetSettings: 'widget-settings',
+                  TaskDetail: 'task/:taskId',
+                  MindfulLock: 'mindful-lock-dashboard',
+                  BlockedApp: 'blocked',
+                  BlockedAppLegacy: 'mindful-lock',
+                }
+              }
+            }}
+          >
             <Stack.Navigator 
               initialRouteName={initialRoute}
               screenOptions={{
@@ -200,6 +264,7 @@ export default function App() {
               <Stack.Screen name="Today" component={TodayScreen} />
               <Stack.Screen name="Starred" component={StarredScreen} />
               <Stack.Screen name="Settings" component={SettingsScreen} />
+              <Stack.Screen name="WidgetSettings" component={WidgetSettingsScreen} />
               <Stack.Screen name="Permissions" component={PermissionsScreen} />
               <Stack.Screen name="Planned" component={PlannedScreen} />
               <Stack.Screen name="Promises" component={PromisesScreen} />
@@ -216,6 +281,14 @@ export default function App() {
                 component={FocusModeScreen}
                 options={{ animation: 'fade' }}
               />
+              <Stack.Screen name="MindfulLock" component={MindfulLockScreen} />
+              <Stack.Screen 
+                name="MindfulLockSetup" 
+                component={MindfulLockSetupScreen}
+                options={{ animation: 'slide_from_right' }}
+              />
+              <Stack.Screen name="BlockedApp" component={BlockedAppScreen} />
+              <Stack.Screen name="BlockedAppLegacy" component={BlockedAppScreen} />
             </Stack.Navigator>
           </NavigationContainer>
 

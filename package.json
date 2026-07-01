@@ -1,7 +1,7 @@
 {
   "name": "lifepilot",
   "main": "node_modules/expo/AppEntry.js",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "dependencies": {
     "@expo-google-fonts/dancing-script": "^0.4.2",
     "@expo-google-fonts/playwrite-gb-j": "^0.4.1",
@@ -52,6 +52,7 @@
     "react-dom": "19.2.3",
     "react-native": "0.85.3",
     "react-native-android-widget": "^0.20.3",
+    "react-native-confetti-cannon": "^1.5.2",
     "react-native-draggable-flatlist": "^4.0.3",
     "react-native-gesture-handler": "~2.31.1",
     "react-native-keyboard-aware-scroll-view": "^0.9.5",

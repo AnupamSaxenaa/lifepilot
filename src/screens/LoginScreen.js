@@ -1,4 +1,5 @@
 import { makeRedirectUri } from 'expo-auth-session';
+import Constants from 'expo-constants';
 import * as WebBrowser from 'expo-web-browser';
 import { ArrowLeft, Lock, LogIn } from 'lucide-react-native';
 import { useState } from 'react';
@@ -92,8 +93,10 @@ export const LoginScreen = ({ navigation }) => {
       setLoading(true);
       setError(null);
       
+      // Dynamically pick the correct scheme based on the app environment
+      const scheme = Constants.expoConfig?.scheme?.[0] || 'com.anupam.lp';
       const redirectUrl = makeRedirectUri({
-        scheme: 'com.anupam.lp', // Use package name for better compatibility
+        scheme: scheme,
       });
       
       console.log('[Google Auth] Redirect URL:', redirectUrl);

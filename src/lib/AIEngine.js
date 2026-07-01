@@ -1,4 +1,5 @@
 import { AI_CONFIG } from '../config/env';
+import { getPriorityLabel } from '../config/priorityConfig';
 
 const asArray = (value, fallback) => {
   const list = Array.isArray(value) && value.length > 0
@@ -245,7 +246,7 @@ const callGemini = async (messages, options = {}) => {
       return data.candidates[0].content.parts[0].text;
     } catch (error) {
       lastError = error;
-      console.error(`Gemini ${model} exception:`, error.message);
+      console.log(`[AI Engine] Gemini ${model} fallback triggered:`, error.message?.substring(0, 50) + '...');
     }
   }
 
@@ -542,5 +543,202 @@ USER MEMORY: ${memory || "None"}`
   } catch (err) {
     console.log('Coach AI error:', err.message);
     return { minutes: 25, advice: "Zero distractions. Let's go.", tough_love: "Quitting is for the weak. Get back to work." };
+  }
+};
+
+export const generateInactivityNudge = async (tasks) => {
+  const uncompleted = (tasks || []).filter(t => !t.is_completed);
+  if (uncompleted.length === 0) return null;
+
+  const taskSummary = uncompleted
+    .map(t => `- "${t.title}" [${getPriorityLabel(t.priority)}]`)
+    .join('\n');
+
+  const messages = [
+    {
+      role: 'system',
+      content: `You are LifePilot's notification engine.
+Given the user's pending tasks, write a SHORT (max 120 chars), punchy, motivational push notification body text.
+The message should create urgency and make the user want to open the app.
+Include a reference to their most important task.
+Examples of good messages:
+- "🔥 3 tasks waiting — \"Submit Report\" is urgent! Don't let it slip."
+- "⚡ You have 5 tasks today. Start with \"Gym\" and crush it!"
+Return ONLY the notification text string, no JSON, no quotes.`
+    },
+    {
+      role: 'user',
+      content: `Pending tasks:\n${taskSummary}`
+    }
+  ];
+
+  try {
+    let rawResponse = '';
+    try {
+      rawResponse = await callGemini(messages);
+    } catch (e1) {
+      try {
+        rawResponse = await callGroq(messages);
+      } catch (e2) {
+        rawResponse = await callMistral(messages);
+      }
+    }
+    return rawResponse.trim();
+  } catch (err) {
+    console.log('Inactivity nudge AI error:', err.message);
+    const count = uncompleted.length;
+    return `📋 You have ${count} task${count === 1 ? '' : 's'} waiting. Time to get things done!`;
+  }
+};
+
+// ═══════════════════════════════════════════════════════
+// MINDFUL LOCK — AI Intervention
+// ═══════════════════════════════════════════════════════
+
+const PERSONA_SYSTEM_PROMPTS = {
+  gentle: `You are a gentle, caring coach. You speak warmly and encouragingly. You never guilt-trip. You remind the user of their goals with kindness and celebrate their wins.`,
+  tough: `You are a tough-love drill sergeant. You're direct, blunt, and no-nonsense. You call out weak excuses. You push the user to be their best self with harsh honesty.`,
+  stoic: `You are a stoic philosopher mentor. You speak in calm, measured wisdom. You reference timeless principles of discipline, presence, and self-mastery. You ask deep questions.`,
+  witty: `You are a witty, sarcastic friend. You use humor and playful roasts to keep the user honest. You're funny but ultimately caring. You make them laugh at their own impulses.`,
+};
+
+export const generateAggressiveBlockMessage = async (appName, tasks = []) => {
+  const taskTitles = tasks.map(t => t.title).join(', ');
+  const taskContext = taskTitles ? `Their tasks for today are: ${taskTitles}` : 'They have no tasks listed, but they still shouldn\'t be wasting time.';
+
+  const messages = [
+    {
+      role: 'system',
+      content: `You are a strict, aggressive, tough-love productivity coach. The user just tried to open a blocked app (${appName}) and their daily limit is up.
+${taskContext}
+
+Write a direct, short, aggressive message telling them to get off ${appName} and get back to work. Mention their tasks if any. Start with something like "WTF are you doing?" or "Seriously?".
+Keep it under 3 sentences. No markdown, no JSON, just the raw text.`
+    },
+    { role: 'user', content: `I just tried to open ${appName}. Yell at me and tell me to get back to my tasks.` }
+  ];
+
+  try {
+    let rawResponse = '';
+    try {
+      rawResponse = await callGemini(messages);
+    } catch (e1) {
+      try {
+        rawResponse = await callGroq(messages);
+      } catch (e2) {
+        rawResponse = await callMistral(messages);
+      }
+    }
+    
+    if (rawResponse) return rawResponse.trim();
+  } catch (error) {
+    console.error('Failed to generate aggressive block message:', error);
+  }
+
+  return `WTF are you doing opening ${appName}? You've hit your limit. Close it right now and get back to work.`;
+};
+
+export const generateMindfulIntervention = async (appName, userGoal, persona, patterns, todayStats) => {
+  const personaPrompt = PERSONA_SYSTEM_PROMPTS[persona] || PERSONA_SYSTEM_PROMPTS.gentle;
+  const hour = new Date().getHours();
+  const timeOfDay = hour < 12 ? 'morning' : hour < 17 ? 'afternoon' : hour < 21 ? 'evening' : 'late at night';
+
+  const messages = [
+    {
+      role: 'system',
+      content: `${personaPrompt}
+
+You are part of a "Mindful Lock" feature in a productivity app. The user is about to open a distraction app and has paused to check in with you first.
+
+Context:
+- App they want to open: ${appName}
+- Their stated goal: ${userGoal || 'Not specified'}
+- Time of day: ${timeOfDay}
+- Times they've resisted today: ${todayStats?.resisted || 0}
+- Times they've given in today: ${todayStats?.used || 0}
+
+Write a SHORT (2-3 sentences max) personalized message that:
+1. References their specific goal if available
+2. Acknowledges their wins today (if any resists)
+3. Makes them genuinely reconsider opening the app
+
+Also suggest ONE specific alternative activity they could do instead.
+
+CRITICAL: Return strict JSON ONLY. No markdown.
+Schema: {"message": "Your coaching message", "replacement": "One specific alternative activity suggestion"}`
+    },
+    {
+      role: 'user',
+      content: `I'm about to open ${appName}. Talk me out of it (or help me decide consciously).`
+    }
+  ];
+
+  try {
+    let rawResponse = '';
+    try {
+      rawResponse = await callGemini(messages, { json: true });
+    } catch (e1) {
+      try {
+        rawResponse = await callGroq(messages, { json: true });
+      } catch (e2) {
+        rawResponse = await callMistral(messages, { json: true });
+      }
+    }
+    return parseJsonFromText(rawResponse);
+  } catch (err) {
+    console.log('Mindful intervention AI error:', err.message);
+    return null; // Caller will use fallback templates
+  }
+};
+
+export const chatWithCoach = async (messageHistory, contextData) => {
+  const { tasks, usage, stats, profile, appName } = contextData;
+  const personaPrompt = PERSONA_SYSTEM_PROMPTS[profile?.coachPersona] || PERSONA_SYSTEM_PROMPTS.gentle;
+  
+  const tasksString = tasks?.length ? tasks.map(t => `- ${t.title} ${t.is_completed ? '(Done)' : ''}`).join('\n') : 'No tasks for today.';
+  const usageString = usage?.length ? usage.map(u => `- ${u.name}: ${u.usageToday || 0}/${u.dailyBudgetMinutes}m`).join('\n') : 'No usage data.';
+
+  const systemMessage = {
+    role: 'system',
+    content: `${personaPrompt}
+
+You are part of a "Mindful Lock" feature in a productivity app. The user is currently tempted to open a distraction app (${appName}) and has started a chat with you instead.
+Your goal is to act as a life coach, suggest remedies for their life problems, and motivate them to focus on their actual goals and tasks.
+
+Context about the user:
+- Stated Life Goal: ${profile?.goal || 'Not specified'}
+- Times they've resisted today: ${stats?.resisted || 0}
+- Times they've given in today: ${stats?.used || 0}
+
+Today's Tasks:
+${tasksString}
+
+Today's App Usage:
+${usageString}
+
+Instructions:
+- Keep your responses conversational, empathetic, and concise (1-3 short paragraphs).
+- Reference their tasks to suggest what they should be doing instead.
+- If they complain about a life problem, suggest a mindful remedy.
+- Do NOT output JSON. Output regular conversational text.`
+  };
+
+  const messages = [systemMessage, ...messageHistory];
+
+  try {
+    let rawResponse = '';
+    try {
+      rawResponse = await callGemini(messages, { json: false });
+    } catch (e1) {
+      try {
+        rawResponse = await callGroq(messages, { json: false });
+      } catch (e2) {
+        rawResponse = await callMistral(messages, { json: false });
+      }
+    }
+    return rawResponse || 'I am here for you. Take a deep breath.';
+  } catch (err) {
+    console.log('AI Coach Chat error:', err.message);
+    return 'I am having trouble connecting right now, but please take a deep breath and reconsider your choice.';
   }
 };

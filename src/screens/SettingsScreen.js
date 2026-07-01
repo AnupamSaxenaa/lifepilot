@@ -3,7 +3,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import {
     Camera, ChevronRight, ImagePlus, KeyRound, LogOut, Mail, Menu,
-    RefreshCw,
+    RefreshCw, Calendar,
     Shield, Trash2, User, UserCog, X
 } from 'lucide-react-native';
 import { useEffect, useState } from 'react';
@@ -17,6 +17,7 @@ import { deleteUserAccountData, loadProfile, updateProfile } from '../lib/dataMa
 import { supabase } from '../lib/supabase';
 import { Storage } from '../utils/storage';
 import { UpdateManager } from '../utils/updateManager';
+import DateTimePicker from '@react-native-community/datetimepicker';
 
 const THEME_COLOR = '#FFFFFF';
 const DARK_BG = '#000000';
@@ -42,10 +43,12 @@ export const SettingsScreen = ({ navigation }) => {
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [showAvatarOptions, setShowAvatarOptions] = useState(false);
+  const [showDobModal, setShowDobModal] = useState(false);
 
   // ─── Form States ──────────────────────────────────────
   const [newDisplayName, setNewDisplayName] = useState('');
   const [newUsername, setNewUsername] = useState('');
+  const [newDob, setNewDob] = useState(new Date());
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
@@ -102,10 +105,31 @@ export const SettingsScreen = ({ navigation }) => {
 
   // ─── Avatar Upload ────────────────────────────────────
   const handlePickAvatar = async () => {
-    setShowAvatarOptions(false);
+    console.log('[Settings] Requesting media permissions...');
+    let granted = false;
+    
+    if (Platform.OS === 'android') {
+      const { PermissionsAndroid } = require('react-native');
+      const apiLevel = Platform.Version;
+      const perm = apiLevel >= 33 
+        ? PermissionsAndroid.PERMISSIONS.READ_MEDIA_IMAGES 
+        : PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE;
+        
+      let status = await PermissionsAndroid.check(perm);
+      if (!status) {
+        const req = await PermissionsAndroid.request(perm);
+        status = req === PermissionsAndroid.RESULTS.GRANTED;
+      }
+      granted = status;
+    } else {
+      let perm = await ImagePicker.getMediaLibraryPermissionsAsync();
+      if (perm.status !== 'granted') {
+        perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      }
+      granted = perm.status === 'granted';
+    }
 
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') {
+    if (!granted) {
       Alert.alert('Permission required', 'Please allow access to your photo library.');
       return;
     }
@@ -262,6 +286,20 @@ export const SettingsScreen = ({ navigation }) => {
       setShowNameModal(false);
     } catch (e) {
       setFormError(e.message || 'Failed to update name');
+      setFormLoading(false);
+    }
+  };
+
+  // ─── Change DOB ───────────────────────────────────────
+  const handleChangeDob = async () => {
+    setFormLoading(true); setFormError('');
+    try {
+      const updated = await updateProfile(userId, profile, { dob: newDob.toISOString().split('T')[0] });
+      setProfile(updated);
+      setFormLoading(false);
+      setShowDobModal(false);
+    } catch (e) {
+      setFormError(e.message || 'Failed to update date of birth');
       setFormLoading(false);
     }
   };
@@ -450,6 +488,15 @@ export const SettingsScreen = ({ navigation }) => {
           />
           <View style={styles.divider} />
           <SettingRow
+            icon={Calendar} iconColor="#F59E0B" label="Date of Birth" value={profile?.dob ? new Date(profile.dob).toLocaleDateString() : 'Not Set'}
+            onPress={() => {
+              setNewDob(profile?.dob ? new Date(profile.dob) : new Date());
+              setFormError('');
+              setShowDobModal(true);
+            }}
+          />
+          <View style={styles.divider} />
+          <SettingRow
             icon={Mail} iconColor="#10B981" label="Email" value={email}
             onPress={() => Alert.alert('Email', 'Email cannot be changed from the app.')}
             isLast
@@ -525,6 +572,47 @@ export const SettingsScreen = ({ navigation }) => {
           {formLoading ? <ActivityIndicator color="#000" /> : <Text style={styles.modalBtnText}>Save Changes</Text>}
         </TouchableOpacity>
       </BottomModal>
+
+      {/* ─── Change DOB ───────────────────────── */}
+      {Platform.OS === 'android' && showDobModal && (
+        <DateTimePicker
+          value={newDob}
+          mode="date"
+          display="default"
+          maximumDate={new Date()}
+          onChange={(event, selectedDate) => {
+            setShowDobModal(false);
+            if (event.type === 'set' && selectedDate) {
+              setNewDob(selectedDate);
+              // Run update async without blocking the UI thread
+              updateProfile(userId, profile, { dob: selectedDate.toISOString().split('T')[0] })
+                .then(updated => setProfile(updated))
+                .catch(e => Alert.alert('Error', e.message || 'Failed to update date of birth'));
+            }
+          }}
+        />
+      )}
+
+      {Platform.OS === 'ios' && (
+        <BottomModal visible={showDobModal} onClose={() => setShowDobModal(false)} title="Update Date of Birth">
+          <View style={{ alignItems: 'center', marginBottom: 20 }}>
+            <DateTimePicker
+              value={newDob}
+              mode="date"
+              display="spinner"
+              maximumDate={new Date()}
+              onChange={(event, selectedDate) => {
+                if (selectedDate) setNewDob(selectedDate);
+              }}
+              textColor={THEME_COLOR}
+            />
+          </View>
+          {formError ? <Text style={styles.formError}>{formError}</Text> : null}
+          <TouchableOpacity style={styles.modalBtn} onPress={handleChangeDob} disabled={formLoading}>
+            {formLoading ? <ActivityIndicator color="#000" /> : <Text style={styles.modalBtnText}>Save Changes</Text>}
+          </TouchableOpacity>
+        </BottomModal>
+      )}
 
       {/* ─── Change Username Modal ───────────────────── */}
       <BottomModal visible={showUsernameModal} onClose={() => setShowUsernameModal(false)} title="Change Username">

@@ -9,6 +9,7 @@ import {
     FileText,
     Plus,
     Repeat,
+    Flag,
     Star, Sun,
     Trash2, X,
     Zap
@@ -34,6 +35,7 @@ import { syncToSupabase } from '../lib/syncQueue';
 import { Gamification } from '../utils/gamification';
 import { cancelTaskReminder, scheduleTaskReminder } from '../utils/notifications';
 import { Storage } from '../utils/storage';
+import { getPriorityColor, getPriorityLabel, PRIORITY_LEVELS, PRIORITY_CONFIG } from '../config/priorityConfig';
 
 // ─── Helpers ────────────────────────────────────────────
 const formatDate = (d) => {
@@ -102,6 +104,7 @@ export const TaskDetailScreen = ({ route, navigation }) => {
   const [reminderStep, setReminderStep] = useState('date');
   const [pickerDate, setPickerDate] = useState(new Date());
   const [showRepeatMenu, setShowRepeatMenu] = useState(false);
+  const [showPriorityMenu, setShowPriorityMenu] = useState(false);
 
   const titleInputRef = useRef(null);
 
@@ -167,7 +170,13 @@ export const TaskDetailScreen = ({ route, navigation }) => {
     
     if (newStatus && task.reminder_time) cancelTaskReminder(task.id);
     else if (!newStatus && task.reminder_time) scheduleTaskReminder(task.id, task.title, task.reminder_time);
-    await Gamification.addXP(userId, newStatus ? 10 : -10);
+    
+    let xpAmount = 10;
+    if (task.priority === 3) xpAmount = 50;
+    else if (task.priority === 2) xpAmount = 40;
+    else if (task.priority === 0) xpAmount = 5;
+    
+    await Gamification.addXP(userId, newStatus ? xpAmount : -xpAmount);
   };
 
   const handleToggleImportant = async () => {
@@ -449,6 +458,37 @@ export const TaskDetailScreen = ({ route, navigation }) => {
                 <TouchableOpacity onPress={handleRemoveRepeat} style={styles.optionAction}><X color="#666" size={18} /></TouchableOpacity>
               )}
             </TouchableOpacity>
+            <View style={styles.separator} />
+
+            {/* Priority */}
+            <View style={styles.detailRow}>
+              <Flag color={getPriorityColor(task.priority ?? 1)} size={22} fill={(task.priority ?? 1) !== 1 ? getPriorityColor(task.priority ?? 1) : 'transparent'} />
+              <TouchableOpacity style={{ flex: 1, marginLeft: 16 }} onPress={() => setShowPriorityMenu(!showPriorityMenu)}>
+                <Text style={[styles.detailLabel, { color: '#A1A1AA' }]}>Priority</Text>
+                <Text style={[styles.detailValue, { color: getPriorityColor(task.priority ?? 1) }]}>
+                  {getPriorityLabel(task.priority ?? 1)}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {showPriorityMenu && (
+              <Animated.View entering={FadeIn.duration(200)} style={{ backgroundColor: '#1C1C1E', borderRadius: 12, marginHorizontal: 16, marginBottom: 12, overflow: 'hidden' }}>
+                {Object.entries(PRIORITY_CONFIG).reverse().map(([value, config]) => (
+                  <TouchableOpacity
+                    key={value}
+                    style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 16, borderBottomWidth: 0.5, borderBottomColor: '#333' }}
+                    onPress={() => {
+                      handleUpdateField({ priority: Number(value) });
+                      setShowPriorityMenu(false);
+                    }}
+                  >
+                    <Flag color={config.color} size={20} fill={Number(value) !== 1 ? config.color : 'transparent'} />
+                    <Text style={{ color: '#fff', fontSize: 16, marginLeft: 14, flex: 1 }}>{config.label}</Text>
+                    {(task.priority ?? 1) === Number(value) && <Check color="#10B981" size={20} />}
+                  </TouchableOpacity>
+                ))}
+              </Animated.View>
+            )}
           </View>
 
           {/* ─── Notes ────────────────────────────────── */}
@@ -641,6 +681,9 @@ const styles = StyleSheet.create({
   optionSubtext: { color: '#666', fontSize: 13, marginTop: 2 },
   optionAction: { padding: 6, marginLeft: 8 },
   separator: { height: StyleSheet.hairlineWidth, backgroundColor: 'rgba(255,255,255,0.08)', marginLeft: 54 },
+  detailRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 16, paddingHorizontal: 16 },
+  detailLabel: { fontSize: 13, fontWeight: '500', marginBottom: 2 },
+  detailValue: { fontSize: 16, fontWeight: '600' },
 
   // Notes
   notesSection: {

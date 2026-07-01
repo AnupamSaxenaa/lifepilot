@@ -39,8 +39,10 @@ export const ForceUpdateBlocker = ({ updateInfo, visible }) => {
       setDownloadProgress(0);
 
       await downloadAndInstallAPK(url, (progress) => {
-        console.log('[ForceUpdate] Progress:', Math.round(progress * 100) + '%');
-        setDownloadProgress(progress);
+        // If progress is negative (missing content-length), cap it at 0 to avoid UI bugs
+        const safeProgress = progress < 0 ? 0 : progress;
+        console.log('[ForceUpdate] Progress:', Math.round(safeProgress * 100) + '%');
+        setDownloadProgress(safeProgress);
       });
       
       console.log('[ForceUpdate] Download completed, installer should open');
@@ -98,7 +100,9 @@ export const ForceUpdateBlocker = ({ updateInfo, visible }) => {
             <View style={styles.progressContainer}>
               <View style={styles.progressHeader}>
                 <Text style={styles.progressLabel}>Downloading</Text>
-                <Text style={styles.progressPercent}>{Math.round(downloadProgress * 100)}%</Text>
+                <Text style={styles.progressPercent}>
+                  {downloadProgress > 0 ? Math.round(downloadProgress * 100) + '%' : 'Starting...'}
+                </Text>
               </View>
               <View style={styles.progressBarBackground}>
                 <Animated.View 

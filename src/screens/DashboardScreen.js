@@ -1,21 +1,27 @@
 import { useFocusEffect } from '@react-navigation/native';
-import { Bell, Calendar, CheckCircle2, Circle, Lock, Menu, Repeat, Wand2, Zap } from 'lucide-react-native';
-import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Animated, BackHandler, ScrollView, StyleSheet, Text, TouchableOpacity, useColorScheme, View } from 'react-native';
+import { Bell, Calendar, CheckCircle2, Circle, Lock, Menu, Repeat, Wand2, Zap, Flag } from 'lucide-react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, Animated, AppState, BackHandler, ScrollView, StyleSheet, Text, TouchableOpacity, useColorScheme, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { AIAuraOverlay } from '../components/AIAuraOverlay';
 import { AlarmOverlay } from '../components/AlarmOverlay';
+import { DailyPromiseOverlay } from '../components/DailyPromiseOverlay';
 import { BackgroundWrapper } from '../components/BackgroundWrapper';
 import { GlassSidebar } from '../components/GlassSidebar';
 import { LifetimeProgressRing } from '../components/LifetimeProgressRing';
 import { LifetimeStatsModal } from '../components/LifetimeStatsModal';
+import { AnimatedFlame } from '../components/AnimatedFlame';
+import { GamificationStatsModal } from '../components/GamificationStatsModal';
 import { PermissionsOnboarding } from '../components/PermissionsOnboarding';
 import { cacheTasks, loadProfile, loadTasks, performInitialSync } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
 import { syncToSupabase } from '../lib/syncQueue';
+import { getPriorityColor, shouldShowFlag } from '../config/priorityConfig';
+import { LevelUpModal } from '../components/LevelUpModal';
 import { COLORS } from '../theme/theme';
 import { Gamification } from '../utils/gamification';
-import { requestNotificationPermissions, rescheduleAllReminders } from '../utils/notifications';
+import { requestNotificationPermissions, rescheduleAllReminders, scheduleInactivityReminder, cancelInactivityReminder } from '../utils/notifications';
+import { generateInactivityNudge } from '../lib/AIEngine';
 import { runRepeatEngine } from '../utils/repeatEngine';
 import { Storage } from '../utils/storage';
 const formatDate = (d) => {
@@ -69,11 +75,17 @@ export const DashboardScreen = ({ navigation }) => {
   const [todaysTasks, setTodaysTasks] = useState([]);
   const [lifetimeStats, setLifetimeStats] = useState({ completed: 0, total: 0 });
   const [isStatsModalOpen, setIsStatsModalOpen] = useState(false);
+  const [isGamificationModalOpen, setIsGamificationModalOpen] = useState(false);
   const [isInitialSyncing, setIsInitialSyncing] = useState(false);
   const [showAura, setShowAura] = useState(false);
   const [generatedPlan, setGeneratedPlan] = useState(null);
   const [alarmVisible, setAlarmVisible] = useState(false);
   const [alarmData, setAlarmData] = useState(null);
+  const [levelUpData, setLevelUpData] = useState(null);
+  
+  // Inactivity nudge: cache the AI-generated text
+  const cachedNudgeRef = useRef(null);
+  const appStateRef = useRef(AppState.currentState);
   
   const [menuAnim] = useState(() => new Animated.Value(1));
 
@@ -100,13 +112,25 @@ export const DashboardScreen = ({ navigation }) => {
   }, []);
 
   // Process tasks for dashboard display
-  const processTasks = (taskList) => {
+  const processTasks = async (taskList) => {
     if (!taskList || !Array.isArray(taskList)) return;
     setAllTasks(taskList);
 
-    // Calculate Lifetime Stats
-    const completed = taskList.filter(t => t.is_completed).length;
-    setLifetimeStats({ completed, total: taskList.length });
+    const startDateStr = await Storage.get('lifetime_start_date');
+    let statsTasks = taskList;
+    if (startDateStr) {
+       const sd = new Date(startDateStr).getTime();
+       statsTasks = taskList.filter(t => {
+         if (new Date(t.created_at).getTime() >= sd) return true;
+         if (t.is_completed && t.completed_at) {
+           if (new Date(t.completed_at).getTime() >= sd) return true;
+         }
+         if (!t.is_completed) return true;
+         return false;
+       });
+    }
+    const completed = statsTasks.filter(t => t.is_completed).length;
+    setLifetimeStats({ completed, total: statsTasks.length });
 
     // Show uncompleted tasks: either general tasks OR custom list tasks added to today
     const activeTasks = taskList.filter(t => !t.is_completed && (!t.list_id || t.added_to_today));
@@ -116,46 +140,117 @@ export const DashboardScreen = ({ navigation }) => {
     
     setTodaysTasks(activeTasks);
     rescheduleAllReminders(taskList);
+    
+    // Generate AI nudge text for inactivity notifications (only if there are tasks and we don't have one cached)
+    if (activeTasks.length > 0) {
+      if (!cachedNudgeRef.current) {
+        generateInactivityNudge(activeTasks)
+          .then(nudge => {
+            if (nudge) cachedNudgeRef.current = nudge;
+          })
+          .catch(() => {}); // Silent fail - not critical
+      }
+    } else {
+      cachedNudgeRef.current = null; // No tasks = no notification
+    }
   };
 
   const loadData = async () => {
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (session) {
-        // Initial Sync for returning users
-        const initialSyncDone = await Storage.get(`initial_sync_done_${session.user.id}`);
-        if (!initialSyncDone) {
-          setIsInitialSyncing(true);
-          await performInitialSync(session.user.id);
-          setIsInitialSyncing(false);
-        }
+        const userId = session.user.id;
 
-        // Load profile (cache first → Supabase background)
+        // ── INSTANT: Load tasks + profile from cache FIRST (appears in ~10ms) ──
         const fallbackProfile = { 
-          id: session.user.id, 
+          id: userId, 
           display_name: session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || 'User', 
           username: session.user.user_metadata?.username || session.user.email?.split('@')[0] || 'user' 
         };
         
-        const cachedProfile = await loadProfile(session.user.id, (fresh) => setProfile(fresh || fallbackProfile));
+        const cachedProfile = await loadProfile(userId, (fresh) => setProfile(fresh || fallbackProfile));
         if (cachedProfile) setProfile(cachedProfile);
         else setProfile(fallbackProfile);
 
-        // Run Repeat Engine
-        await runRepeatEngine(session.user.id);
-        await requestNotificationPermissions();
-
-        // Load tasks (cache first → Supabase background)
-        const cachedTasks = await loadTasks(session.user.id, (fresh) => processTasks(fresh));
+        const cachedTasks = await loadTasks(userId, (fresh) => processTasks(fresh));
         processTasks(cachedTasks);
 
-        // Load Gamification
-        const state = await Gamification.checkStreak(session.user.id);
-        if (state) setGamestate(state);
+        // Load gamification from local cache instantly
+        const state = await Gamification.checkStreak(userId);
+        if (state) {
+          state.level = Gamification.getLevelFromXP(state.xp);
+          setGamestate(state);
+        }
 
-        // Load AI Planner
-        const planKey = `generated_plan_${session.user.id}`;
-        const planDateKey = `generated_plan_date_${session.user.id}`;
+        // ── BACKGROUND: Heavy operations run in parallel, don't block UI ──
+        const backgroundOps = async () => {
+          try {
+            // Initial Sync for returning users (only runs once ever)
+            const initialSyncDone = await Storage.get(`initial_sync_done_${userId}`);
+            if (!initialSyncDone) {
+              setIsInitialSyncing(true);
+              await performInitialSync(userId);
+              setIsInitialSyncing(false);
+              // Reload tasks after initial sync
+              const freshTasks = await loadTasks(userId, (fresh) => processTasks(fresh));
+              processTasks(freshTasks);
+            }
+
+            // Run these in parallel — none depend on each other
+            await Promise.all([
+              runRepeatEngine(userId)
+                .then(async (spawned) => {
+                  if (spawned) {
+                    console.log('[Dashboard] New repeat tasks spawned, reloading tasks...');
+                    const fresh = await loadTasks(userId, (f) => processTasks(f));
+                    processTasks(fresh);
+                  }
+                })
+                .catch(e => console.log('[BG] RepeatEngine error:', e.message)),
+            ]);
+
+            // Hard Sync gamification from server (don't crash if offline)
+            try {
+              const { data: remoteProfile } = await supabase.from('profiles').select('xp, streak, level, last_active_date').eq('id', userId).single();
+              if (remoteProfile) {
+                // IMPORTANT: Re-read the LATEST state from storage — don't use stale closure variable
+                const freshState = await Gamification.getState(userId);
+                if (freshState) {
+                  let changed = false;
+                  // Only update if server has MORE than current local
+                  if ((remoteProfile.xp || 0) > (freshState.xp || 0)) {
+                    freshState.xp = remoteProfile.xp;
+                    changed = true;
+                  }
+                  if ((remoteProfile.streak || 0) > (freshState.streak || 0)) {
+                    freshState.streak = remoteProfile.streak;
+                    changed = true;
+                  }
+                  if (remoteProfile.last_active_date && !freshState.lastActiveDate) {
+                    freshState.lastActiveDate = new Date(remoteProfile.last_active_date).toDateString();
+                    changed = true;
+                  }
+                  if (changed) {
+                    freshState.level = Gamification.getLevelFromXP(freshState.xp);
+                    await Gamification.saveState(userId, freshState);
+                    setGamestate({ ...freshState });
+                  }
+                }
+              }
+            } catch (syncErr) {
+              console.log('[Dashboard] Offline — using local gamification state:', syncErr.message);
+            }
+          } catch (bgErr) {
+            console.log('[Dashboard] Background ops error:', bgErr.message);
+          }
+        };
+        
+        // Fire background ops without awaiting — UI is already populated
+        backgroundOps();
+
+        // Load AI Planner (from cache — instant)
+        const planKey = `generated_plan_${userId}`;
+        const planDateKey = `generated_plan_date_${userId}`;
         const cachedPlan = await Storage.get(planKey);
         const cachedPlanDate = await Storage.get(planDateKey);
         const todayString = new Date().toDateString();
@@ -188,6 +283,45 @@ export const DashboardScreen = ({ navigation }) => {
     }, [])
   );
 
+
+  const activeTasksLengthRef = useRef(0);
+
+  useEffect(() => {
+    activeTasksLengthRef.current = todaysTasks.length;
+  }, [todaysTasks]);
+
+  // Global AppState listener for inactivity nudges
+  useEffect(() => {
+    cancelInactivityReminder(); // Cancel on mount/foreground
+    
+    const appStateSub = AppState.addEventListener('change', (nextAppState) => {
+      if (
+        appStateRef.current.match(/active/) &&
+        nextAppState.match(/inactive|background/)
+      ) {
+        try {
+          const nudgeText = cachedNudgeRef.current;
+          // Only schedule if we actually have active tasks left!
+          if (nudgeText && activeTasksLengthRef.current > 0) {
+            scheduleInactivityReminder(nudgeText, 1); // Fire immediately without blocking
+          }
+        } catch (err) {
+          console.log('[Inactivity] Failed to schedule nudge:', err);
+        }
+      } else if (
+        appStateRef.current.match(/inactive|background/) &&
+        nextAppState === 'active'
+      ) {
+        cancelInactivityReminder();
+      }
+      appStateRef.current = nextAppState;
+    });
+
+    return () => {
+      appStateSub.remove();
+    };
+  }, []);
+
   const toggleTask = async (id, currentStatus) => {
     if (!profile?.id) return;
 
@@ -196,25 +330,62 @@ export const DashboardScreen = ({ navigation }) => {
     const newStatus = !currentStatus;
     const completedAt = newStatus ? new Date().toISOString() : null;
     
+    const targetTask = latestTasks.find(t => t.id === id);
+    let xpAmount = 10;
+    if (targetTask) {
+      if (targetTask.priority === 3) xpAmount = 50;
+      else if (targetTask.priority === 2) xpAmount = 40;
+      else if (targetTask.priority === 0) xpAmount = 5;
+    }
+
     const updatedAll = latestTasks.map(t =>
       t.id === id 
         ? { ...t, is_completed: newStatus, completed_at: completedAt }
         : t
     );
     
-    await cacheTasks(profile.id, updatedAll);
+    // ✅ Optimistic UI update instantly!
+    processTasks(updatedAll);
+
+    // Dynamic Gamification XP based on priority (optimistic)
+    if (gamestate) {
+      setGamestate(prev => {
+        const nextXp = Math.max(0, prev.xp + (newStatus ? xpAmount : -xpAmount));
+        let nextLevel = 1;
+        while (nextXp >= 50 * nextLevel * (nextLevel + 3)) {
+          nextLevel++;
+        }
+        return {
+          ...prev,
+          xp: nextXp,
+          level: nextLevel
+        };
+      });
+    }
+    
+    // Background saves
+    cacheTasks(profile.id, updatedAll).catch(console.error); // Fire and forget so we don't block
     
     syncToSupabase('tasks', 'update',
       { is_completed: newStatus, completed_at: completedAt },
       { column: 'id', value: id }
     );
-    
-    processTasks(updatedAll);
 
-    // Gamification XP
-    await Gamification.addXP(profile.id, newStatus ? 10 : -10);
-
-
+    // Dynamic Gamification XP based on priority
+    if (newStatus) {
+      const prevLevel = gamestate?.level || 1;
+      
+      const newState = await Gamification.addXP(profile.id, xpAmount);
+      if (newState) {
+        setGamestate(newState);
+        if (newState.level > prevLevel) {
+          setLevelUpData({ oldLevel: prevLevel, newLevel: newState.level });
+        }
+      }
+    } else {
+      const newState = await Gamification.addXP(profile.id, -xpAmount);
+      if (newState) setGamestate(newState);
+    }
   };
 
   const handleLogout = async () => {
@@ -258,6 +429,10 @@ export const DashboardScreen = ({ navigation }) => {
                   <Wand2 color="#A78BFA" size={26} />
                 )}
               </TouchableOpacity>
+              <TouchableOpacity onPress={() => setIsGamificationModalOpen(true)} activeOpacity={0.7} style={{ padding: 4, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <AnimatedFlame streak={gamestate.streak} />
+                {gamestate.streak > 0 && <Text style={{ color: '#fff', fontWeight: '800', fontSize: 16 }}>{gamestate.streak}</Text>}
+              </TouchableOpacity>
               <TouchableOpacity style={styles.ringContainer} onPress={() => setIsStatsModalOpen(true)}>
                  <LifetimeProgressRing 
                    completed={lifetimeStats.completed} 
@@ -296,6 +471,7 @@ export const DashboardScreen = ({ navigation }) => {
                     onPress={() => toggleTask(task.id, task.is_completed)}
                     activeOpacity={0.7}
                   >
+
                     <View style={{ marginTop: 3 }}>
                       {task.is_completed ? (
                         <CheckCircle2 color="#555" size={18} />
@@ -307,19 +483,27 @@ export const DashboardScreen = ({ navigation }) => {
                       <Text style={[styles.taskTitle, task.is_completed && styles.taskTitleCompleted]}>
                         {task.title}
                       </Text>
-                      {(task.due_date || task.reminder_time || task.repeat_rule) && (
+                      {(task.due_date || task.reminder_time || task.repeat_rule || shouldShowFlag(task.priority)) && (
                         <View style={[styles.taskMetaRow, { marginTop: 4 }]}>
-                          {task.due_date && (
+                          {shouldShowFlag(task.priority) && (
                             <View style={styles.metaPill}>
-                              <Calendar color={isOverdue ? '#ef4444' : '#888'} size={12} />
-                              <Text style={[styles.metaLabel, { color: isOverdue ? '#ef4444' : '#888' }]}>
-                                {formatDate(task.due_date)}
-                              </Text>
+                              <Flag color={getPriorityColor(task.priority)} size={11} fill={getPriorityColor(task.priority)} />
                             </View>
+                          )}
+                          {task.due_date && (
+                            <>
+                              {shouldShowFlag(task.priority) && <Text style={styles.metaSep}>·</Text>}
+                              <View style={styles.metaPill}>
+                                <Calendar color={isOverdue ? '#ef4444' : '#888'} size={12} />
+                                <Text style={[styles.metaLabel, { color: isOverdue ? '#ef4444' : '#888' }]}>
+                                  {formatDate(task.due_date)}
+                                </Text>
+                              </View>
+                            </>
                           )}
                           {task.reminder_time && (
                             <>
-                              {task.due_date && <Text style={styles.metaSep}>·</Text>}
+                              {(task.due_date || shouldShowFlag(task.priority)) && <Text style={styles.metaSep}>·</Text>}
                               <View style={styles.metaPill}>
                                 <Bell color="#888" size={12} />
                                 <Text style={[styles.metaLabel, { color: '#888' }]}>
@@ -330,7 +514,7 @@ export const DashboardScreen = ({ navigation }) => {
                           )}
                           {task.repeat_rule && (
                             <>
-                              {(task.due_date || task.reminder_time) && <Text style={styles.metaSep}>·</Text>}
+                              {(task.due_date || task.reminder_time || shouldShowFlag(task.priority)) && <Text style={styles.metaSep}>·</Text>}
                               <View style={styles.metaPill}>
                                 <Repeat color="#888" size={12} />
                                 <Text style={[styles.metaLabel, { color: '#888' }]}>
@@ -373,11 +557,31 @@ export const DashboardScreen = ({ navigation }) => {
         currentRoute="Dashboard"
       />
 
+      <LevelUpModal
+        isVisible={!!levelUpData}
+        oldLevel={levelUpData?.oldLevel || 1}
+        newLevel={levelUpData?.newLevel || 2}
+        onClose={() => setLevelUpData(null)}
+      />
+
       {/* The Detailed Lifetime Matrix */}
       <LifetimeStatsModal 
         isVisible={isStatsModalOpen} 
         onClose={() => setIsStatsModalOpen(false)} 
         stats={lifetimeStats} 
+        onReset={async () => {
+          await Storage.set('lifetime_start_date', new Date().toISOString());
+          processTasks(allTasks);
+          setIsStatsModalOpen(false);
+        }}
+      />
+
+      {/* Gamification Stats */}
+      <GamificationStatsModal 
+        isVisible={isGamificationModalOpen} 
+        onClose={() => setIsGamificationModalOpen(false)} 
+        gamestate={gamestate} 
+        profile={profile} 
       />
 
       {isInitialSyncing && (
@@ -410,6 +614,10 @@ export const DashboardScreen = ({ navigation }) => {
         alarmData={alarmData} 
         onDismiss={() => setAlarmVisible(false)} 
       />
+      
+      {profile?.id && (
+        <DailyPromiseOverlay userId={profile.id} />
+      )}
     </BackgroundWrapper>
   );
 };

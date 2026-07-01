@@ -91,8 +91,27 @@ export const loadTasks = async (userId, onFresh) => {
         // 1. No pending mutations in sync queue
         // 2. NO local writes occurred during the fetch (prevents overwriting edits)
         if (qLen === 0 && lastWriteTime === lastWriteTimeAfter) {
-          await cacheTasks(userId, data);
-          if (onFresh) onFresh(data);
+          // Merge local-only fields (e.g. priority) that Supabase may not have yet
+          const localTasks = await Storage.get(`tasks_${userId}`) || [];
+          const localMap = {};
+          localTasks.forEach(t => { localMap[t.id] = t; });
+          
+          const merged = data.map(t => {
+            const local = localMap[t.id];
+            if (local) {
+              // Preserve local fields that Supabase returned as null/undefined
+              return {
+                ...t,
+                priority: t.priority ?? local.priority ?? 1,
+                subtasks: t.subtasks ?? local.subtasks,
+                notes: t.notes ?? local.notes,
+              };
+            }
+            return { ...t, priority: t.priority ?? 1 };
+          });
+          
+          await cacheTasks(userId, merged);
+          if (onFresh) onFresh(merged);
         } else {
           console.log('[DataManager] Skipping cache update - local writes detected or sync queue not empty');
         }
@@ -148,6 +167,7 @@ export const addTask = async (userId, currentTasks, taskData, onSynced) => {
     user_id: userId,
     is_completed: false,
     is_important: false,
+    priority: 1,
     quadrant: 'urgent-important',
     list_id: taskData.list_id || null,
     added_to_today: taskData.added_to_today || false,
@@ -171,6 +191,7 @@ export const addTask = async (userId, currentTasks, taskData, onSynced) => {
     reminder_time: tempTask.reminder_time || null,
     repeat_rule: tempTask.repeat_rule || null,
     quadrant: tempTask.quadrant,
+    priority: tempTask.priority ?? 1,
     list_id: tempTask.list_id,
     added_to_today: tempTask.added_to_today,
     order_index: tempTask.order_index,

@@ -23,6 +23,7 @@
  * }
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import NetInfo from '@react-native-community/netinfo';
 import { supabase } from '../lib/supabase';
 
 const QUEUE_KEY = '@lifepilot_sync_queue';
@@ -212,4 +213,45 @@ const executeOperation = async (table, operation, data, filter) => {
     default:
       throw new Error(`Unknown operation: ${operation}`);
   }
+};
+
+// ─── Network Recovery Listener ──────────────────────────
+
+let _unsubscribeNetInfo = null;
+let _wasOffline = false;
+
+/**
+ * Start listening for network changes. When connectivity is restored
+ * after being offline, automatically drain the sync queue.
+ * Call once at app startup (e.g. in App.js).
+ * 
+ * @returns {function} unsubscribe — call to stop listening
+ */
+export const setupNetworkListener = () => {
+  if (_unsubscribeNetInfo) return _unsubscribeNetInfo; // Already listening
+
+  _unsubscribeNetInfo = NetInfo.addEventListener(async (state) => {
+    const isOnline = state.isConnected && state.isInternetReachable !== false;
+
+    if (!isOnline) {
+      _wasOffline = true;
+      console.log('[SyncQueue] Device went offline');
+      return;
+    }
+
+    if (_wasOffline && isOnline) {
+      _wasOffline = false;
+      console.log('[SyncQueue] Back online — draining sync queue...');
+      try {
+        const result = await drainSyncQueue();
+        if (result.succeeded > 0) {
+          console.log(`[SyncQueue] Auto-synced ${result.succeeded} operations on reconnect`);
+        }
+      } catch (e) {
+        console.warn('[SyncQueue] Auto-drain failed:', e.message);
+      }
+    }
+  });
+
+  return _unsubscribeNetInfo;
 };

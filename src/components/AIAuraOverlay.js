@@ -27,6 +27,8 @@ import Animated, {
 } from 'react-native-reanimated';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { chatWithAura, generatePlan } from '../lib/AIEngine';
+import { getLists } from '../lib/dataManager';
+import { getPriorityLabel, shouldShowFlag } from '../config/priorityConfig';
 import { supabase } from '../lib/supabase';
 import { fetchTodayEvents } from '../utils/calendarSync';
 import { Storage } from '../utils/storage';
@@ -46,6 +48,7 @@ const formatTaskContext = (tasks = []) => {
     const details = [
       `title="${task.title}"`,
       `id=${task.id}`,
+      shouldShowFlag(task.priority) ? `priority=${getPriorityLabel(task.priority)}` : null,
       task.is_important ? 'important=true' : null,
       task.due_date ? `due=${new Date(task.due_date).toLocaleString()}` : null,
       task.reminder_time ? `reminder=${new Date(task.reminder_time).toLocaleString()}` : null,

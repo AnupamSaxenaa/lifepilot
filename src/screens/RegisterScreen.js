@@ -9,7 +9,9 @@ import { GlassCard } from '../components/GlassCard';
 import { GlassInput } from '../components/GlassInput';
 import { GlassButton } from '../components/GlassButton';
 import { GlassCheckbox } from '../components/GlassCheckbox';
+import { TermsModal } from '../components/TermsModal';
 import { COLORS } from '../theme/theme';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { ArrowLeft, Mail, User } from 'lucide-react-native';
 import { validateConfirmPassword, validateEmail, validatePassword } from '../utils/validation';
 import { supabase } from '../lib/supabase';
@@ -34,6 +36,10 @@ export const RegisterScreen = ({ navigation }) => {
   const [typingTimeout, setTypingTimeout] = useState(null);
   const [emailStatus, setEmailStatus] = useState(null); // 'checking' | 'available' | 'taken'
   const [emailTimeout, setEmailTimeout] = useState(null);
+  
+  const [dob, setDob] = useState(null);
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [isTermsModalOpen, setIsTermsModalOpen] = useState(false);
   
   const [errors, setErrors] = useState({});
 
@@ -183,6 +189,7 @@ export const RegisterScreen = ({ navigation }) => {
           data: {
             username: cleanUsername,
             display_name: username.trim(),
+            dob: dob ? dob.toISOString().split('T')[0] : null
           }
         }
       });
@@ -317,6 +324,29 @@ export const RegisterScreen = ({ navigation }) => {
               )}
               {errors.email ? <Text style={styles.errorText}>{errors.email}</Text> : null}
 
+              {/* DOB Picker */}
+              <TouchableOpacity onPress={() => setShowDatePicker(true)} activeOpacity={0.8}>
+                <View pointerEvents="none">
+                  <GlassInput 
+                    placeholder="Date of Birth"
+                    value={dob ? dob.toLocaleDateString() : ''}
+                    editable={false}
+                  />
+                </View>
+              </TouchableOpacity>
+              {showDatePicker && (
+                <DateTimePicker
+                  value={dob || new Date()}
+                  mode="date"
+                  display="default"
+                  maximumDate={new Date()}
+                  onChange={(event, selectedDate) => {
+                    setShowDatePicker(false);
+                    if (selectedDate) setDob(selectedDate);
+                  }}
+                />
+              )}
+
               <GlassInput 
                 placeholder="Password" 
                 secureTextEntry 
@@ -334,12 +364,16 @@ export const RegisterScreen = ({ navigation }) => {
               />
               {errors.confirmPassword ? <Text style={styles.errorText}>{errors.confirmPassword}</Text> : null}
 
-              <GlassCheckbox
-                label="I agree to the Terms of Service & Privacy Policy"
-                isChecked={agreeTerms}
-                onToggle={() => setAgreeTerms(!agreeTerms)}
-                style={{ marginTop: 8, marginBottom: 8 }}
-              />
+              <TouchableOpacity onPress={() => !agreeTerms && setIsTermsModalOpen(true)} activeOpacity={1}>
+                <View pointerEvents="none">
+                  <GlassCheckbox
+                    label="I agree to the Terms of Service & Privacy Policy"
+                    isChecked={agreeTerms}
+                    onToggle={() => {}}
+                    style={{ marginTop: 8, marginBottom: 8 }}
+                  />
+                </View>
+              </TouchableOpacity>
               {errors.terms ? <Text style={styles.errorText}>{errors.terms}</Text> : null}
 
               <GlassButton 
@@ -360,6 +394,20 @@ export const RegisterScreen = ({ navigation }) => {
 
         </KeyboardAwareScrollView>
       </SafeAreaView>
+
+      <TermsModal
+        isVisible={isTermsModalOpen}
+        onClose={() => setIsTermsModalOpen(false)}
+        onAccept={() => {
+          setAgreeTerms(true);
+          setIsTermsModalOpen(false);
+          setErrors(prev => {
+            const newErrors = { ...prev };
+            delete newErrors.terms;
+            return newErrors;
+          });
+        }}
+      />
     </BackgroundWrapper>
   );
 };

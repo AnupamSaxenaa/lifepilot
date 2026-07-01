@@ -16,7 +16,7 @@ export async function StatsWidget(props) {
     }
 
     // Load gamification state
-    const gamestate = await Storage.get(`gamestate_${userId}`) || {
+    const gamestate = await Storage.get(`gamification_${userId}`) || {
       xp: 0,
       level: 1,
       streak: 0,

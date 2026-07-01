@@ -1,4 +1,4 @@
-import { Bell, Calendar, CheckCircle2, Circle, FileText, GripVertical, ListChecks, Menu, MoreVertical, Plus, Repeat, Star, Trash2, X } from 'lucide-react-native';
+import { Bell, Calendar, CheckCircle2, Circle, FileText, Flag, GripVertical, ListChecks, Menu, MoreVertical, Plus, Repeat, Star, Trash2, X } from 'lucide-react-native';
 import { useEffect, useRef, useState, useMemo } from 'react';
 import { Share, StyleSheet, Text, TouchableOpacity, useColorScheme, View } from 'react-native';
 import { NestableDraggableFlatList, NestableScrollContainer, ScaleDecorator } from 'react-native-draggable-flatlist';
@@ -11,6 +11,8 @@ import { cacheTasks, loadProfile, loadTasks, reorderTasks, toggleTaskImportance 
 import { supabase } from '../lib/supabase';
 import { syncToSupabase } from '../lib/syncQueue';
 import { COLORS } from '../theme/theme';
+import { getPriorityColor, shouldShowFlag } from '../config/priorityConfig';
+import { LevelUpModal } from '../components/LevelUpModal';
 import { Gamification } from '../utils/gamification';
 import { Storage } from '../utils/storage';
 
@@ -45,6 +47,9 @@ export const StarredScreen = ({ navigation }) => {
   const [userId, setUserId] = useState(null);
   const [profile, setProfile] = useState(null);
   const [showMenu, setShowMenu] = useState(false);
+  const [activeToolbarMenu, setActiveToolbarMenu] = useState(null);
+  const [levelUpData, setLevelUpData] = useState(null);
+  const completingTimeouts = useRef({});
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [sortBy, setSortBy] = useState('custom'); // custom by default for drag & drop
   const [isSortLoaded, setIsSortLoaded] = useState(false);
@@ -95,20 +100,18 @@ export const StarredScreen = ({ navigation }) => {
       // Completing task - show animation
       setCompletingTaskIds(prev => [...prev, taskId]);
       
-      setTimeout(async () => {
-        const completedAt = new Date().toISOString();
-        const updated = tasks.map(t => 
-          t.id === taskId ? { ...t, is_completed: true, completed_at: completedAt } : t
-        );
-        setTasks(updated);
-        setCompletingTaskIds(prev => prev.filter(id => id !== taskId));
-        
+      completingTimeouts.current[taskId] = setTimeout(async () => {
         if (userId) {
-          // ✅ FIX: Load fresh tasks RIGHT NOW, not relying on stale closure
+          const completedAt = new Date().toISOString();
+          
           const latestTasks = await Storage.get(`tasks_${userId}`) || [];
           const updatedAll = latestTasks.map(t =>
             t.id === taskId ? { ...t, is_completed: true, completed_at: completedAt } : t
           );
+          
+          setTasks(updatedAll);
+          setCompletingTaskIds(prev => prev.filter(id => id !== taskId));
+          delete completingTimeouts.current[taskId];
           
           await cacheTasks(userId, updatedAll);
           
@@ -117,23 +120,38 @@ export const StarredScreen = ({ navigation }) => {
             { column: 'id', value: taskId }
           );
           
-          await Gamification.addXP(userId, 25);
+          const targetTask = latestTasks.find(t => t.id === taskId);
+          let xpAmount = 10;
+          if (targetTask) {
+            if (targetTask.priority === 3) xpAmount = 50;
+            else if (targetTask.priority === 2) xpAmount = 40;
+            else if (targetTask.priority === 0) xpAmount = 5;
+          }
+          const oldState = await Gamification.checkStreak(userId);
+          const prevLevel = oldState?.level || 1;
+          
+          const newState = await Gamification.addXP(userId, xpAmount);
+          
+          if (newState && newState.level > prevLevel) {
+            setLevelUpData({ oldLevel: prevLevel, newLevel: newState.level });
+          }
         }
       }, 600);
     } else {
       // Un-completing task - instant
-      const updated = tasks.map(t => 
-        t.id === taskId ? { ...t, is_completed: false, completed_at: null } : t
-      );
-      setTasks(updated);
+      if (completingTimeouts.current[taskId]) {
+        clearTimeout(completingTimeouts.current[taskId]);
+        delete completingTimeouts.current[taskId];
+      }
+      setCompletingTaskIds(prev => prev.filter(id => id !== taskId));
       
       if (userId) {
-        // ✅ FIX: Load fresh tasks
         const latestTasks = await Storage.get(`tasks_${userId}`) || [];
         const updatedAll = latestTasks.map(t =>
           t.id === taskId ? { ...t, is_completed: false, completed_at: null } : t
         );
         
+        setTasks(updatedAll);
         await cacheTasks(userId, updatedAll);
         
         syncToSupabase('tasks', 'update',
@@ -141,7 +159,14 @@ export const StarredScreen = ({ navigation }) => {
           { column: 'id', value: taskId }
         );
         
-        await Gamification.addXP(userId, -25);
+        const targetTask = latestTasks.find(t => t.id === taskId);
+        let xpAmount = 10;
+        if (targetTask) {
+          if (targetTask.priority === 3) xpAmount = 50;
+          else if (targetTask.priority === 2) xpAmount = 40;
+          else if (targetTask.priority === 0) xpAmount = 5;
+        }
+        await Gamification.addXP(userId, -xpAmount);
       }
     }
   };
@@ -449,7 +474,7 @@ export const StarredScreen = ({ navigation }) => {
                 renderItem={({ item: task, drag, isActive }) => {
                   const hasSubtasks = task.subtasks && task.subtasks.length > 0;
                   const hasNotes = task.notes && task.notes.trim().length > 0;
-                  const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes;
+                  const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes || true;
                   const isOverdue = task.due_date && new Date(task.due_date) < todayStart && !task.is_completed;
                   const completedSubs = hasSubtasks ? task.subtasks.filter(s => s.is_completed).length : 0;
                   const totalSubs = hasSubtasks ? task.subtasks.length : 0;
@@ -466,11 +491,6 @@ export const StarredScreen = ({ navigation }) => {
                           isActive && { backgroundColor: 'rgba(255,255,255,0.08)', elevation: 12 }
                         ]}
                       >
-                        <View style={[
-                          styles.cardIndicator,
-                          isOverdue ? { backgroundColor: '#EF4444' } : { backgroundColor: '#FFFFFF' }
-                        ]} />
-
                         {/* Left: drag handle + checkbox */}
                         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                           {!completingTaskIds.includes(task.id) && (
@@ -479,7 +499,7 @@ export const StarredScreen = ({ navigation }) => {
                             </TouchableOpacity>
                           )}
                           <TouchableOpacity 
-                            onPress={() => toggleTask(task.id, task.is_completed)} 
+                            onPress={() => toggleTask(task.id, task.is_completed || completingTaskIds.includes(task.id))} 
                             disabled={completingTaskIds.includes(task.id)}
                             style={[
                               styles.checkbox,
@@ -509,6 +529,11 @@ export const StarredScreen = ({ navigation }) => {
                           
                           {hasMeta && (
                             <View style={styles.taskMetaRow}>
+                              {shouldShowFlag(task.priority) && (
+                                <View style={styles.metaPill}>
+                                  <Flag color={getPriorityColor(task.priority)} size={11} fill={getPriorityColor(task.priority)} />
+                                </View>
+                              )}
                               {task.due_date && (
                                 <View style={styles.metaPill}>
                                   <Calendar color={isOverdue ? '#EF4444' : '#888'} size={11} />
@@ -573,7 +598,7 @@ export const StarredScreen = ({ navigation }) => {
                 {completedTasks.map(task => {
                   const hasSubtasks = task.subtasks && task.subtasks.length > 0;
                   const hasNotes = task.notes && task.notes.trim().length > 0;
-                  const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes;
+                  const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes || true;
                   const completedSubs = hasSubtasks ? task.subtasks.filter(s => s.is_completed).length : 0;
                   const totalSubs = hasSubtasks ? task.subtasks.length : 0;
                   
@@ -584,9 +609,9 @@ export const StarredScreen = ({ navigation }) => {
                         onPress={() => navigation.navigate('TaskDetail', { task, userId })}
                         style={[styles.taskCard, styles.taskCardCompleted]}
                       >
-                        <View style={[styles.cardIndicator, { backgroundColor: '#10B981' }]} />
+
                         <TouchableOpacity
-                          onPress={() => toggleTask(task.id, task.is_completed)}
+                          onPress={() => toggleTask(task.id, task.is_completed || completingTaskIds.includes(task.id))}
                           style={[styles.checkbox, { marginLeft: 28 }]}
                         >
                           <CheckCircle2 color="#10B981" size={24} />
@@ -598,6 +623,11 @@ export const StarredScreen = ({ navigation }) => {
                           </Text>
                           {hasMeta && (
                             <View style={styles.taskMetaRow}>
+                              {shouldShowFlag(task.priority) && (
+                                <View style={styles.metaPill}>
+                                  <Flag color={getPriorityColor(task.priority)} size={11} fill={getPriorityColor(task.priority)} />
+                                </View>
+                              )}
                               {task.due_date && (
                                 <View style={styles.metaPill}>
                                   <Calendar color="#888" size={11} />
@@ -640,6 +670,12 @@ export const StarredScreen = ({ navigation }) => {
         </TouchableOpacity>
 
       </SafeAreaView>
+      <LevelUpModal
+        isVisible={!!levelUpData}
+        oldLevel={levelUpData?.oldLevel || 1}
+        newLevel={levelUpData?.newLevel || 2}
+        onClose={() => setLevelUpData(null)}
+      />
     </BackgroundWrapper>
   );
 };

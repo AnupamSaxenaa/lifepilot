@@ -3,7 +3,7 @@ import { StyleSheet, Text, View, Dimensions, SafeAreaView, TouchableOpacity, Fla
 import { BackgroundWrapper } from '../components/BackgroundWrapper';
 import { GlassButton } from '../components/GlassButton';
 import { COLORS } from '../theme/theme';
-import { Target, LayoutGrid, TrendingUp } from 'lucide-react-native';
+import { Target, Shield, Sparkles, Timer, Gem } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const { width, height } = Dimensions.get('window');
@@ -17,15 +17,27 @@ const SLIDES = [
   },
   {
     id: '2',
-    title: 'The Eisenhower Matrix',
-    description: 'Organize your life seamlessly. Prioritize what matters, delegate the rest, and eliminate the noise.',
-    icon: LayoutGrid,
+    title: 'Mindful Lock',
+    description: 'Block distracting apps and maintain your discipline with strict mode protection.',
+    icon: Shield,
   },
   {
     id: '3',
+    title: 'AI Planner',
+    description: 'Let Aura intelligently build your daily schedule based on your routines and goals.',
+    icon: Sparkles,
+  },
+  {
+    id: '4',
+    title: 'Deep Focus',
+    description: 'Immerse yourself in deep work with our serene focus mode and distraction-free timer.',
+    icon: Timer,
+  },
+  {
+    id: '5',
     title: 'Level Up Your Life',
-    description: 'Complete tasks, earn focus hours, and watch your real-life stats grow day by day.',
-    icon: TrendingUp,
+    description: 'Complete tasks to earn XP, build your streak, and collect rare stones along the journey.',
+    icon: Gem,
   }
 ];
 

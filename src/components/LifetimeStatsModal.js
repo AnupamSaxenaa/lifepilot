@@ -1,12 +1,12 @@
 import React from 'react';
-import { View, Text, StyleSheet, Modal, TouchableOpacity, Dimensions } from 'react-native';
+import { View, Text, StyleSheet, Modal, TouchableOpacity, Dimensions, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { X } from 'lucide-react-native';
 import { LifetimeProgressRing } from './LifetimeProgressRing';
 
 const { width } = Dimensions.get('window');
 
-export const LifetimeStatsModal = ({ isVisible, onClose, stats }) => {
+export const LifetimeStatsModal = ({ isVisible, onClose, stats, onReset }) => {
   const insets = useSafeAreaInsets();
 
   if (!isVisible) return null;
@@ -54,6 +54,20 @@ export const LifetimeStatsModal = ({ isVisible, onClose, stats }) => {
                 <Text style={styles.statLabel}>Pending</Text>
               </View>
             </View>
+
+            {onReset && (
+              <TouchableOpacity 
+                style={{ marginTop: 32, paddingVertical: 12, paddingHorizontal: 24, borderRadius: 12, backgroundColor: '#EF444420', alignItems: 'center', width: '100%' }}
+                onPress={() => {
+                  Alert.alert('Reset Lifetime Metrics', 'Are you sure you want to reset your lifetime metrics? This will start tracking from zero starting from this exact moment.', [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Reset', style: 'destructive', onPress: onReset }
+                  ]);
+                }}
+              >
+                <Text style={{ color: '#EF4444', fontWeight: '700', fontSize: 13, letterSpacing: 1 }}>RESET METRICS</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </View>
       </View>
