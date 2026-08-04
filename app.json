@@ -2,7 +2,7 @@
   "expo": {
     "name": "LifePilot",
     "slug": "lifepilot",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": [
@@ -23,7 +23,7 @@
     },
     "android": {
       "package": "com.anupam.lp",
-      "versionCode": 11,
+      "versionCode": 12,
       "permissions": [
         "RECORD_AUDIO",
         "android.permission.READ_CALENDAR",
@@ -74,7 +74,9 @@
         {
           "icon": "./assets/images/android-icon-monochrome.png",
           "color": "#A78BFA",
-          "sounds": ["./assets/sounds/custom_alert.wav"]
+          "sounds": [
+            "./assets/sounds/custom_alert.wav"
+          ]
         }
       ],
       "expo-secure-store",

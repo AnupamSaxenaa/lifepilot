@@ -70,7 +70,9 @@ coexist on one phone.
 | `development` | LP LAB | `com.anupam.lp.tester` | your lab, live reload |
 | *(default)* | LifePilot | `com.anupam.lp` | legacy |
 
-Current release: **v1.1.0** (versionCode 11), installed on three phones.
+Installed on three phones: **v1.1.0** (versionCode 11).
+Prepared in `app.json` but **not yet built**: **v1.2.0** (versionCode 12) — see
+[current release state](docs/04-operations/01-build-and-release.md#-current-release-state).
 
 ---
 
