@@ -27,8 +27,10 @@ import NetInfo from '@react-native-community/netinfo';
 import { supabase } from '../lib/supabase';
 
 const QUEUE_KEY = '@lifepilot_sync_queue';
+const DEAD_LETTER_KEY = '@lifepilot_sync_dead_letter';
 const MAX_RETRIES = 10;
 const MAX_AGE_DAYS = 7; // Drop entries older than 7 days
+const MAX_QUEUE_SIZE = 500; // Safety cap — a single AsyncStorage blob shouldn't grow unbounded
 
 // ─── Queue Persistence ─────────────────────────────────
 
@@ -47,6 +49,49 @@ const saveQueue = async (queue) => {
   } catch (e) {
     console.warn('[SyncQueue] Failed to persist queue:', e);
   }
+};
+
+// ─── Dead Letter Log ────────────────────────────────────
+// When a mutation is permanently given up on (too old, too many retries, or
+// a fatal schema error), it's no longer silently lost — it's recorded here
+// so the app can surface "N changes failed to sync" to the user instead of
+// data quietly disappearing with no trace.
+
+const loadDeadLetters = async () => {
+  try {
+    const raw = await AsyncStorage.getItem(DEAD_LETTER_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+};
+
+const recordDeadLetter = async (entry, reason) => {
+  try {
+    const letters = await loadDeadLetters();
+    letters.push({
+      table: entry.table,
+      operation: entry.operation,
+      reason,
+      droppedAt: new Date().toISOString(),
+      originalCreatedAt: entry.createdAt,
+    });
+    // Keep the log itself bounded too.
+    const trimmed = letters.slice(-200);
+    await AsyncStorage.setItem(DEAD_LETTER_KEY, JSON.stringify(trimmed));
+  } catch (e) {
+    console.warn('[SyncQueue] Failed to record dead letter:', e);
+  }
+};
+
+/**
+ * Mutations that were permanently given up on (never made it to the server).
+ * Surface this count/list to the user so data loss is never silent.
+ */
+export const getDeadLetters = async () => loadDeadLetters();
+
+export const clearDeadLetters = async () => {
+  await AsyncStorage.setItem(DEAD_LETTER_KEY, JSON.stringify([]));
 };
 
 // ─── Public API ─────────────────────────────────────────
@@ -78,10 +123,38 @@ export const syncToSupabase = async (table, operation, data = {}, filter = null)
     await dequeue(queueId);
     return result;
   } catch (error) {
+    if (error?.__fatal) {
+      // This will never succeed no matter how many times we retry it — don't
+      // leave it stuck in the queue forever. Record it and remove it now.
+      await dequeue(queueId);
+      await recordDeadLetter({ table, operation, createdAt: new Date().toISOString() }, error.message || 'fatal_error');
+      console.warn(`[SyncQueue] Dropped ${operation} on ${table} — fatal error:`, error.message);
+      return null;
+    }
     // Network error or Supabase down → leave in queue for retry
     console.log(`[SyncQueue] Left ${operation} on ${table} in queue due to error:`, error.message || error);
     return null;
   }
+};
+
+/**
+ * Durably queue a mutation WITHOUT attempting the network round-trip inline.
+ *
+ * This exists for callers running in a tight, latency-sensitive context where
+ * blocking on a Supabase request is harmful — most notably the Android
+ * home-screen widget's headless click task. Widget click tasks are serialized
+ * by the OS, so if one tap awaits a full network request the NEXT tap (e.g.
+ * opening the steps dropdown) is stuck waiting behind it.
+ *
+ * The mutation is persisted to the same queue `syncToSupabase` uses, so it is
+ * guaranteed durable and will be pushed to the server by the normal drain
+ * triggers (app launch, screen focus, network recovery). Returns as soon as
+ * the (single) AsyncStorage write completes.
+ *
+ * @returns {Promise<string>} the queue entry id
+ */
+export const enqueueMutation = async (table, operation, data = {}, filter = null) => {
+  return enqueue(table, operation, data, filter);
 };
 
 /**
@@ -111,19 +184,26 @@ export const drainSyncQueue = async () => {
     
     if (ageDays > MAX_AGE_DAYS) {
       console.warn(`[SyncQueue] Dropping stale entry (${ageDays.toFixed(1)} days old):`, entry);
+      await recordDeadLetter(entry, 'stale');
       continue;
     }
     
     if (entry.retryCount >= MAX_RETRIES) {
       // Give up on this entry — it's been tried too many times
       console.warn(`[SyncQueue] Dropping entry after ${MAX_RETRIES} retries:`, entry);
+      await recordDeadLetter(entry, 'max_retries');
       continue;
     }
 
     try {
       await executeOperation(entry.table, entry.operation, entry.data, entry.filter);
       succeeded++;
-    } catch {
+    } catch (err) {
+      if (err?.__fatal) {
+        // Fatal/permanent error (schema mismatch, etc) — retrying won't help.
+        await recordDeadLetter(entry, err.message || 'fatal_error');
+        continue;
+      }
       entry.retryCount = (entry.retryCount || 0) + 1;
       survivors.push(entry);
       failed++;
@@ -164,6 +244,20 @@ const enqueue = async (table, operation, data, filter) => {
     createdAt: new Date().toISOString(),
     retryCount: 0,
   });
+
+  // Safety cap: if a device is offline for a very long time, don't let a
+  // single AsyncStorage blob grow unbounded. Drop the OLDEST entries first
+  // (they're the most likely to be superseded by later edits anyway) and
+  // record them so they're visible instead of silently vanishing.
+  if (queue.length > MAX_QUEUE_SIZE) {
+    const overflow = queue.length - MAX_QUEUE_SIZE;
+    const dropped = queue.splice(0, overflow);
+    for (const entry of dropped) {
+      await recordDeadLetter(entry, 'queue_overflow');
+    }
+    console.warn(`[SyncQueue] Queue exceeded ${MAX_QUEUE_SIZE} — dropped ${overflow} oldest entries.`);
+  }
+
   await saveQueue(queue);
   return id;
 };
@@ -174,11 +268,22 @@ const dequeue = async (id) => {
   await saveQueue(filtered);
 };
 
+// Postgres/PostgREST error CODES that mean "this will never succeed no
+// matter how many times we retry" — matched on the structured `code` field
+// (stable across Postgres versions), not on free-text message content, which
+// is brittle and can accidentally match transient/legitimate errors.
+//   PGRST204 — no rows returned when one was expected (schema/data mismatch)
+//   42703    — undefined_column
+//   42P01    — undefined_table
+const FATAL_ERROR_CODES = new Set(['PGRST204', '42703', '42P01']);
+
 const executeOperation = async (table, operation, data, filter) => {
   const handleError = (error) => {
-    if (error && (error.code === 'PGRST204' || error.message?.includes('Could not find the') || error.message?.includes('column'))) {
-      console.warn(`[SyncQueue] Fatal schema error, dropping ${operation} on ${table}:`, error.message);
-      return null;
+    if (error && FATAL_ERROR_CODES.has(error.code)) {
+      console.warn(`[SyncQueue] Fatal schema error, giving up on ${operation} on ${table}:`, error.message);
+      const fatalErr = new Error(error.message || 'fatal_schema_error');
+      fatalErr.__fatal = true;
+      throw fatalErr;
     }
     throw error;
   };
@@ -187,6 +292,17 @@ const executeOperation = async (table, operation, data, filter) => {
   switch (operation) {
     case 'insert': {
       const { data: result, error } = await supabase.from(table).insert(data).select().single();
+      if (error) return handleError(error);
+      return result;
+    }
+    case 'upsert': {
+      // filter.column is used as the conflict target (e.g. 'user_id')
+      const conflictCol = filter?.column;
+      const { data: result, error } = await supabase
+        .from(table)
+        .upsert(data, conflictCol ? { onConflict: conflictCol } : undefined)
+        .select()
+        .single();
       if (error) return handleError(error);
       return result;
     }

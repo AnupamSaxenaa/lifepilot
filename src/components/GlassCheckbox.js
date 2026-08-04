@@ -1,27 +1,44 @@
-import React from 'react';
-import { TouchableOpacity, Text, StyleSheet, View } from 'react-native';
-import { CheckSquare, Square } from 'lucide-react-native';
-import { useColorScheme } from 'react-native';
-import { COLORS } from '../theme/theme';
+import { Check } from 'lucide-react-native';
+import { useEffect } from 'react';
+import { StyleSheet, Text, TouchableOpacity } from 'react-native';
+import Animated, { useAnimatedStyle, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
+import { useAuthPalette } from './auth/AuthKit';
 
 export const GlassCheckbox = ({ isChecked, onToggle, label, style }) => {
-  const colorScheme = useColorScheme();
-  const theme = colorScheme === 'dark' ? COLORS.dark : COLORS.light;
+  const palette = useAuthPalette();
+  const scale = useSharedValue(1);
+
+  useEffect(() => {
+    scale.value = withTiming(isChecked ? 1.08 : 1, { duration: 90 }, () => {
+      scale.value = withSpring(1, { damping: 12, stiffness: 260 });
+    });
+  }, [isChecked, scale]);
+
+  const boxStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }],
+  }));
 
   return (
-    <TouchableOpacity 
-      style={[styles.container, style]} 
+    <TouchableOpacity
+      style={[styles.container, style]}
       onPress={onToggle}
-      activeOpacity={0.7}
+      activeOpacity={0.72}
+      accessibilityRole="checkbox"
+      accessibilityState={{ checked: isChecked }}
     >
-      <View style={styles.iconContainer}>
-        {isChecked ? (
-          <CheckSquare color={theme.primary} size={24} />
-        ) : (
-          <Square color={theme.textMuted} size={24} />
-        )}
-      </View>
-      <Text style={[styles.label, { color: theme.textMuted }]}>{label}</Text>
+      <Animated.View
+        style={[
+          styles.box,
+          {
+            borderColor: isChecked ? palette.accent : palette.border,
+            backgroundColor: isChecked ? palette.accent : 'transparent',
+          },
+          boxStyle,
+        ]}
+      >
+        {isChecked ? <Check color="#FFFFFF" size={13} strokeWidth={3} /> : null}
+      </Animated.View>
+      <Text style={[styles.label, { color: palette.muted }]}>{label}</Text>
     </TouchableOpacity>
   );
 };
@@ -30,14 +47,20 @@ const styles = StyleSheet.create({
   container: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 12,
+    paddingVertical: 10,
   },
-  iconContainer: {
-    marginRight: 12,
+  box: {
+    width: 22,
+    height: 22,
+    borderRadius: 7,
+    borderWidth: 1.3,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 11,
   },
   label: {
-    fontSize: 14,
+    fontSize: 13.5,
+    lineHeight: 19,
     flex: 1,
-    lineHeight: 20,
   },
 });

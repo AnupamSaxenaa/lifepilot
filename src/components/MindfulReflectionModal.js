@@ -3,12 +3,14 @@
 // Records mood, optional note, and awards XP.
 // ─────────────────────────────────────────────────────────
 
-import React, { useState } from 'react';
-import { Modal, View, Text, TextInput, TouchableOpacity, StyleSheet, Dimensions, ScrollView } from 'react-native';
 import { X } from 'lucide-react-native';
-import { Storage } from '../utils/storage';
-import { Gamification } from '../utils/gamification';
+import { useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { Dimensions, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { useTheme } from '../context/ThemeContext';
 import { syncToSupabase } from '../lib/syncQueue';
+import { Gamification } from '../utils/gamification';
+import { Storage } from '../utils/storage';
 
 const { width } = Dimensions.get('window');
 
@@ -18,15 +20,22 @@ const generateUUID = () =>
     return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
   });
 
-const MOODS = [
-  { emoji: '😫', label: 'Rough' },
-  { emoji: '😕', label: 'Meh' },
-  { emoji: '😐', label: 'Okay' },
-  { emoji: '🙂', label: 'Good' },
-  { emoji: '😊', label: 'Great' },
-];
+// Canonical English mood labels stored in the database — kept stable
+// regardless of the active display language.
+const MOOD_DB_LABELS = ['Rough', 'Meh', 'Okay', 'Good', 'Great'];
 
 export const MindfulReflectionModal = ({ isVisible, onClose, userId, todayStats = {}, onSuccess }) => {
+  const ACCENT = useTheme().theme.accent;
+  const { t } = useTranslation();
+  const styles = useMemo(() => makeStyles(ACCENT), [ACCENT]);
+
+  const MOODS = [
+    { emoji: '😫', label: t('mindfulReflection.moodRough') },
+    { emoji: '😕', label: t('mindfulReflection.moodMeh') },
+    { emoji: '😐', label: t('mindfulReflection.moodOkay') },
+    { emoji: '🙂', label: t('mindfulReflection.moodGood') },
+    { emoji: '😊', label: t('mindfulReflection.moodGreat') },
+  ];
   const [selectedMood, setSelectedMood] = useState(null);
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
@@ -58,7 +67,7 @@ export const MindfulReflectionModal = ({ isVisible, onClose, userId, todayStats 
       syncToSupabase('mindful_reflections', 'insert', {
         id: newId,
         user_id: userId,
-        mood: MOODS[selectedMood].label,
+        mood: MOOD_DB_LABELS[selectedMood],
         note: note.trim(),
         stats: todayStats,
         created_at: newEntry.createdAt
@@ -84,7 +93,7 @@ export const MindfulReflectionModal = ({ isVisible, onClose, userId, todayStats 
         <View style={styles.modal}>
           {/* Header */}
           <View style={styles.header}>
-            <Text style={styles.title}>Daily Reflection</Text>
+            <Text style={styles.title}>{t('mindfulReflection.modalTitle')}</Text>
             <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
               <X color="#a1a1aa" size={24} />
             </TouchableOpacity>
@@ -96,22 +105,22 @@ export const MindfulReflectionModal = ({ isVisible, onClose, userId, todayStats 
               <View style={styles.statCard}>
                 <Text style={styles.statEmoji}>🛡️</Text>
                 <Text style={styles.statValue}>{todayStats.resisted || 0}</Text>
-                <Text style={styles.statLabel}>Resisted</Text>
+                <Text style={styles.statLabel}>{t('mindfulReflection.statResisted')}</Text>
               </View>
               <View style={styles.statCard}>
                 <Text style={styles.statEmoji}>📱</Text>
                 <Text style={styles.statValue}>{todayStats.used || 0}</Text>
-                <Text style={styles.statLabel}>Used</Text>
+                <Text style={styles.statLabel}>{t('mindfulReflection.statUsed')}</Text>
               </View>
               <View style={styles.statCard}>
                 <Text style={styles.statEmoji}>⏱️</Text>
                 <Text style={styles.statValue}>{todayStats.timeSaved || 0}</Text>
-                <Text style={styles.statLabel}>Min Saved</Text>
+                <Text style={styles.statLabel}>{t('mindfulReflection.statMinSaved')}</Text>
               </View>
             </View>
 
             {/* Mood Selector */}
-            <Text style={styles.sectionTitle}>How do you feel about today's digital habits?</Text>
+            <Text style={styles.sectionTitle}>{t('mindfulReflection.moodQuestion')}</Text>
             <View style={styles.moodRow}>
               {MOODS.map((mood, index) => (
                 <TouchableOpacity
@@ -126,17 +135,17 @@ export const MindfulReflectionModal = ({ isVisible, onClose, userId, todayStats 
                   <Text style={styles.moodEmoji}>{mood.emoji}</Text>
                   <Text style={[
                     styles.moodLabel,
-                    selectedMood === index && { color: '#A855F7' },
+                    selectedMood === index && { color: ACCENT },
                   ]}>{mood.label}</Text>
                 </TouchableOpacity>
               ))}
             </View>
 
             {/* Note */}
-            <Text style={styles.sectionTitle}>Anything you want to note?</Text>
+            <Text style={styles.sectionTitle}>{t('mindfulReflection.noteQuestion')}</Text>
             <TextInput
               style={styles.noteInput}
-              placeholder="Today I noticed..."
+              placeholder={t('mindfulReflection.notePlaceholder')}
               placeholderTextColor="#52525b"
               multiline
               maxLength={500}
@@ -155,7 +164,7 @@ export const MindfulReflectionModal = ({ isVisible, onClose, userId, todayStats 
               activeOpacity={0.8}
             >
               <Text style={styles.submitText}>
-                {saving ? 'Saving...' : 'Save Reflection (+10 XP)'}
+                {saving ? t('mindfulReflection.savingButton') : t('mindfulReflection.saveReflectionButton', { xp: 10 })}
               </Text>
             </TouchableOpacity>
           </ScrollView>
@@ -165,7 +174,7 @@ export const MindfulReflectionModal = ({ isVisible, onClose, userId, todayStats 
   );
 };
 
-const styles = StyleSheet.create({
+const makeStyles = (ACCENT) => StyleSheet.create({
   overlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.85)',
@@ -244,8 +253,8 @@ const styles = StyleSheet.create({
     minWidth: 56,
   },
   moodBtnSelected: {
-    borderColor: '#A855F7',
-    backgroundColor: 'rgba(168, 85, 247, 0.1)',
+    borderColor: ACCENT,
+    backgroundColor: ACCENT + '1A',
   },
   moodEmoji: {
     fontSize: 28,
@@ -269,7 +278,7 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
   submitBtn: {
-    backgroundColor: '#A855F7',
+    backgroundColor: ACCENT,
     borderRadius: 14,
     padding: 16,
     alignItems: 'center',

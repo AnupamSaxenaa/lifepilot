@@ -9,41 +9,62 @@
 // Stage 4: Conscious Override (reason + duration)
 // ─────────────────────────────────────────────────────────
 
-import React, { useState, useEffect, useCallback } from 'react';
+import { BrainCircuit, Heart, Sparkles, X } from 'lucide-react-native';
+import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
-  Modal, View, Text, TouchableOpacity, StyleSheet, Dimensions,
-  ScrollView, ActivityIndicator, TextInput, KeyboardAvoidingView, Platform, FlatList, Image,
-  NativeModules
+  ActivityIndicator,
+  Dimensions,
+  FlatList, Image,
+  KeyboardAvoidingView,
+  Modal,
+  NativeModules,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View
 } from 'react-native';
-import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
-import { X, BrainCircuit, Heart, Sparkles } from 'lucide-react-native';
-import { BreathingExercise } from './BreathingExercise';
-import {
-  getApps, addLogEntry, logUsage, getProfile, getTodayStats,
-  getPersonaFallback, getReplacementActivity,
-} from '../utils/mindfulLock';
-import { Gamification } from '../utils/gamification';
-import { generateMindfulIntervention, chatWithCoach } from '../lib/AIEngine';
+import Animated, { FadeIn } from 'react-native-reanimated';
+import { useTheme } from '../context/ThemeContext';
+import { chatWithCoach } from '../lib/AIEngine';
 import { loadTasks } from '../lib/dataManager';
+import { Gamification } from '../utils/gamification';
+import {
+  addLogEntry,
+  getApps,
+  getEffectiveBlockingMode,
+  getProfile,
+  getReplacementActivity,
+  getTodayStats,
+  grantTempAllowance,
+  logUsage
+} from '../utils/mindfulLock';
+import { BreathingExercise } from './BreathingExercise';
 
 const { width } = Dimensions.get('window');
 
-const REASONS = [
-  { label: '😑 Bored', value: 'bored' },
-  { label: '😰 Stressed', value: 'stressed' },
-  { label: '🔄 Habit', value: 'habit' },
-  { label: '💼 Need it', value: 'need' },
-  { label: '🤷 Just want to', value: 'want' },
-];
-
-const DURATIONS = [
-  { label: '5 min', value: 5 },
-  { label: '15 min', value: 15 },
-  { label: '30 min', value: 30 },
-  { label: '1 hr', value: 60 },
-];
-
 export const MindfulInterventionOverlay = ({ isVisible, onClose, userId, initialApp }) => {
+  const ACCENT = useTheme().theme.accent;
+  const { t } = useTranslation();
+  const styles = useMemo(() => makeStyles(ACCENT), [ACCENT]);
+
+  const REASONS = [
+    { label: t('mindfulIntervention.reasonBored'), value: 'bored' },
+    { label: t('mindfulIntervention.reasonStressed'), value: 'stressed' },
+    { label: t('mindfulIntervention.reasonHabit'), value: 'habit' },
+    { label: t('mindfulIntervention.reasonNeedIt'), value: 'need' },
+    { label: t('mindfulIntervention.reasonJustWantTo'), value: 'want' },
+  ];
+
+  const DURATIONS = [
+    { label: t('mindfulIntervention.duration5Min'), value: 5 },
+    { label: t('mindfulIntervention.duration15Min'), value: 15 },
+    { label: t('mindfulIntervention.duration30Min'), value: 30 },
+    { label: t('mindfulIntervention.duration1Hr'), value: 60 },
+  ];
   const [stage, setStage] = useState(1);
   const [apps, setApps] = useState([]);
   const [selectedApp, setSelectedApp] = useState(null);
@@ -185,6 +206,9 @@ export const MindfulInterventionOverlay = ({ isVisible, onClose, userId, initial
     // Deduct XP for giving in
     await Gamification.addXP(userId, -25);
 
+    // Grant temporary allowance so Native blocker allows it
+    await grantTempAllowance(userId, selectedApp.id, selectedDuration);
+
     // Log usage minutes
     await logUsage(userId, selectedApp.id, selectedDuration);
 
@@ -198,6 +222,11 @@ export const MindfulInterventionOverlay = ({ isVisible, onClose, userId, initial
 
   if (!isVisible) return null;
 
+  // When the effective mode is strict (manual toggle OR an active schedule),
+  // there is NO bypass — no coach negotiation, no allowance. The override
+  // stage becomes a hard wall.
+  const isStrict = getEffectiveBlockingMode(profile) === 'strict';
+
   return (
     <Modal visible={isVisible} animationType="fade" transparent={false}>
       <View style={styles.container}>
@@ -210,16 +239,16 @@ export const MindfulInterventionOverlay = ({ isVisible, onClose, userId, initial
         {showCelebration && (
           <Animated.View entering={FadeIn.duration(300)} style={styles.celebrationContainer}>
             <Text style={styles.celebrationEmoji}>🎉</Text>
-            <Text style={styles.celebrationTitle}>You resisted!</Text>
-            <Text style={styles.celebrationXP}>+25 XP</Text>
+            <Text style={styles.celebrationTitle}>{t('mindfulIntervention.celebrationTitle')}</Text>
+            <Text style={styles.celebrationXP}>{t('mindfulIntervention.celebrationXp', { xp: 25 })}</Text>
             <Text style={styles.celebrationSub}>
-              Instead, try this:
+              {t('mindfulIntervention.celebrationSub')}
             </Text>
             <View style={styles.replacementCard}>
               <Text style={styles.replacementText}>{replacement}</Text>
             </View>
             <TouchableOpacity style={styles.celebrationBtn} onPress={handleCloseCelebration}>
-              <Text style={styles.celebrationBtnText}>Nice! Let's go</Text>
+              <Text style={styles.celebrationBtnText}>{t('mindfulIntervention.celebrationBtnText')}</Text>
             </TouchableOpacity>
           </Animated.View>
         )}
@@ -227,9 +256,9 @@ export const MindfulInterventionOverlay = ({ isVisible, onClose, userId, initial
         {/* ═══ STAGE 1: App Selection ═══ */}
         {!showCelebration && stage === 1 && (
           <Animated.View entering={FadeIn.duration(300)} style={styles.stageContainer}>
-            <BrainCircuit color="#A855F7" size={40} style={{ marginBottom: 16 }} />
-            <Text style={styles.stageTitle}>Which app is calling you?</Text>
-            <Text style={styles.stageSubtitle}>Let's pause and think about this together</Text>
+            <BrainCircuit color={ACCENT} size={40} style={{ marginBottom: 16 }} />
+            <Text style={styles.stageTitle}>{t('mindfulIntervention.stage1Title')}</Text>
+            <Text style={styles.stageSubtitle}>{t('mindfulIntervention.stage1Subtitle')}</Text>
 
             <ScrollView style={styles.appList} showsVerticalScrollIndicator={false}>
               {apps.map(app => (
@@ -250,7 +279,7 @@ export const MindfulInterventionOverlay = ({ isVisible, onClose, userId, initial
                   </View>
                   <View style={styles.usageBadge}>
                     <Text style={styles.usageText}>
-                      {app.usageToday || 0}/{app.dailyBudgetMinutes}m
+                      {t('mindfulIntervention.usageBadge', { used: app.usageToday || 0, budget: app.dailyBudgetMinutes })}
                     </Text>
                   </View>
                 </TouchableOpacity>
@@ -259,11 +288,11 @@ export const MindfulInterventionOverlay = ({ isVisible, onClose, userId, initial
 
             <TouchableOpacity 
               style={styles.justTemptedBtn}
-              onPress={() => handleSelectApp({ name: 'General Distraction', id: 'general' })}
+              onPress={() => handleSelectApp({ name: t('mindfulIntervention.generalDistractionName'), id: 'general' })}
               activeOpacity={0.8}
             >
-              <Text style={styles.justTemptedBtnText}>I'm Just Tempted</Text>
-              <Text style={styles.justTemptedBtnSub}>I don't know what I want to open</Text>
+              <Text style={styles.justTemptedBtnText}>{t('mindfulIntervention.justTemptedBtnText')}</Text>
+              <Text style={styles.justTemptedBtnSub}>{t('mindfulIntervention.justTemptedBtnSub')}</Text>
             </TouchableOpacity>
           </Animated.View>
         )}
@@ -279,7 +308,7 @@ export const MindfulInterventionOverlay = ({ isVisible, onClose, userId, initial
             ) : (
               <Text style={styles.selectedAppIcon}>{selectedApp?.icon}</Text>
             )}
-            <Text style={styles.selectedAppName}>Coach Chat</Text>
+            <Text style={styles.selectedAppName}>{t('mindfulIntervention.coachChatTitle')}</Text>
 
             <FlatList
               data={chatMessages.filter(m => m.role !== 'system')}
@@ -288,7 +317,7 @@ export const MindfulInterventionOverlay = ({ isVisible, onClose, userId, initial
               contentContainerStyle={{ paddingBottom: 20 }}
               renderItem={({ item }) => (
                 <View style={[styles.chatBubble, item.role === 'user' ? styles.chatBubbleUser : styles.chatBubbleAi]}>
-                  {item.role === 'assistant' && <Sparkles color="#A855F7" size={14} style={{ marginRight: 6, alignSelf: 'flex-start', marginTop: 2 }} />}
+                  {item.role === 'assistant' && <Sparkles color={ACCENT} size={14} style={{ marginRight: 6, alignSelf: 'flex-start', marginTop: 2 }} />}
                   <Text style={[styles.chatText, item.role === 'user' ? styles.chatTextUser : styles.chatTextAi]}>
                     {item.content}
                   </Text>
@@ -298,15 +327,15 @@ export const MindfulInterventionOverlay = ({ isVisible, onClose, userId, initial
 
             {loadingAI && (
               <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
-                <ActivityIndicator size="small" color="#A855F7" style={{ marginRight: 8 }} />
-                <Text style={{ color: '#a3a3a3' }}>Coach is typing...</Text>
+                <ActivityIndicator size="small" color={ACCENT} style={{ marginRight: 8 }} />
+                <Text style={{ color: '#a3a3a3' }}>{t('mindfulIntervention.coachTyping')}</Text>
               </View>
             )}
 
             <View style={styles.chatInputRow}>
               <TextInput
                 style={styles.chatInput}
-                placeholder="Reply to coach..."
+                placeholder={t('mindfulIntervention.chatInputPlaceholder')}
                 placeholderTextColor="#666"
                 value={inputText}
                 onChangeText={setInputText}
@@ -314,7 +343,7 @@ export const MindfulInterventionOverlay = ({ isVisible, onClose, userId, initial
                 returnKeyType="send"
               />
               <TouchableOpacity style={styles.chatSendBtn} onPress={handleSendMessage}>
-                <Text style={styles.chatSendBtnText}>Send</Text>
+                <Text style={styles.chatSendBtnText}>{t('mindfulIntervention.sendButton')}</Text>
               </TouchableOpacity>
             </View>
 
@@ -325,16 +354,18 @@ export const MindfulInterventionOverlay = ({ isVisible, onClose, userId, initial
                 activeOpacity={0.8}
               >
                 <Heart color="#fff" size={18} />
-                <Text style={styles.resistBtnText}>I'm good now</Text>
+                <Text style={styles.resistBtnText}>{t('mindfulIntervention.resistBtnText')}</Text>
               </TouchableOpacity>
 
-              <TouchableOpacity
-                style={styles.continueBtn}
-                onPress={handleProceedToBreathing}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.continueBtnText}>I still want to</Text>
-              </TouchableOpacity>
+              {!isStrict && (
+                <TouchableOpacity
+                  style={styles.continueBtn}
+                  onPress={handleProceedToBreathing}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.continueBtnText}>{t('mindfulIntervention.continueBtnText')}</Text>
+                </TouchableOpacity>
+              )}
             </View>
           </KeyboardAvoidingView>
         )}
@@ -342,7 +373,7 @@ export const MindfulInterventionOverlay = ({ isVisible, onClose, userId, initial
         {/* ═══ STAGE 3: Breathing Exercise ═══ */}
         {!showCelebration && stage === 3 && (
           <Animated.View entering={FadeIn.duration(300)} style={styles.stageContainer}>
-            <Text style={styles.breathingTitle}>Take a moment</Text>
+            <Text style={styles.breathingTitle}>{t('mindfulIntervention.breathingTitle')}</Text>
             <BreathingExercise
               visible={true}
               duration={20}
@@ -351,11 +382,33 @@ export const MindfulInterventionOverlay = ({ isVisible, onClose, userId, initial
           </Animated.View>
         )}
 
-        {/* ═══ STAGE 4: Conscious Override ═══ */}
-        {!showCelebration && stage === 4 && (
+        {/* ═══ STAGE 4 (STRICT): Hard wall — no bypass allowed ═══ */}
+        {!showCelebration && stage === 4 && isStrict && (
+          <Animated.View entering={FadeIn.duration(300)} style={styles.stageContainer}>
+            <BrainCircuit color="#A1A1AA" size={40} style={{ marginBottom: 16 }} />
+            <Text style={styles.stageTitle}>
+              {t('mindfulIntervention.strictBlockedTitle', { appName: selectedApp?.name })}
+            </Text>
+            <Text style={[styles.overrideNote, { marginTop: 12, marginBottom: 28 }]}>
+              {t('mindfulIntervention.strictOverrideNote')}
+            </Text>
+            <TouchableOpacity
+              style={styles.lastChanceBtn}
+              onPress={handleResist}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.lastChanceBtnText}>
+                {t('mindfulIntervention.strictLastChanceBtnText')}
+              </Text>
+            </TouchableOpacity>
+          </Animated.View>
+        )}
+
+        {/* ═══ STAGE 4: Conscious Override (non-strict) ═══ */}
+        {!showCelebration && stage === 4 && !isStrict && (
           <Animated.View entering={FadeIn.duration(300)} style={styles.stageContainer}>
             <Text style={styles.stageTitle}>
-              Why do you want to open {selectedApp?.name}?
+              {t('mindfulIntervention.overrideStageTitle', { appName: selectedApp?.name })}
             </Text>
 
             <View style={styles.optionsGrid}>
@@ -371,14 +424,14 @@ export const MindfulInterventionOverlay = ({ isVisible, onClose, userId, initial
                 >
                   <Text style={[
                     styles.optionChipText,
-                    selectedReason === reason.value && { color: '#A855F7' },
+                    selectedReason === reason.value && { color: ACCENT },
                   ]}>{reason.label}</Text>
                 </TouchableOpacity>
               ))}
             </View>
 
             <Text style={[styles.stageTitle, { marginTop: 24 }]}>
-              How long will you use it?
+              {t('mindfulIntervention.durationQuestionTitle')}
             </Text>
 
             <View style={styles.optionsGrid}>
@@ -394,7 +447,7 @@ export const MindfulInterventionOverlay = ({ isVisible, onClose, userId, initial
                 >
                   <Text style={[
                     styles.optionChipText,
-                    selectedDuration === dur.value && { color: '#A855F7' },
+                    selectedDuration === dur.value && { color: ACCENT },
                   ]}>{dur.label}</Text>
                 </TouchableOpacity>
               ))}
@@ -409,11 +462,11 @@ export const MindfulInterventionOverlay = ({ isVisible, onClose, userId, initial
               disabled={!selectedReason || !selectedDuration}
               activeOpacity={0.8}
             >
-              <Text style={styles.overrideBtnText}>Use Mindfully</Text>
+              <Text style={styles.overrideBtnText}>{t('mindfulIntervention.overrideBtnText')}</Text>
             </TouchableOpacity>
 
             <Text style={styles.overrideNote}>
-              No judgment. I'll check back with you.
+              {t('mindfulIntervention.overrideNote')}
             </Text>
 
             {/* Last chance resist */}
@@ -423,7 +476,7 @@ export const MindfulInterventionOverlay = ({ isVisible, onClose, userId, initial
               activeOpacity={0.7}
             >
               <Text style={styles.lastChanceBtnText}>
-                Actually, never mind — I'll pass ✨
+                {t('mindfulIntervention.lastChanceBtnText')}
               </Text>
             </TouchableOpacity>
           </Animated.View>
@@ -433,7 +486,7 @@ export const MindfulInterventionOverlay = ({ isVisible, onClose, userId, initial
   );
 };
 
-const styles = StyleSheet.create({
+const makeStyles = (ACCENT) => StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#050505',
@@ -475,12 +528,12 @@ const styles = StyleSheet.create({
   appCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(168, 85, 247, 0.05)',
+    backgroundColor: ACCENT + '0D',
     padding: 14,
     borderRadius: 16,
     marginBottom: 12,
     borderWidth: 1,
-    borderColor: 'rgba(168, 85, 247, 0.2)',
+    borderColor: ACCENT + '33',
   },
   appIcon: {
     fontSize: 28,
@@ -503,27 +556,27 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   usageBadge: {
-    backgroundColor: 'rgba(168, 85, 247, 0.1)',
+    backgroundColor: ACCENT + '1A',
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 8,
   },
   usageText: {
-    color: '#A855F7',
+    color: ACCENT,
     fontSize: 12,
     fontWeight: '700',
   },
   justTemptedBtn: {
-    backgroundColor: 'rgba(168, 85, 247, 0.1)',
+    backgroundColor: ACCENT + '1A',
     borderWidth: 1,
-    borderColor: 'rgba(168, 85, 247, 0.3)',
+    borderColor: ACCENT + '4D',
     borderRadius: 16,
     padding: 16,
     alignItems: 'center',
     marginTop: 16,
   },
   justTemptedBtnText: {
-    color: '#A855F7',
+    color: ACCENT,
     fontSize: 16,
     fontWeight: '700',
     marginBottom: 4,
@@ -565,7 +618,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#121212',
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: '#A855F720',
+    borderColor: ACCENT + '20',
     padding: 24,
     marginBottom: 20,
     width: '100%',
@@ -577,16 +630,16 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   futureMessageCard: {
-    backgroundColor: 'rgba(168, 85, 247, 0.08)',
+    backgroundColor: ACCENT + '14',
     borderRadius: 16,
     padding: 16,
     marginBottom: 24,
     width: '100%',
     borderWidth: 1,
-    borderColor: 'rgba(168, 85, 247, 0.2)',
+    borderColor: ACCENT + '33',
   },
   futureMessageLabel: {
-    color: '#A855F7',
+    color: ACCENT,
     fontSize: 12,
     fontWeight: '700',
     marginBottom: 6,
@@ -602,7 +655,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   resistBtn: {
-    backgroundColor: 'rgba(34, 197, 94, 0.15)',
+    backgroundColor: 'rgba(229, 231, 235, 0.15)',
     borderRadius: 16,
     padding: 18,
     flexDirection: 'row',
@@ -610,10 +663,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 8,
     borderWidth: 1,
-    borderColor: 'rgba(34, 197, 94, 0.4)',
+    borderColor: 'rgba(229, 231, 235, 0.4)',
   },
   resistBtnText: {
-    color: '#22C55E',
+    color: '#E5E7EB',
     fontSize: 16,
     fontWeight: '700',
   },
@@ -657,8 +710,8 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   optionChipSelected: {
-    borderColor: '#A855F7',
-    backgroundColor: 'rgba(168, 85, 247, 0.15)',
+    borderColor: ACCENT,
+    backgroundColor: ACCENT + '26',
   },
   optionChipText: {
     color: '#a1a1aa',
@@ -689,7 +742,7 @@ const styles = StyleSheet.create({
     padding: 12,
   },
   lastChanceBtnText: {
-    color: '#A855F7',
+    color: ACCENT,
     fontSize: 14,
     fontWeight: '600',
     textAlign: 'center',
@@ -713,7 +766,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   celebrationXP: {
-    color: '#A855F7',
+    color: ACCENT,
     fontSize: 20,
     fontWeight: '700',
     marginBottom: 32,
@@ -740,7 +793,7 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
   celebrationBtn: {
-    backgroundColor: '#A855F7',
+    backgroundColor: ACCENT,
     borderRadius: 16,
     padding: 18,
     paddingHorizontal: 40,
@@ -770,10 +823,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   chatBubbleUser: {
-    backgroundColor: 'rgba(168, 85, 247, 0.15)',
+    backgroundColor: ACCENT + '26',
     alignSelf: 'flex-end',
     borderBottomRightRadius: 4,
-    borderColor: 'rgba(168, 85, 247, 0.4)',
+    borderColor: ACCENT + '66',
     borderWidth: 1,
   },
   chatText: {
@@ -805,7 +858,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   chatSendBtn: {
-    backgroundColor: '#A855F7',
+    backgroundColor: ACCENT,
     borderRadius: 12,
     paddingHorizontal: 20,
     justifyContent: 'center',

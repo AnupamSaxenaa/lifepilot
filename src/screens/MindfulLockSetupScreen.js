@@ -3,15 +3,25 @@
 // 3 steps: Goal → Coach Persona → First Distraction App
 // ─────────────────────────────────────────────────────────
 
-import React, { useState, useEffect } from 'react';
+import { ArrowLeft, ArrowRight, BrainCircuit, Check, Lock, Search } from 'lucide-react-native';
+import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
-  View, Text, TextInput, TouchableOpacity, StyleSheet,
-  Dimensions, ScrollView, KeyboardAvoidingView, Platform, NativeModules, Alert, Image, ActivityIndicator
+    ActivityIndicator,
+    Alert,
+    Dimensions,
+    Image,
+    KeyboardAvoidingView,
+    NativeModules,
+    Platform,
+    ScrollView,
+    StyleSheet,
+    Text, TextInput, TouchableOpacity,
+    View
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { ArrowRight, ArrowLeft, Check, Lock, BrainCircuit, Search } from 'lucide-react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
-import { saveProfile, addApp, getInstalledApps, getApps } from '../utils/mindfulLock';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { addApp, getApps, getInstalledApps, saveProfile } from '../utils/mindfulLock';
 
 const { width } = Dimensions.get('window');
 
@@ -20,42 +30,42 @@ const IS_ANDROID = Platform.OS === 'android';
 const TOTAL_STEPS = IS_ANDROID ? 4 : 3;
 
 const GOAL_PRESETS = [
-  { emoji: '📚', label: 'Study / Exams' },
-  { emoji: '😴', label: 'Better Sleep' },
-  { emoji: '👨‍👩‍👧', label: 'Family Time' },
-  { emoji: '💪', label: 'Health & Fitness' },
-  { emoji: '💼', label: 'Work Productivity' },
-  { emoji: '🎨', label: 'Creative Projects' },
+  { emoji: '📚', labelKey: 'goalStudy' },
+  { emoji: '😴', labelKey: 'goalSleep' },
+  { emoji: '👨‍👩‍👧', labelKey: 'goalFamily' },
+  { emoji: '💪', labelKey: 'goalHealth' },
+  { emoji: '💼', labelKey: 'goalWork' },
+  { emoji: '🎨', labelKey: 'goalCreative' },
 ];
 
 const PERSONAS = [
   {
     id: 'gentle',
     emoji: '🤗',
-    name: 'Gentle Friend',
-    sample: "Hey, you're doing great. Just checking — is this really what you want right now?",
-    color: '#22C55E',
+    nameKey: 'personaGentleName',
+    sampleKey: 'personaGentleSample',
+    color: '#34D399',
   },
   {
     id: 'tough',
     emoji: '💪',
-    name: 'Tough Love',
-    sample: "Put the phone down. You told me you'd finish that project. Don't let yourself down.",
-    color: '#EF4444',
+    nameKey: 'personaToughName',
+    sampleKey: 'personaToughSample',
+    color: '#FB7185',
   },
   {
     id: 'stoic',
     emoji: '🧘',
-    name: 'Stoic Mentor',
-    sample: "The obstacle is the way. What would your best self choose right now?",
-    color: '#3B82F6',
+    nameKey: 'personaStoicName',
+    sampleKey: 'personaStoicSample',
+    color: '#60A5FA',
   },
   {
     id: 'witty',
     emoji: '😏',
-    name: 'Witty Roast',
-    sample: "Oh look, someone's about to doomscroll again. Your goals aren't completing themselves, chief.",
-    color: '#F59E0B',
+    nameKey: 'personaWittyName',
+    sampleKey: 'personaWittySample',
+    color: '#FBBF24',
   },
 ];
 
@@ -70,6 +80,7 @@ const APP_PRESETS = [
 ];
 
 export const MindfulLockSetupScreen = ({ navigation, route }) => {
+  const { t } = useTranslation();
   const userId = route?.params?.userId;
   const isAddingMore = route?.params?.isAddingMore || false;
   const [step, setStep] = useState(route?.params?.initialStep ?? 0);
@@ -120,11 +131,11 @@ export const MindfulLockSetupScreen = ({ navigation, route }) => {
         const isEnabled = await AppBlocker.isAccessibilityServiceEnabled();
         if (!isEnabled) {
           Alert.alert(
-            'Permission Required',
-            'Strict mode requires the Accessibility Service to detect when you open a blocked app. Please enable it in Settings.',
+            t('mindfulLockSetup.permissionRequiredTitle'),
+            t('mindfulLockSetup.permissionRequiredMessage'),
             [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Open Settings', onPress: () => AppBlocker.openAccessibilitySettings() }
+              { text: t('common.cancel'), style: 'cancel' },
+              { text: t('mindfulLockSetup.openSettings'), onPress: () => AppBlocker.openAccessibilitySettings() }
             ]
           );
           return; // Block progressing until granted
@@ -236,37 +247,40 @@ export const MindfulLockSetupScreen = ({ navigation, route }) => {
           {/* ═══ STEP 0: GOAL ═══ */}
           {step === 0 && (
             <Animated.View entering={FadeIn.duration(300)}>
-              <BrainCircuit color="#A855F7" size={44} style={{ alignSelf: 'center', marginBottom: 16 }} />
-              <Text style={styles.heading}>What are you protecting your time for?</Text>
-              <Text style={styles.subheading}>This helps your AI coach give you personalized motivation.</Text>
+              <BrainCircuit color="#FFFFFF" size={44} style={{ alignSelf: 'center', marginBottom: 16 }} />
+              <Text style={styles.heading}>{t('mindfulLockSetup.goalHeading')}</Text>
+              <Text style={styles.subheading}>{t('mindfulLockSetup.goalSubheading')}</Text>
 
               <View style={styles.presetGrid}>
-                {GOAL_PRESETS.map(goal => (
+                {GOAL_PRESETS.map(goal => {
+                  const goalLabel = t(`mindfulLockSetup.${goal.labelKey}`);
+                  return (
                   <TouchableOpacity
-                    key={goal.label}
+                    key={goal.labelKey}
                     style={[
                       styles.presetCard,
-                      selectedGoal === goal.label && styles.presetCardSelected,
+                      selectedGoal === goalLabel && styles.presetCardSelected,
                     ]}
-                    onPress={() => { setSelectedGoal(goal.label); setCustomGoal(''); }}
+                    onPress={() => { setSelectedGoal(goalLabel); setCustomGoal(''); }}
                     activeOpacity={0.7}
                   >
                     <Text style={styles.presetEmoji}>{goal.emoji}</Text>
                     <Text style={[
                       styles.presetLabel,
-                      selectedGoal === goal.label && { color: '#A855F7' },
-                    ]}>{goal.label}</Text>
+                      selectedGoal === goalLabel && { color: '#FFFFFF' },
+                    ]}>{goalLabel}</Text>
                   </TouchableOpacity>
-                ))}
+                  );
+                })}
               </View>
 
-              <Text style={styles.orText}>or type your own</Text>
+              <Text style={styles.orText}>{t('mindfulLockSetup.orTypeYourOwn')}</Text>
               <TextInput
                 style={styles.input}
-                placeholder="Finish my thesis, run a marathon..."
+                placeholder={t('mindfulLockSetup.goalInputPlaceholder')}
                 placeholderTextColor="#52525b"
                 value={customGoal}
-                onChangeText={(t) => { setCustomGoal(t); setSelectedGoal(''); }}
+                onChangeText={(text) => { setCustomGoal(text); setSelectedGoal(''); }}
                 maxLength={100}
               />
             </Animated.View>
@@ -275,8 +289,8 @@ export const MindfulLockSetupScreen = ({ navigation, route }) => {
           {/* ═══ STEP 1: PERSONA ═══ */}
           {step === 1 && (
             <Animated.View entering={FadeIn.duration(300)}>
-              <Text style={styles.heading}>Pick your coach</Text>
-              <Text style={styles.subheading}>This sets the tone for every nudge, check-in, and weekly report.</Text>
+              <Text style={styles.heading}>{t('mindfulLockSetup.personaHeading')}</Text>
+              <Text style={styles.subheading}>{t('mindfulLockSetup.personaSubheading')}</Text>
 
               {PERSONAS.map(p => (
                 <TouchableOpacity
@@ -290,14 +304,14 @@ export const MindfulLockSetupScreen = ({ navigation, route }) => {
                 >
                   <View style={styles.personaHeader}>
                     <Text style={styles.personaEmoji}>{p.emoji}</Text>
-                    <Text style={styles.personaName}>{p.name}</Text>
+                    <Text style={styles.personaName}>{t(`mindfulLockSetup.${p.nameKey}`)}</Text>
                     {selectedPersona === p.id && (
                       <View style={[styles.personaCheck, { backgroundColor: p.color }]}>
                         <Check color="#fff" size={14} />
                       </View>
                     )}
                   </View>
-                  <Text style={styles.personaSample}>"{p.sample}"</Text>
+                  <Text style={styles.personaSample}>"{t(`mindfulLockSetup.${p.sampleKey}`)}"</Text>
                 </TouchableOpacity>
               ))}
             </Animated.View>
@@ -306,47 +320,47 @@ export const MindfulLockSetupScreen = ({ navigation, route }) => {
           {/* ═══ STEP 2 (ANDROID ONLY): MODE ═══ */}
           {IS_ANDROID && step === 2 && (
             <Animated.View entering={FadeIn.duration(300)}>
-              <Text style={styles.heading}>How strict should we be?</Text>
-              <Text style={styles.subheading}>Choose how LifePilot intervenes when you try to open a locked app.</Text>
+              <Text style={styles.heading}>{t('mindfulLockSetup.modeHeading')}</Text>
+              <Text style={styles.subheading}>{t('mindfulLockSetup.modeSubheading')}</Text>
 
               <TouchableOpacity
                 style={[
                   styles.personaCard, // Reusing style structure
-                  blockingMode === 'cbt' && { borderColor: '#A855F7' },
+                  blockingMode === 'cbt' && { borderColor: '#FFFFFF' },
                 ]}
                 onPress={() => setBlockingMode('cbt')}
                 activeOpacity={0.7}
               >
                 <View style={styles.personaHeader}>
-                  <BrainCircuit color="#A855F7" size={24} style={{ marginRight: 10 }} />
-                  <Text style={styles.personaName}>Mindful Coach (Recommended)</Text>
+                  <BrainCircuit color="#FFFFFF" size={24} style={{ marginRight: 10 }} />
+                  <Text style={styles.personaName}>{t('mindfulLockSetup.modeCbtName')}</Text>
                   {blockingMode === 'cbt' && (
-                    <View style={[styles.personaCheck, { backgroundColor: '#A855F7' }]}>
+                    <View style={[styles.personaCheck, { backgroundColor: '#FFFFFF' }]}>
                       <Check color="#fff" size={14} />
                     </View>
                   )}
                 </View>
-                <Text style={styles.personaSample}>Makes you pause, reflect, and do a breathing exercise. Builds self-awareness instead of relying on a hard block.</Text>
+                <Text style={styles.personaSample}>{t('mindfulLockSetup.modeCbtDesc')}</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
                 style={[
                   styles.personaCard,
-                  blockingMode === 'strict' && { borderColor: '#EF4444' },
+                  blockingMode === 'strict' && { borderColor: '#60A5FA' },
                 ]}
                 onPress={() => setBlockingMode('strict')}
                 activeOpacity={0.7}
               >
                 <View style={styles.personaHeader}>
-                  <Lock color="#EF4444" size={24} style={{ marginRight: 10 }} />
-                  <Text style={styles.personaName}>Strict Blocker</Text>
+                  <Lock color="#60A5FA" size={24} style={{ marginRight: 10 }} />
+                  <Text style={styles.personaName}>{t('mindfulLockSetup.modeStrictName')}</Text>
                   {blockingMode === 'strict' && (
-                    <View style={[styles.personaCheck, { backgroundColor: '#EF4444' }]}>
+                    <View style={[styles.personaCheck, { backgroundColor: '#60A5FA' }]}>
                       <Check color="#fff" size={14} />
                     </View>
                   )}
                 </View>
-                <Text style={styles.personaSample}>Forcefully blocks the app. Requires granting special Accessibility permissions in Android settings.</Text>
+                <Text style={styles.personaSample}>{t('mindfulLockSetup.modeStrictDesc')}</Text>
               </TouchableOpacity>
             </Animated.View>
           )}
@@ -354,14 +368,14 @@ export const MindfulLockSetupScreen = ({ navigation, route }) => {
           {/* ═══ FINAL STEP: FIRST APP ═══ */}
           {step === (TOTAL_STEPS - 1) && (
             <Animated.View entering={FadeIn.duration(300)}>
-              <Text style={styles.heading}>Add your first distraction</Text>
-              <Text style={styles.subheading}>Pick the apps that steal your time, and set a daily allowance in minutes.</Text>
+              <Text style={styles.heading}>{t('mindfulLockSetup.appHeading')}</Text>
+              <Text style={styles.subheading}>{t('mindfulLockSetup.appSubheading')}</Text>
 
               <View style={styles.searchContainer}>
                 <Search color="#71717A" size={20} />
                 <TextInput
                   style={styles.searchInput}
-                  placeholder="Search apps..."
+                  placeholder={t('mindfulLockSetup.searchPlaceholder')}
                   placeholderTextColor="#71717A"
                   value={searchQuery}
                   onChangeText={setSearchQuery}
@@ -371,7 +385,7 @@ export const MindfulLockSetupScreen = ({ navigation, route }) => {
               {IS_ANDROID ? (
                 <>
                   {loadingApps ? (
-                    <ActivityIndicator size="large" color="#A855F7" style={{ marginTop: 40 }} />
+                    <ActivityIndicator size="large" color="#FFFFFF" style={{ marginTop: 40 }} />
                   ) : (
                     <View style={styles.installedAppList}>
                       {installedApps.filter(a => a.name.toLowerCase().includes(searchQuery.toLowerCase())).map(app => {
@@ -393,10 +407,10 @@ export const MindfulLockSetupScreen = ({ navigation, route }) => {
                               <Image source={{ uri: `data:image/png;base64,${app.icon}` }} style={styles.installedAppIcon} />
                               <View style={{ flex: 1 }}>
                                 <Text style={styles.installedAppName} numberOfLines={1}>{app.name}</Text>
-                                {isAlreadyLocked && <Text style={{ color: '#71717A', fontSize: 12 }}>Already locked</Text>}
+                                {isAlreadyLocked && <Text style={{ color: '#71717A', fontSize: 12 }}>{t('mindfulLockSetup.alreadyLocked')}</Text>}
                               </View>
                               {isSelected && !isAlreadyLocked && (
-                                <View style={[styles.personaCheck, { backgroundColor: '#A855F7', marginRight: 0 }]}>
+                                <View style={[styles.personaCheck, { backgroundColor: '#FFFFFF', marginRight: 0 }]}>
                                   <Check color="#fff" size={14} />
                                 </View>
                               )}
@@ -409,14 +423,14 @@ export const MindfulLockSetupScreen = ({ navigation, route }) => {
                             
                             {isSelected && !isAlreadyLocked && (
                               <View style={styles.allowanceContainer}>
-                                <Text style={styles.allowanceLabel}>Daily limit:</Text>
+                                <Text style={styles.allowanceLabel}>{t('mindfulLockSetup.dailyLimitLabel')}</Text>
                                 <TextInput
                                   style={styles.allowanceInput}
                                   keyboardType="number-pad"
                                   value={selectedApp.dailyBudgetMinutes.toString()}
-                                  onChangeText={(t) => updateAppTime(app.name, t)}
+                                  onChangeText={(val) => updateAppTime(app.name, val)}
                                 />
-                                <Text style={styles.allowanceLabel}>mins</Text>
+                                <Text style={styles.allowanceLabel}>{t('mindfulLockSetup.minutesLabel')}</Text>
                               </View>
                             )}
                           </View>
@@ -446,17 +460,17 @@ export const MindfulLockSetupScreen = ({ navigation, route }) => {
                           <Text style={styles.appChipIcon}>{app.icon}</Text>
                           <Text style={[
                             styles.appChipText,
-                            isSelected && { color: '#A855F7' },
-                          ]}>{app.name} {isAlreadyLocked && '(Locked)'}</Text>
+                            isSelected && { color: '#FFFFFF' },
+                          ]}>{app.name} {isAlreadyLocked && t('mindfulLockSetup.lockedSuffix')}</Text>
                         </TouchableOpacity>
                       );
                     })}
                   </View>
 
-                  <Text style={styles.orText}>or add a custom app</Text>
+                  <Text style={styles.orText}>{t('mindfulLockSetup.orAddCustomApp')}</Text>
                   <TextInput
                     style={styles.input}
-                    placeholder="App name..."
+                    placeholder={t('mindfulLockSetup.appNamePlaceholder')}
                     placeholderTextColor="#52525b"
                     value={customAppName}
                     onChangeText={setCustomAppName}
@@ -473,7 +487,7 @@ export const MindfulLockSetupScreen = ({ navigation, route }) => {
           {step > 0 ? (
             <TouchableOpacity style={styles.backBtn} onPress={handleBack}>
               <ArrowLeft color="#a1a1aa" size={20} />
-              <Text style={styles.backBtnText}>Back</Text>
+              <Text style={styles.backBtnText}>{t('mindfulLockSetup.backButton')}</Text>
             </TouchableOpacity>
           ) : <View />}
 
@@ -487,9 +501,10 @@ export const MindfulLockSetupScreen = ({ navigation, route }) => {
             activeOpacity={0.8}
           >
             <Text style={styles.nextBtnText}>
-              {step === 2 ? (selectedApps.length > 0 || customAppName.trim() ? "Let's go!" : 'Skip for now') : 'Next'}
+              {step === 2 ? (selectedApps.length > 0 || customAppName.trim() ? t('mindfulLockSetup.finishButton') : t('mindfulLockSetup.skipButton')) : t('mindfulLockSetup.nextButton')}
             </Text>
-            <ArrowRight color="#fff" size={18} />
+            {/* Dark, like the label — the button is filled white. */}
+            <ArrowRight color="#0B0B0D" size={18} />
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
@@ -515,7 +530,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#27272a',
   },
   progressDotActive: {
-    backgroundColor: '#A855F7',
+    backgroundColor: '#FFFFFF',
   },
   scrollContent: {
     paddingHorizontal: 24,
@@ -556,8 +571,8 @@ const styles = StyleSheet.create({
     width: (width - 68) / 2,
   },
   presetCardSelected: {
-    borderColor: '#A855F7',
-    backgroundColor: 'rgba(168, 85, 247, 0.08)',
+    borderColor: '#FFFFFF',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
   },
   presetEmoji: {
     fontSize: 28,
@@ -627,8 +642,8 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   appChipSelected: {
-    borderColor: '#A855F7',
-    backgroundColor: 'rgba(168, 85, 247, 0.1)',
+    borderColor: '#FFFFFF',
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
   },
   appChipIcon: {
     fontSize: 18,
@@ -674,8 +689,8 @@ const styles = StyleSheet.create({
     padding: 12,
   },
   installedAppCardSelected: {
-    borderColor: '#A855F7',
-    backgroundColor: 'rgba(168, 85, 247, 0.05)',
+    borderColor: '#FFFFFF',
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
   },
   installedAppIcon: {
     width: 32,
@@ -753,7 +768,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   nextBtn: {
-    backgroundColor: '#A855F7',
+    backgroundColor: '#FFFFFF',
     borderRadius: 14,
     paddingVertical: 14,
     paddingHorizontal: 24,
@@ -762,7 +777,9 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   nextBtnText: {
-    color: '#ffffff',
+    // The button is filled white, so the label must be dark. This was '#ffffff'
+    // — white on white, 1.00:1, completely invisible.
+    color: '#0B0B0D',
     fontSize: 15,
     fontWeight: '700',
   },

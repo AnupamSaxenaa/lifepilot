@@ -10,7 +10,8 @@ import {
     Menu, MoreVertical, Star,
     X
 } from 'lucide-react-native';
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
     Modal,
     Platform,
@@ -27,8 +28,11 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { BackgroundWrapper } from '../components/BackgroundWrapper';
 import { GlassSidebar } from '../components/GlassSidebar';
 import { ScribbleStrike } from '../components/ScribbleStrike';
+import { useTheme as useAppTheme } from '../context/ThemeContext';
+import { useWidgetTaskSync } from '../hooks/useWidgetTaskSync';
 import { cacheTasks, loadProfile, loadTasks, toggleTaskImportance, updateTask } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
+import { syncToSupabase } from '../lib/syncQueue';
 import { COLORS } from '../theme/theme';
 import { Gamification } from '../utils/gamification';
 import { Storage } from '../utils/storage';
@@ -53,8 +57,80 @@ const SkeletonTask = () => {
   );
 };
 
+// Extracted + memoized so toggling/rescheduling one task doesn't force every
+// other row in the section to rebuild its JSX tree — only the row whose own
+// props actually changed re-renders.
+const PlannedTaskRow = memo(function PlannedTaskRow({ task, theme, todayStart, isOverdue, onToggle, onPress, onReschedule, onToggleImportant, formatDate }) {
+  const { t } = useTranslation();
+  return (
+    <View style={[
+      styles.taskCard,
+      theme?.surface && { backgroundColor: theme.surface },
+      task.is_completed && styles.taskCardCompleted,
+    ]}>
+      {/* Checkbox */}
+      <TouchableOpacity onPress={() => onToggle(task.id, task.is_completed)} style={styles.checkbox}>
+        {task.is_completed ? (
+          <CheckCircle2 color={theme.textMuted} size={24} />
+        ) : (
+          <Circle color={theme.text} size={24} />
+        )}
+      </TouchableOpacity>
+
+      {/* Title & Meta */}
+      <TouchableOpacity
+        style={styles.taskContent}
+        onPress={onPress}
+        activeOpacity={0.7}
+      >
+        <ScribbleStrike isCompleted={task.is_completed} color={theme.textMuted}>
+          <Text style={[styles.taskTitle, task.is_completed && styles.taskCompletedText]}>
+            {task.title}
+          </Text>
+        </ScribbleStrike>
+
+        <View style={styles.taskMetaRow}>
+          <View style={styles.metaPill}>
+            <Calendar color={isOverdue ? '#A1A1AA' : '#888'} size={11} />
+            <Text style={[styles.metaLabel, isOverdue && { color: '#A1A1AA' }]}>
+              {formatDate(task.due_date)}
+            </Text>
+          </View>
+          {task.reminder_time && (
+            <View style={styles.metaPill}>
+              <Bell color="#888" size={11} />
+              <Text style={styles.metaLabel}>
+                {new Date(task.reminder_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </Text>
+            </View>
+          )}
+        </View>
+      </TouchableOpacity>
+
+      {/* Reschedule Button or Star Toggle */}
+      <View style={styles.cardActions}>
+        {isOverdue && (
+          <TouchableOpacity
+            style={styles.reschedulePill}
+            onPress={onReschedule}
+            activeOpacity={0.7}
+          >
+            <CalendarClock color="#A1A1AA" size={14} />
+            <Text style={styles.rescheduleText}>{t('planned.reschedule')}</Text>
+          </TouchableOpacity>
+        )}
+        <TouchableOpacity onPress={onToggleImportant} style={{ padding: 4, marginLeft: 8 }}>
+          <Star color={task.is_important ? '#fff' : '#444'} fill={task.is_important ? '#fff' : 'transparent'} size={20} />
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+});
+
 export const PlannedScreen = ({ navigation }) => {
+  const { t } = useTranslation();
   const colorScheme = useColorScheme();
+  useAppTheme().themeVersion;
   const theme = colorScheme === 'dark' ? COLORS.dark : COLORS.light;
   const insets = useSafeAreaInsets();
 
@@ -63,6 +139,9 @@ export const PlannedScreen = ({ navigation }) => {
   const [userId, setUserId] = useState(null);
   const [profile, setProfile] = useState(null);
   const [showMenu, setShowMenu] = useState(false);
+
+  // Widget → app sync: reflect widget task toggles on resume / while foregrounded.
+  useWidgetTaskSync(userId, (fresh) => setTasks(fresh));
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isCacheLoaded, setIsCacheLoaded] = useState(false);
   const [completingTaskIds, setCompletingTaskIds] = useState([]);
@@ -241,16 +320,16 @@ export const PlannedScreen = ({ navigation }) => {
     const planned = tasks.filter(t => t.due_date && (!t.is_completed || completingTaskIds.includes(t.id)));
     if (planned.length === 0) return;
     
-    const lines = planned.map((t, i) => {
-      let line = `${i + 1}. [${t.is_completed ? 'x' : ' '}] ${t.title}`;
+    const lines = planned.map((taskItem, i) => {
+      let line = `${i + 1}. [${taskItem.is_completed ? 'x' : ' '}] ${taskItem.title}`;
       const extras = [];
-      if (t.due_date) extras.push(`Due: ${formatDate(t.due_date)}`);
-      if (t.reminder_time) extras.push(`Reminder: ${new Date(t.reminder_time).toLocaleTimeString()}`);
+      if (taskItem.due_date) extras.push(t('planned.shareDuePrefix', { date: formatDate(taskItem.due_date) }));
+      if (taskItem.reminder_time) extras.push(t('planned.shareReminderPrefix', { time: new Date(taskItem.reminder_time).toLocaleTimeString() }));
       if (extras.length > 0) line += ` (${extras.join(' | ')})`;
       return line;
     }).join('\n');
     
-    const message = `📋 My Planned Tasks:\n\n${lines}`;
+    const message = `${t('planned.shareListHeader')}\n\n${lines}`;
     try {
       await Share.share({ message });
     } catch (error) {
@@ -323,63 +402,18 @@ export const PlannedScreen = ({ navigation }) => {
   const renderTask = (task) => {
     const isOverdue = new Date(task.due_date) < todayStart && !task.is_completed;
     return (
-      <View key={task.id} style={[styles.taskCard, task.is_completed && styles.taskCardCompleted]}>
-        {/* Checkbox */}
-        <TouchableOpacity onPress={() => toggleTask(task.id, task.is_completed)} style={styles.checkbox}>
-          {task.is_completed ? (
-            <CheckCircle2 color={theme.textMuted} size={24} />
-          ) : (
-            <Circle color={theme.text} size={24} />
-          )}
-        </TouchableOpacity>
-
-        {/* Title & Meta */}
-        <TouchableOpacity 
-          style={styles.taskContent}
-          onPress={() => navigation.navigate('TaskDetail', { task, userId })}
-          activeOpacity={0.7}
-        >
-          <ScribbleStrike isCompleted={task.is_completed} color={theme.textMuted}>
-            <Text style={[styles.taskTitle, task.is_completed && styles.taskCompletedText]}>
-              {task.title}
-            </Text>
-          </ScribbleStrike>
-          
-          <View style={styles.taskMetaRow}>
-            <View style={styles.metaPill}>
-              <Calendar color={isOverdue ? '#EF4444' : '#888'} size={11} />
-              <Text style={[styles.metaLabel, isOverdue && { color: '#EF4444' }]}>
-                {formatDate(task.due_date)}
-              </Text>
-            </View>
-            {task.reminder_time && (
-              <View style={styles.metaPill}>
-                <Bell color="#888" size={11} />
-                <Text style={styles.metaLabel}>
-                  {new Date(task.reminder_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </Text>
-              </View>
-            )}
-          </View>
-        </TouchableOpacity>
-
-        {/* Reschedule Button or Star Toggle */}
-        <View style={styles.cardActions}>
-          {isOverdue && (
-            <TouchableOpacity 
-              style={styles.reschedulePill} 
-              onPress={() => handleReschedulePress(task.id, task.due_date)}
-              activeOpacity={0.7}
-            >
-              <CalendarClock color="#EF4444" size={14} />
-              <Text style={styles.rescheduleText}>Reschedule</Text>
-            </TouchableOpacity>
-          )}
-          <TouchableOpacity onPress={() => toggleImportant(task.id, task.is_important)} style={{ padding: 4, marginLeft: 8 }}>
-            <Star color={task.is_important ? '#fff' : '#444'} fill={task.is_important ? '#fff' : 'transparent'} size={20} />
-          </TouchableOpacity>
-        </View>
-      </View>
+      <PlannedTaskRow
+        key={task.id}
+        task={task}
+        theme={theme}
+        todayStart={todayStart}
+        isOverdue={isOverdue}
+        onToggle={toggleTask}
+        onPress={() => navigation.navigate('TaskDetail', { task, userId })}
+        onReschedule={() => handleReschedulePress(task.id, task.due_date)}
+        onToggleImportant={() => toggleImportant(task.id, task.is_important)}
+        formatDate={formatDate}
+      />
     );
   };
 
@@ -412,7 +446,7 @@ export const PlannedScreen = ({ navigation }) => {
         </View>
 
         <View style={styles.titleContainer}>
-          <Text style={styles.headerTitle}>PLANNED</Text>
+          <Text style={styles.headerTitle}>{t('planned.title')}</Text>
         </View>
 
         {/* 3-Dots Menu Overlay */}
@@ -420,7 +454,7 @@ export const PlannedScreen = ({ navigation }) => {
           <TouchableOpacity style={styles.menuOverlay} activeOpacity={1} onPress={() => setShowMenu(false)}>
             <View style={[styles.menuCard, { top: Math.max(insets.top, 20) + 50 }]}>
               <TouchableOpacity style={styles.menuItem} onPress={shareList}>
-                <Text style={styles.menuText}>Print List / Send Copy</Text>
+                <Text style={styles.menuText}>{t('planned.printOrSendCopy')}</Text>
               </TouchableOpacity>
             </View>
           </TouchableOpacity>
@@ -437,8 +471,8 @@ export const PlannedScreen = ({ navigation }) => {
         ) : activePlanned.length === 0 ? (
           <View style={styles.emptyState}>
             <CalendarDays color="#333" size={60} style={{ marginBottom: 16 }} />
-            <Text style={styles.emptyText}>No planned tasks.</Text>
-            <Text style={styles.emptySub}>Set a due date on your tasks to see them here.</Text>
+            <Text style={styles.emptyText}>{t('planned.emptyTitle')}</Text>
+            <Text style={styles.emptySub}>{t('planned.emptySubtitle')}</Text>
           </View>
         ) : (
           <ScrollView 
@@ -446,11 +480,11 @@ export const PlannedScreen = ({ navigation }) => {
             contentContainerStyle={styles.scroll}
             showsVerticalScrollIndicator={false}
           >
-            {renderSection("Overdue", groups.overdue, '#EF4444', 'overdue')}
-            {renderSection("Today", groups.today, '#FFFFFF', 'today')}
-            {renderSection("Tomorrow", groups.tomorrow, '#E4E4E7', 'tomorrow')}
-            {renderSection("This Week", groups.thisWeek, '#a1a1aa', 'thisWeek')}
-            {renderSection("Later", groups.later, '#4b5563', 'later')}
+            {renderSection(t('planned.sectionOverdue'), groups.overdue, '#A1A1AA', 'overdue')}
+            {renderSection(t('planned.sectionToday'), groups.today, '#FFFFFF', 'today')}
+            {renderSection(t('planned.sectionTomorrow'), groups.tomorrow, '#E4E4E7', 'tomorrow')}
+            {renderSection(t('planned.sectionThisWeek'), groups.thisWeek, '#a1a1aa', 'thisWeek')}
+            {renderSection(t('planned.sectionLater'), groups.later, '#4b5563', 'later')}
           </ScrollView>
         )}
 
@@ -460,22 +494,22 @@ export const PlannedScreen = ({ navigation }) => {
             <TouchableOpacity style={styles.rescheduleOverlay} activeOpacity={1} onPress={() => setShowRescheduleModal(false)}>
               <View style={styles.rescheduleSheet}>
                 <View style={styles.sheetHandle} />
-                <Text style={styles.sheetTitle}>Reschedule Overdue Task</Text>
+                <Text style={styles.sheetTitle}>{t('planned.rescheduleModalTitle')}</Text>
 
                 <TouchableOpacity 
                   style={styles.sheetOption} 
                   onPress={() => executeReschedule(rescheduleTaskId, new Date())}
                 >
                   <Calendar color="#FFFFFF" size={20} />
-                  <Text style={styles.sheetOptionText}>Today</Text>
+                  <Text style={styles.sheetOptionText}>{t('planned.sheetOptionToday')}</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity 
                   style={styles.sheetOption} 
                   onPress={() => executeReschedule(rescheduleTaskId, new Date(Date.now() + 86400000))}
                 >
-                  <CalendarDays color="#3B82F6" size={20} />
-                  <Text style={styles.sheetOptionText}>Tomorrow</Text>
+                  <CalendarDays color="#9CA3AF" size={20} />
+                  <Text style={styles.sheetOptionText}>{t('planned.sheetOptionTomorrow')}</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity 
@@ -483,14 +517,14 @@ export const PlannedScreen = ({ navigation }) => {
                   onPress={() => setShowDatePicker(true)}
                 >
                   <CalendarClock color="#A1A1AA" size={20} />
-                  <Text style={styles.sheetOptionText}>Pick a Date...</Text>
+                  <Text style={styles.sheetOptionText}>{t('planned.sheetOptionPickDate')}</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity 
                   style={[styles.sheetOption, styles.cancelBtn]} 
                   onPress={() => setShowRescheduleModal(false)}
                 >
-                  <Text style={styles.cancelText}>Cancel</Text>
+                  <Text style={styles.cancelText}>{t('planned.sheetOptionCancel')}</Text>
                 </TouchableOpacity>
               </View>
             </TouchableOpacity>
@@ -503,7 +537,7 @@ export const PlannedScreen = ({ navigation }) => {
             <View style={styles.pickerModalOverlay}>
               <View style={styles.pickerModalContent}>
                 <View style={styles.pickerHeader}>
-                  <Text style={styles.pickerTitle}>Select Reschedule Date</Text>
+                  <Text style={styles.pickerTitle}>{t('planned.pickerTitle')}</Text>
                   <TouchableOpacity onPress={() => setShowDatePicker(false)}>
                     <X color="#fff" size={24} />
                   </TouchableOpacity>
@@ -525,7 +559,7 @@ export const PlannedScreen = ({ navigation }) => {
                       setShowDatePicker(false);
                     }}
                   >
-                    <Text style={styles.pickerDoneText}>Done</Text>
+                    <Text style={styles.pickerDoneText}>{t('planned.doneButton')}</Text>
                   </TouchableOpacity>
                 )}
               </View>
@@ -678,16 +712,16 @@ const styles = StyleSheet.create({
   reschedulePill: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+    backgroundColor: 'rgba(161, 161, 170, 0.12)',
     borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.25)',
+    borderColor: 'rgba(161, 161, 170, 0.25)',
     borderRadius: 20,
     paddingHorizontal: 10,
     paddingVertical: 5,
     gap: 4,
   },
   rescheduleText: {
-    color: '#EF4444',
+    color: '#A1A1AA',
     fontSize: 11,
     fontWeight: '700',
   },

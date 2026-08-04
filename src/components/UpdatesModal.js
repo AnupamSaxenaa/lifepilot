@@ -1,13 +1,19 @@
 import { BlurView } from 'expo-blur';
 import { ArrowRight, Sparkles, X } from 'lucide-react-native';
-import React, { useEffect, useState } from 'react';
-import { Animated, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, TouchableWithoutFeedback, useColorScheme, View, ActivityIndicator } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { ActivityIndicator, Animated, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, TouchableWithoutFeedback, useColorScheme, View } from 'react-native';
+import { useTheme as useAppTheme } from '../context/ThemeContext';
 import { COLORS } from '../theme/theme';
 
 export const UpdatesModal = ({ isVisible, onClose, updateData, isLoading }) => {
   const colorScheme = useColorScheme();
+  const { t } = useTranslation();
+  useAppTheme().themeVersion;
   const theme = colorScheme === 'dark' ? COLORS.dark : COLORS.light;
-  
+  const ACCENT = theme.accent;
+  const styles = useMemo(() => makeStyles(ACCENT), [ACCENT]);
+
   const [fadeAnim] = useState(() => new Animated.Value(0));
   const [scaleAnim] = useState(() => new Animated.Value(0.95));
 
@@ -64,9 +70,9 @@ export const UpdatesModal = ({ isVisible, onClose, updateData, isLoading }) => {
           <View style={styles.header}>
             <View style={styles.headerTitleRow}>
               <View style={styles.iconBox}>
-                <Sparkles color="#A855F7" size={24} />
+                <Sparkles color={theme.accent} size={24} />
               </View>
-              <Text style={[styles.title, { color: theme.text }]}>What's New</Text>
+              <Text style={[styles.title, { color: theme.text }]}>{t('updatesModal.title')}</Text>
             </View>
             <TouchableOpacity onPress={onClose} style={[styles.closeBtn, { backgroundColor: theme.surface, borderColor: theme.border }]}>
               <X color={theme.text} size={20} />
@@ -75,13 +81,13 @@ export const UpdatesModal = ({ isVisible, onClose, updateData, isLoading }) => {
 
           {isLoading ? (
             <View style={styles.loadingContainer}>
-              <ActivityIndicator color="#A855F7" size="large" />
-              <Text style={[styles.loadingText, { color: theme.textMuted }]}>Checking for updates...</Text>
+              <ActivityIndicator color={theme.accent} size="large" />
+              <Text style={[styles.loadingText, { color: theme.textMuted }]}>{t('updatesModal.loadingText')}</Text>
             </View>
           ) : updateData ? (
             <ScrollView style={styles.content} showsVerticalScrollIndicator={false} bounces={true}>
               <View style={styles.versionBadge}>
-                <Text style={styles.versionText}>{updateData.version_info || 'Latest Update'}</Text>
+                <Text style={styles.versionText}>{updateData.version_info || t('updatesModal.latestUpdateFallback')}</Text>
               </View>
 
               <Text style={[styles.heading, { color: theme.text }]}>
@@ -95,9 +101,9 @@ export const UpdatesModal = ({ isVisible, onClose, updateData, isLoading }) => {
               {updateData.features && updateData.features.length > 0 && (
                 <View style={styles.featuresList}>
                   {updateData.features.map((feature, index) => (
-                    <View key={index} style={[styles.featureItem, { backgroundColor: colorScheme === 'dark' ? 'rgba(168, 85, 247, 0.05)' : 'rgba(168, 85, 247, 0.1)' }]}>
+                    <View key={index} style={[styles.featureItem, { backgroundColor: colorScheme === 'dark' ? ACCENT + '0D' : ACCENT + '1A' }]}>
                       <View style={styles.featureIcon}>
-                        <ArrowRight color="#A855F7" size={16} />
+                        <ArrowRight color={theme.accent} size={16} />
                       </View>
                       <Text style={[styles.featureText, { color: theme.text }]}>{feature}</Text>
                     </View>
@@ -109,15 +115,15 @@ export const UpdatesModal = ({ isVisible, onClose, updateData, isLoading }) => {
             </ScrollView>
           ) : (
             <View style={styles.emptyContainer}>
-              <Text style={[styles.emptyText, { color: theme.textMuted }]}>You're all caught up!</Text>
-              <Text style={[styles.emptySubtext, { color: theme.textMuted }]}>No new announcements right now.</Text>
+              <Text style={[styles.emptyText, { color: theme.textMuted }]}>{t('updatesModal.emptyText')}</Text>
+              <Text style={[styles.emptySubtext, { color: theme.textMuted }]}>{t('updatesModal.emptySubtext')}</Text>
             </View>
           )}
 
           {!isLoading && updateData && (
             <View style={[styles.footer, { borderTopColor: theme.border }]}>
               <TouchableOpacity style={styles.primaryBtn} onPress={onClose} activeOpacity={0.8}>
-                <Text style={styles.primaryBtnText}>Got it!</Text>
+                <Text style={styles.primaryBtnText}>{t('updatesModal.gotItButton')}</Text>
               </TouchableOpacity>
             </View>
           )}
@@ -127,7 +133,7 @@ export const UpdatesModal = ({ isVisible, onClose, updateData, isLoading }) => {
   );
 };
 
-const styles = StyleSheet.create({
+const makeStyles = (ACCENT) => StyleSheet.create({
   overlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0, 0, 0, 0.65)',
@@ -159,7 +165,7 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 16,
-    backgroundColor: 'rgba(168, 85, 247, 0.15)',
+    backgroundColor: ACCENT + '26',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -181,7 +187,7 @@ const styles = StyleSheet.create({
   },
   versionBadge: {
     alignSelf: 'flex-start',
-    backgroundColor: '#A855F7',
+    backgroundColor: ACCENT,
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 12,
@@ -214,13 +220,13 @@ const styles = StyleSheet.create({
     padding: 16,
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: 'rgba(168, 85, 247, 0.2)',
+    borderColor: ACCENT + '33',
   },
   featureIcon: {
     width: 28,
     height: 28,
     borderRadius: 8,
-    backgroundColor: 'rgba(168, 85, 247, 0.1)',
+    backgroundColor: ACCENT + '1A',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
@@ -236,11 +242,11 @@ const styles = StyleSheet.create({
     zIndex: 10,
   },
   primaryBtn: {
-    backgroundColor: '#A855F7',
+    backgroundColor: ACCENT,
     paddingVertical: 16,
     borderRadius: 16,
     alignItems: 'center',
-    shadowColor: '#A855F7',
+    shadowColor: ACCENT,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 8,

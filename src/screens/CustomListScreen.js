@@ -1,7 +1,8 @@
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
 import { ArrowUp, Bell, Calendar, Check, CheckCircle2, ChevronDown, ChevronRight, Circle, FileText, Flag, GripVertical, ListChecks, Menu, MoreVertical, Plus, Repeat, Star, Sun, Trash2, X } from 'lucide-react-native';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Alert, BackHandler, Keyboard, KeyboardAvoidingView, Modal, Platform, ScrollView, Share, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { NestableDraggableFlatList, NestableScrollContainer, ScaleDecorator } from 'react-native-draggable-flatlist';
 import Animated, { Easing, FadeIn, FadeOut, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
@@ -9,15 +10,18 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AIAuraOverlay } from '../components/AIAuraOverlay';
 import { BackgroundWrapper } from '../components/BackgroundWrapper';
 import { GlassSidebar } from '../components/GlassSidebar';
+import { LevelUpModal } from '../components/LevelUpModal';
 import { ScribbleStrike } from '../components/ScribbleStrike';
-import { cacheTasks, deleteList, addTask as dmAddTask, deleteTask as dmDeleteTask, loadLists, loadProfile, loadTasks, renameList, reorderTasks, toggleTaskImportance } from '../lib/dataManager';
+import { getPriorityColor, PRIORITY_CONFIG, shouldShowFlag } from '../config/priorityConfig';
+import { useTheme as useAppTheme } from '../context/ThemeContext';
+import { useWidgetTaskSync } from '../hooks/useWidgetTaskSync';
+import { cacheTasks, deleteList, addTask as dmAddTask, deleteTask as dmDeleteTask, loadLists, loadProfile, loadTasks, renameList, reorderTasks, toggleTaskImportance, updateTask } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
 import { syncToSupabase } from '../lib/syncQueue';
 import { COLORS } from '../theme/theme';
-import { getPriorityColor, shouldShowFlag, PRIORITY_LEVELS, PRIORITY_CONFIG } from '../config/priorityConfig';
-import { LevelUpModal } from '../components/LevelUpModal';
 import { Gamification } from '../utils/gamification';
 import { cancelTaskReminder, scheduleTaskReminder } from '../utils/notifications';
+import { savePlanForToday } from '../utils/planStore';
 import { Storage } from '../utils/storage';
 
 // ─── Helpers ────────────────────────────────────────────
@@ -61,15 +65,153 @@ const SkeletonTask = () => {
   );
 };
 
-import { updateTask } from '../lib/dataManager';
+
+// Extracted + memoized so dragging/toggling one row doesn't force React to
+// rebuild every other row's JSX tree from scratch on each render.
+const CustomListTaskRow = memo(function CustomListTaskRow({ task, theme, isCompleting, drag, isActive, onPress, onToggle, onToggleToday, onToggleImportant, onDelete }) {
+  const hasSubtasks = task.subtasks && task.subtasks.length > 0;
+  const hasNotes = task.notes && task.notes.trim().length > 0;
+  const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes || true;
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const isOverdue = task.due_date && new Date(task.due_date) < todayStart && !task.is_completed;
+  const completedSubs = hasSubtasks ? task.subtasks.filter(s => s.is_completed).length : 0;
+  const totalSubs = hasSubtasks ? task.subtasks.length : 0;
+
+  return (
+    <ScaleDecorator>
+      <TouchableOpacity
+        activeOpacity={0.75}
+        onPress={onPress}
+        onLongPress={drag}
+        disabled={isActive}
+        style={[
+          styles.taskCard,
+          theme?.surface && { backgroundColor: theme.surface },
+          task.is_important && styles.taskCardImportant,
+          task.is_completed && styles.taskCardCompleted,
+          isActive && { backgroundColor: 'rgba(255,255,255,0.08)', elevation: 12 }
+        ]}>
+
+        {/* Left: drag handle + checkbox */}
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          {!task.is_completed && !isCompleting && (
+            <TouchableOpacity onPressIn={drag} style={{ padding: 4, marginRight: 2 }}>
+              <GripVertical color="#444" size={20} />
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity
+            onPress={onToggle}
+            disabled={isCompleting}
+            style={[
+              styles.checkbox,
+              (task.is_completed || isCompleting) && { marginLeft: 28 }
+            ]}
+          >
+            {(task.is_completed || isCompleting) ? (
+              <CheckCircle2 color="#34D399" size={24} />
+            ) : (
+              <Circle color={theme.text} size={24} />
+            )}
+          </TouchableOpacity>
+        </View>
+
+        {/* Center: title + meta */}
+        <View style={styles.taskContent}>
+          <ScribbleStrike isCompleted={task.is_completed || isCompleting} shouldAnimate={isCompleting} color={theme.textMuted}>
+            <Text
+              style={[
+                styles.taskTitle,
+                { color: isCompleting ? '#666' : (task.is_completed ? '#666' : '#fff') },
+                (task.is_completed || isCompleting) && styles.taskCompleted,
+              ]}
+            >
+              {task.title}
+            </Text>
+          </ScribbleStrike>
+
+          {hasMeta && (
+            <View style={styles.taskMetaRow}>
+              {shouldShowFlag(task.priority) && (
+                <View style={styles.metaPill}>
+                  <Flag color={getPriorityColor(task.priority)} size={11} fill={getPriorityColor(task.priority)} />
+                </View>
+              )}
+              {task.due_date && (
+                <View style={styles.metaPill}>
+                  <Calendar color={isOverdue ? '#FB7185' : '#888'} size={11} />
+                  <Text style={[styles.metaLabel, isOverdue && { color: '#FB7185' }]}>
+                    {formatDate(task.due_date)}
+                  </Text>
+                </View>
+              )}
+              {task.reminder_time && (
+                <View style={styles.metaPill}>
+                  <Bell color="#888" size={11} />
+                  <Text style={styles.metaLabel}>
+                    {formatDateTime(task.reminder_time)}
+                  </Text>
+                </View>
+              )}
+              {task.repeat_rule && (
+                <View style={styles.metaPill}>
+                  <Repeat color="#888" size={11} />
+                  <Text style={styles.metaLabel}>
+                    {task.repeat_rule}
+                  </Text>
+                </View>
+              )}
+              {hasSubtasks && (
+                <View style={styles.metaPill}>
+                  <ListChecks color="#888" size={11} />
+                  <Text style={styles.metaLabel}>
+                    {completedSubs}/{totalSubs}
+                  </Text>
+                </View>
+              )}
+              {hasNotes && (
+                <View style={[styles.metaPill, { paddingHorizontal: 6 }]}>
+                  <FileText color="#888" size={11} />
+                </View>
+              )}
+            </View>
+          )}
+        </View>
+
+        {/* Right: star + delete + My Day */}
+        <View style={styles.taskActions}>
+          <TouchableOpacity onPress={onToggleToday} style={styles.iconButtonSmall}>
+            <Sun
+              color={task.added_to_today ? '#FBBF24' : '#444'}
+              fill={task.added_to_today ? '#FBBF24' : 'transparent'}
+              size={18}
+            />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={onToggleImportant} style={styles.iconButtonSmall}>
+            <Star
+              color={task.is_important ? '#FFFFFF' : '#444'}
+              fill={task.is_important ? '#FFFFFF' : 'transparent'}
+              size={18}
+            />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={onDelete} style={styles.iconButtonSmall}>
+            <Trash2 color="#444" size={18} />
+          </TouchableOpacity>
+        </View>
+      </TouchableOpacity>
+    </ScaleDecorator>
+  );
+});
 
 export const CustomListScreen = ({ navigation, route }) => {
+  const { t } = useTranslation();
   const { listId, listName } = route?.params || {};
 
-  const [localListName, setLocalListName] = useState(listName || 'List');
+  const [localListName, setLocalListName] = useState(listName || t('customList.defaultListName'));
   const [showRenameModal, setShowRenameModal] = useState(false);
   const [renameText, setRenameText] = useState(listName || '');
 
+  useAppTheme().themeVersion;
   // Force dark theme only
   const theme = COLORS.dark;
   const insets = useSafeAreaInsets();
@@ -90,6 +232,9 @@ export const CustomListScreen = ({ navigation, route }) => {
   const [showAura, setShowAura] = useState(false);
   const [generatedPlan, setGeneratedPlan] = useState(null);
   const [isAddingTask, setIsAddingTask] = useState(false);
+
+  // Widget → app sync: reflect widget task toggles on resume / while foregrounded.
+  useWidgetTaskSync(userId, (fresh) => setTasks(fresh));
   const [activeToolbarMenu, setActiveToolbarMenu] = useState(null);
   const [levelUpData, setLevelUpData] = useState(null);
   const completingTimeouts = useRef({});
@@ -132,10 +277,10 @@ export const CustomListScreen = ({ navigation, route }) => {
       if (!session) return;
       setUserId(session.user.id);
 
-      // Load Profile, Sort Preference, Tasks, and Saved Plan concurrently
+      // Load Profile, this list's Sort Preference, Tasks, and Saved Plan concurrently.
       const [cachedProfile, cachedSort, cachedTasks, cachedPlan, cachedPlanDate] = await Promise.all([
         loadProfile(session.user.id, (fresh) => setProfile(fresh)),
-        Storage.get('sortBy_today'),
+        Storage.get(`sortBy_custom_${listId}`),
         loadTasks(session.user.id, (fresh) => {
           setTasks(fresh);
           setLoading(false);
@@ -208,12 +353,12 @@ export const CustomListScreen = ({ navigation, route }) => {
     return () => backHandler.remove();
   }, [isAddingTask]);
 
-  // Save sort preference when it changes, but only after it has loaded
+  // Save this custom list's sort preference independently.
   useEffect(() => {
     if (isSortLoaded) {
-      Storage.set('sortBy_today', sortBy);
+      Storage.set(`sortBy_custom_${listId}`, sortBy);
     }
-  }, [sortBy, isSortLoaded]);
+  }, [sortBy, isSortLoaded, listId]);
 
   // Reload tasks from cache when screen gains focus (e.g. returning from TaskDetail)
   useFocusEffect(
@@ -346,17 +491,17 @@ export const CustomListScreen = ({ navigation, route }) => {
   const handlePrintList = async () => {
     setIsMenuOpen(false);
     const today = new Date().toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-    const lines = getSortedTasks().map(t => {
-      const status = t.is_completed ? '✅' : (t.is_important ? '⭐' : '⬜');
-      let line = `${status} ${t.title}`;
-      if (t.due_date)      line += `\n   📅 Due: ${formatDate(t.due_date)}`;
-      if (t.reminder_time) line += `\n   🔔 Remind: ${formatDateTime(t.reminder_time)}`;
-      if (t.repeat_rule)   line += `\n   🔁 Repeat: ${t.repeat_rule}`;
+    const lines = getSortedTasks().map(taskItem => {
+      const status = taskItem.is_completed ? '✅' : (taskItem.is_important ? '⭐' : '⬜');
+      let line = `${status} ${taskItem.title}`;
+      if (taskItem.due_date)      line += `\n   📅 ${t('customList.shareDuePrefix', { date: formatDate(taskItem.due_date) })}`;
+      if (taskItem.reminder_time) line += `\n   🔔 ${t('customList.shareRemindPrefix', { datetime: formatDateTime(taskItem.reminder_time) })}`;
+      if (taskItem.repeat_rule)   line += `\n   🔁 ${t('customList.shareRepeatPrefix', { rule: taskItem.repeat_rule })}`;
       return line;
     });
-    const message = `📋 TODAY — ${today}\n${'─'.repeat(32)}\n\n${lines.join('\n\n')}`;
+    const message = `📋 ${t('customList.shareHeader', { date: today })}\n${'─'.repeat(32)}\n\n${lines.join('\n\n')}`;
     try {
-      await Share.share({ message, title: `Today's Tasks — ${today}` });
+      await Share.share({ message, title: t('customList.shareTitle', { date: today }) });
     } catch (e) {
       console.log('Share error', e);
     }
@@ -364,20 +509,20 @@ export const CustomListScreen = ({ navigation, route }) => {
 
   const SORT_LABELS = {
     created_at: null,
-    importance: 'By importance',
-    due_date: 'By due date',
-    alphabetical: 'A–Z',
+    importance: t('customList.sortByImportance'),
+    due_date: t('customList.sortByDueDate'),
+    alphabetical: t('customList.sortAlphabetical'),
   };
 
   const handleDeleteList = () => {
     setIsMenuOpen(false);
     Alert.alert(
-      "Delete List",
-      `Are you sure you want to delete "${localListName}" and all its tasks?`,
+      t('customList.deleteListAlertTitle'),
+      t('customList.deleteListAlertMessage', { listName: localListName }),
       [
-        { text: "Cancel", style: "cancel" },
+        { text: t('common.cancel'), style: "cancel" },
         { 
-          text: "Delete", 
+          text: t('customList.deleteButton'), 
           style: "destructive",
           onPress: async () => {
             if (userId) {
@@ -454,8 +599,11 @@ export const CustomListScreen = ({ navigation, route }) => {
           const completedAt = new Date().toISOString();
           
           const freshTasks = await Storage.get(`tasks_${userId}`) || [];
+          const task = freshTasks.find(t => t.id === id);
+          const xpAmount = Gamification.xpForTask(task);
+
           const updated = freshTasks.map(t =>
-            t.id === id ? { ...t, is_completed: true, completed_at: completedAt } : t
+            t.id === id ? { ...t, is_completed: true, completed_at: completedAt, xp_awarded: xpAmount } : t
           );
 
           // Update local state and clear animation state together in the same render cycle
@@ -470,15 +618,8 @@ export const CustomListScreen = ({ navigation, route }) => {
             { column: 'id', value: id }
           );
 
-          const task = freshTasks.find(t => t.id === id);
           if (task?.reminder_time) cancelTaskReminder(id);
-          
-          let xpAmount = 10;
-          if (task) {
-            if (task.priority === 3) xpAmount = 50;
-            else if (task.priority === 2) xpAmount = 40;
-            else if (task.priority === 0) xpAmount = 5;
-          }
+
           const oldState = await Gamification.checkStreak(userId);
           const prevLevel = oldState?.level || 1;
           
@@ -491,16 +632,21 @@ export const CustomListScreen = ({ navigation, route }) => {
       }, 800);
     } else {
       // Un-completing: instant
+      let shouldSubtractXP = true;
       if (completingTimeouts.current[id]) {
         clearTimeout(completingTimeouts.current[id]);
         delete completingTimeouts.current[id];
+        shouldSubtractXP = false; // Cancelled before the 800ms XP award fired
       }
       setCompletingTaskIds(prev => prev.filter(tid => tid !== id));
 
       if (userId) {
         const freshTasks = await Storage.get(`tasks_${userId}`) || [];
+        const task = freshTasks.find(t => t.id === id);
+        const xpAmount = (task && task.xp_awarded != null) ? task.xp_awarded : Gamification.xpForTask(task);
+
         const updated = freshTasks.map(t =>
-          t.id === id ? { ...t, is_completed: false, completed_at: null } : t
+          t.id === id ? { ...t, is_completed: false, completed_at: null, xp_awarded: null } : t
         );
         
         // Update local state instantly
@@ -513,16 +659,11 @@ export const CustomListScreen = ({ navigation, route }) => {
           { column: 'id', value: id }
         );
 
-        const task = freshTasks.find(t => t.id === id);
         if (task?.reminder_time) scheduleTaskReminder(id, task.title, task.reminder_time);
-        
-        let xpAmount = 10;
-        if (task) {
-          if (task.priority === 3) xpAmount = 50;
-          else if (task.priority === 2) xpAmount = 40;
-          else if (task.priority === 0) xpAmount = 5;
+
+        if (shouldSubtractXP) {
+          await Gamification.addXP(userId, -xpAmount);
         }
-        await Gamification.addXP(userId, -xpAmount);
       }
     }
   };
@@ -613,6 +754,21 @@ export const CustomListScreen = ({ navigation, route }) => {
     );
   };
 
+  // ─── In-list drag/reorder ─────────────────────────────
+  const handleCustomListDragEnd = ({ data }) => {
+    requestAnimationFrame(() => {
+      if (sortBy !== 'custom') setSortBy('custom');
+      const orderMap = new Map(data.map((task, index) => [task.id, index]));
+      const mergedTasks = latestTasksRef.current.map((task) =>
+        orderMap.has(task.id) ? { ...task, order_index: orderMap.get(task.id) } : task
+      );
+      latestTasksRef.current = mergedTasks;
+      setTasks(mergedTasks);
+      const changedTasks = data.map((task, index) => ({ id: task.id, order_index: index }));
+      reorderTasks(userId, mergedTasks, changedTasks);
+    });
+  };
+
   // ─── Render ───────────────────────────────────────────
   const sortedTasks = getSortedActiveTasks();
 
@@ -633,10 +789,10 @@ export const CustomListScreen = ({ navigation, route }) => {
             {isMenuOpen && (
               <View style={[styles.dropdown, { backgroundColor: '#2A2A2A', borderColor: '#444' }]}>
                 {[
-                  { key: 'importance', label: 'Sort by importance' },
-                  { key: 'due_date',   label: 'Sort by due date' },
-                  { key: 'alphabetical', label: 'Sort alphabetically' },
-                  { key: 'created_at', label: 'Sort by creation date' },
+                  { key: 'importance', label: t('customList.menuSortByImportance') },
+                  { key: 'due_date',   label: t('customList.menuSortByDueDate') },
+                  { key: 'alphabetical', label: t('customList.menuSortAlphabetically') },
+                  { key: 'created_at', label: t('customList.menuSortByCreationDate') },
                 ].map(item => (
                   <TouchableOpacity
                     key={item.key}
@@ -651,22 +807,22 @@ export const CustomListScreen = ({ navigation, route }) => {
                 ))}
                 <View style={[styles.divider, { backgroundColor: '#444' }]} />
                 <TouchableOpacity style={styles.dropdownItem} onPress={handlePrintList}>
-                  <Text style={[styles.dropdownText, { color: '#fff' }]}>Share / Print list</Text>
+                  <Text style={[styles.dropdownText, { color: '#fff' }]}>{t('customList.shareOrPrintList')}</Text>
                 </TouchableOpacity>
                 {completedTodayTasks.length > 0 && (
                   <>
                     <View style={[styles.divider, { backgroundColor: '#444' }]} />
                     <TouchableOpacity style={styles.dropdownItem} onPress={handleClearCompleted}>
-                      <Text style={[styles.dropdownText, { color: '#ff4b4b' }]}>Clear completed</Text>
+                      <Text style={[styles.dropdownText, { color: '#ff4b4b' }]}>{t('customList.clearCompleted')}</Text>
                     </TouchableOpacity>
                   </>
                 )}
                 <View style={[styles.divider, { backgroundColor: '#444' }]} />
                 <TouchableOpacity style={styles.dropdownItem} onPress={() => { setIsMenuOpen(false); setRenameText(localListName); setShowRenameModal(true); }}>
-                  <Text style={[styles.dropdownText, { color: '#fff' }]}>Rename List</Text>
+                  <Text style={[styles.dropdownText, { color: '#fff' }]}>{t('customList.renameListLabel')}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.dropdownItem} onPress={handleDeleteList}>
-                  <Text style={[styles.dropdownText, { color: '#EF4444' }]}>Delete List</Text>
+                  <Text style={[styles.dropdownText, { color: '#FB7185' }]}>{t('customList.deleteListLabel')}</Text>
                 </TouchableOpacity>
               </View>
             )}
@@ -709,13 +865,13 @@ export const CustomListScreen = ({ navigation, route }) => {
             <NestableScrollContainer style={{ flex: 1 }}>
               {sortedTasks.length === 0 && completedTodayTasks.length === 0 ? (
                 <View style={styles.emptyState}>
-                  <Text style={[styles.emptyText, { color: theme.textMuted }]}>No tasks yet. Tap + to add one.</Text>
+                  <Text style={[styles.emptyText, { color: theme.textMuted }]}>{t('customList.emptyTasksMessage')}</Text>
                 </View>
               ) : null}
 
               {sortedTasks.length === 0 && completedTodayTasks.length > 0 ? (
                 <View style={[styles.emptyState, { flex: 0, paddingVertical: 40 }]}>
-                  <Text style={[styles.emptyText, { color: theme.textMuted }]}>All caught up for today!</Text>
+                  <Text style={[styles.emptyText, { color: theme.textMuted }]}>{t('customList.allCaughtUp')}</Text>
                 </View>
               ) : null}
 
@@ -726,163 +882,30 @@ export const CustomListScreen = ({ navigation, route }) => {
                 showsVerticalScrollIndicator={false}
                 contentContainerStyle={styles.scroll}
                 keyboardShouldPersistTaps="handled"
-                onContainerLayout={() => {}}
-                onDragEnd={({ data }) => {
-                  // Defer state update until after drag animation completes to prevent jitter
-                  requestAnimationFrame(() => {
-                    if (sortBy !== 'custom') setSortBy('custom');
-                    
-                    const orderMap = new Map(data.map((t, i) => [t.id, i]));
-                    
-                    const mergedTasks = latestTasksRef.current.map(t => 
-                      orderMap.has(t.id) ? { ...t, order_index: orderMap.get(t.id) } : t
-                    );
-                    
-                    setTasks(mergedTasks);
-                    
-                    // Background sync via SyncQueue (caching full lists and syncing mappings)
-                    const changedTasks = data.map((t, i) => ({ id: t.id, order_index: i }));
-                    reorderTasks(userId, mergedTasks, changedTasks);
-                  });
-                }}
-                renderItem={({ item: task, drag, isActive }) => {
-                  const hasSubtasks = task.subtasks && task.subtasks.length > 0;
-                  const hasNotes = task.notes && task.notes.trim().length > 0;
-                  const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes || true;
-                  const todayStart = new Date();
-                  todayStart.setHours(0, 0, 0, 0);
-                  const isOverdue = task.due_date && new Date(task.due_date) < todayStart && !task.is_completed;
-                  const completedSubs = hasSubtasks ? task.subtasks.filter(s => s.is_completed).length : 0;
-                  const totalSubs = hasSubtasks ? task.subtasks.length : 0;
-                  return (
-                    <ScaleDecorator>
-                      <TouchableOpacity
-                        activeOpacity={0.75}
-                        onPress={() => navigation.navigate('TaskDetail', { task, userId })}
-                        onLongPress={drag}
-                        disabled={isActive}
-                        style={[
-                          styles.taskCard,
-                          task.is_important && styles.taskCardImportant,
-                          task.is_completed && styles.taskCardCompleted,
-                          isActive && { backgroundColor: 'rgba(255,255,255,0.08)', elevation: 12 }
-                        ]}>
-                        
-                        {/* Left: drag handle + checkbox */}
-                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                          {!task.is_completed && !completingTaskIds.includes(task.id) && (
-                            <TouchableOpacity onPressIn={drag} style={{ padding: 4, marginRight: 2 }}>
-                              <GripVertical color="#444" size={20} />
-                            </TouchableOpacity>
-                          )}
-                          <TouchableOpacity 
-                            onPress={() => toggleTask(task.id, task.is_completed || completingTaskIds.includes(task.id))} 
-                            disabled={completingTaskIds.includes(task.id)} 
-                            style={[
-                              styles.checkbox, 
-                              (task.is_completed || completingTaskIds.includes(task.id)) && { marginLeft: 28 }
-                            ]}
-                          >
-                            {(task.is_completed || completingTaskIds.includes(task.id)) ? (
-                              <CheckCircle2 color="#10B981" size={24} />
-                            ) : (
-                              <Circle color={theme.text} size={24} />
-                            )}
-                          </TouchableOpacity>
-                        </View>
-
-                        {/* Center: title + meta */}
-                        <View style={styles.taskContent}>
-                          <ScribbleStrike isCompleted={task.is_completed || completingTaskIds.includes(task.id)} shouldAnimate={completingTaskIds.includes(task.id)} color={theme.textMuted}>
-                            <Text
-                              style={[
-                                styles.taskTitle,
-                                { color: completingTaskIds.includes(task.id) ? '#666' : (task.is_completed ? '#666' : '#fff') },
-                                (task.is_completed || completingTaskIds.includes(task.id)) && styles.taskCompleted,
-                              ]}
-                            >
-                              {task.title}
-                            </Text>
-                          </ScribbleStrike>
-
-                          {hasMeta && (
-                            <View style={styles.taskMetaRow}>
-                              {shouldShowFlag(task.priority) && (
-                                <View style={styles.metaPill}>
-                                  <Flag color={getPriorityColor(task.priority)} size={11} fill={getPriorityColor(task.priority)} />
-                                </View>
-                              )}
-                              {task.due_date && (
-                                <View style={styles.metaPill}>
-                                  <Calendar color={isOverdue ? '#EF4444' : '#888'} size={11} />
-                                  <Text style={[styles.metaLabel, isOverdue && { color: '#EF4444' }]}>
-                                    {formatDate(task.due_date)}
-                                  </Text>
-                                </View>
-                              )}
-                              {task.reminder_time && (
-                                <View style={styles.metaPill}>
-                                  <Bell color="#888" size={11} />
-                                  <Text style={styles.metaLabel}>
-                                    {formatDateTime(task.reminder_time)}
-                                  </Text>
-                                </View>
-                              )}
-                              {task.repeat_rule && (
-                                <View style={styles.metaPill}>
-                                  <Repeat color="#888" size={11} />
-                                  <Text style={styles.metaLabel}>
-                                    {task.repeat_rule}
-                                  </Text>
-                                </View>
-                              )}
-                              {hasSubtasks && (
-                                <View style={styles.metaPill}>
-                                  <ListChecks color="#888" size={11} />
-                                  <Text style={styles.metaLabel}>
-                                    {completedSubs}/{totalSubs}
-                                  </Text>
-                                </View>
-                              )}
-                              {hasNotes && (
-                                <View style={[styles.metaPill, { paddingHorizontal: 6 }]}>
-                                  <FileText color="#888" size={11} />
-                                </View>
-                              )}
-                            </View>
-                          )}
-                        </View>
-
-                        {/* Right: star + delete + My Day */}
-                        <View style={styles.taskActions}>
-                          <TouchableOpacity 
-                            onPress={async () => {
-                              const updated = await updateTask(userId, latestTasksRef.current, task.id, { added_to_today: !task.added_to_today });
-                              setTasks(updated);
-                            }} 
-                            style={styles.iconButtonSmall}
-                          >
-                            <Sun
-                              color={task.added_to_today ? '#FBBF24' : '#444'}
-                              fill={task.added_to_today ? '#FBBF24' : 'transparent'}
-                              size={18}
-                            />
-                          </TouchableOpacity>
-                          <TouchableOpacity onPress={() => toggleImportant(task.id, task.is_important)} style={styles.iconButtonSmall}>
-                            <Star
-                              color={task.is_important ? '#FFFFFF' : '#444'}
-                              fill={task.is_important ? '#FFFFFF' : 'transparent'}
-                              size={18}
-                            />
-                          </TouchableOpacity>
-                          <TouchableOpacity onPress={() => deleteTaskHandler(task.id)} style={styles.iconButtonSmall}>
-                            <Trash2 color="#444" size={18} />
-                          </TouchableOpacity>
-                        </View>
-                      </TouchableOpacity>
-                    </ScaleDecorator>
-                  );
-                }}
+                activationDistance={8}
+                autoscrollThreshold={60}
+                maxToRenderPerBatch={10}
+                updateCellsBatchingPeriod={50}
+                initialNumToRender={10}
+                windowSize={5}
+                onDragEnd={handleCustomListDragEnd}
+                renderItem={({ item: task, drag, isActive }) => (
+                  <CustomListTaskRow
+                    task={task}
+                    theme={theme}
+                    isCompleting={completingTaskIds.includes(task.id)}
+                    drag={drag}
+                    isActive={isActive}
+                    onPress={() => navigation.navigate('TaskDetail', { task, userId })}
+                    onToggle={() => toggleTask(task.id, task.is_completed || completingTaskIds.includes(task.id))}
+                    onToggleToday={async () => {
+                      const updated = await updateTask(userId, latestTasksRef.current, task.id, { added_to_today: !task.added_to_today });
+                      setTasks(updated);
+                    }}
+                    onToggleImportant={() => toggleImportant(task.id, task.is_important)}
+                    onDelete={() => deleteTaskHandler(task.id)}
+                  />
+                )}
               />
               )}
 
@@ -898,7 +921,7 @@ export const CustomListScreen = ({ navigation, route }) => {
                       ? <ChevronDown color="#888" size={18} />
                       : <ChevronRight color="#888" size={18} />}
                     <Text style={styles.completedHeaderText}>
-                      Completed ({completedTodayTasks.length})
+                      {t('customList.completedCount', { count: completedTodayTasks.length })}
                     </Text>
                   </TouchableOpacity>
 
@@ -913,10 +936,10 @@ export const CustomListScreen = ({ navigation, route }) => {
                       ? (() => {
                           const diff = Date.now() - new Date(task.completed_at).getTime();
                           const mins = Math.floor(diff / 60000);
-                          if (mins < 1) return 'Just now';
-                          if (mins < 60) return `${mins}m ago`;
+                          if (mins < 1) return t('customList.completedJustNow');
+                          if (mins < 60) return t('customList.completedMinutesAgo', { mins });
                           const hrs = Math.floor(mins / 60);
-                          return `${hrs}h ago`;
+                          return t('customList.completedHoursAgo', { hrs });
                         })()
                       : null;
 
@@ -933,7 +956,7 @@ export const CustomListScreen = ({ navigation, route }) => {
                             onPress={() => toggleTask(task.id, task.is_completed)}
                             style={[styles.checkbox, { marginLeft: 28 }]}
                           >
-                            <CheckCircle2 color="#10B981" size={24} />
+                            <CheckCircle2 color="#34D399" size={24} />
                           </TouchableOpacity>
 
                           <View style={styles.taskContent}>
@@ -947,8 +970,8 @@ export const CustomListScreen = ({ navigation, route }) => {
                               <View style={styles.taskMetaRow}>
                                 {completedAgo && (
                                   <View style={styles.metaPill}>
-                                    <Check color="#10B981" size={11} />
-                                    <Text style={[styles.metaLabel, { color: '#10B981' }]}>{completedAgo}</Text>
+                                    <Check color="#34D399" size={11} />
+                                    <Text style={[styles.metaLabel, { color: '#34D399' }]}>{completedAgo}</Text>
                                   </View>
                                 )}
                                 {hasSubtasks && (
@@ -993,20 +1016,20 @@ export const CustomListScreen = ({ navigation, route }) => {
                 <Animated.View entering={FadeIn.duration(200)} exiting={FadeOut.duration(150)} style={[styles.toolbarMenu, { bottom: 85, left: 16 }]}>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingDueDate(getToday()); setActiveToolbarMenu(null); }}>
                     <Calendar color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Today ({getDayName(new Date())})</Text>
+                    <Text style={styles.toolbarMenuText}>{t('customList.dueDateToday', { day: getDayName(new Date()) })}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingDueDate(getTomorrow()); setActiveToolbarMenu(null); }}>
                     <Calendar color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Tomorrow ({getDayName(getTomorrow())})</Text>
+                    <Text style={styles.toolbarMenuText}>{t('customList.dueDateTomorrow', { day: getDayName(getTomorrow()) })}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingDueDate(getNextMonday()); setActiveToolbarMenu(null); }}>
                     <Calendar color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Next week (Mon)</Text>
+                    <Text style={styles.toolbarMenuText}>{t('customList.dueDateNextWeek')}</Text>
                   </TouchableOpacity>
                   <View style={[styles.divider, { backgroundColor: '#444' }]} />
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setActiveToolbarMenu(null); setShowDatePicker(true); }}>
                     <Calendar color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Pick a date</Text>
+                    <Text style={styles.toolbarMenuText}>{t('customList.pickADate')}</Text>
                   </TouchableOpacity>
                 </Animated.View>
               )}
@@ -1016,20 +1039,20 @@ export const CustomListScreen = ({ navigation, route }) => {
                 <Animated.View entering={FadeIn.duration(200)} exiting={FadeOut.duration(150)} style={[styles.toolbarMenu, { bottom: 85, left: 60 }]}>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingReminder(getReminderLaterToday()); setActiveToolbarMenu(null); }}>
                     <Bell color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Later today ({getReminderLaterToday().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })})</Text>
+                    <Text style={styles.toolbarMenuText}>{t('customList.reminderLaterToday', { time: getReminderLaterToday().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) })}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingReminder(getReminderTomorrow()); setActiveToolbarMenu(null); }}>
                     <Bell color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Tomorrow ({getDayName(getTomorrow())} 09:00)</Text>
+                    <Text style={styles.toolbarMenuText}>{t('customList.reminderTomorrow', { day: getDayName(getTomorrow()) })}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingReminder(getReminderNextWeek()); setActiveToolbarMenu(null); }}>
                     <Bell color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Next week (Mon 09:00)</Text>
+                    <Text style={styles.toolbarMenuText}>{t('customList.reminderNextWeek')}</Text>
                   </TouchableOpacity>
                   <View style={[styles.divider, { backgroundColor: '#444' }]} />
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setActiveToolbarMenu(null); setReminderPickerDate(new Date()); setShowReminderDatePicker(true); }}>
                     <Bell color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Pick a date & time</Text>
+                    <Text style={styles.toolbarMenuText}>{t('customList.pickDateTime')}</Text>
                   </TouchableOpacity>
                 </Animated.View>
               )}
@@ -1039,28 +1062,28 @@ export const CustomListScreen = ({ navigation, route }) => {
                 <Animated.View entering={FadeIn.duration(200)} exiting={FadeOut.duration(150)} style={[styles.toolbarMenu, { bottom: 85, right: 16 }]}>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingRepeatRule('daily'); setActiveToolbarMenu(null); }}>
                     <Repeat color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Daily</Text>
+                    <Text style={styles.toolbarMenuText}>{t('customList.repeatDaily')}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingRepeatRule('weekdays'); setActiveToolbarMenu(null); }}>
                     <Repeat color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Weekdays</Text>
+                    <Text style={styles.toolbarMenuText}>{t('customList.repeatWeekdays')}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingRepeatRule('weekly'); setActiveToolbarMenu(null); }}>
                     <Repeat color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Weekly</Text>
+                    <Text style={styles.toolbarMenuText}>{t('customList.repeatWeekly')}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingRepeatRule('monthly'); setActiveToolbarMenu(null); }}>
                     <Repeat color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Monthly</Text>
+                    <Text style={styles.toolbarMenuText}>{t('customList.repeatMonthly')}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingRepeatRule('yearly'); setActiveToolbarMenu(null); }}>
                     <Repeat color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Yearly</Text>
+                    <Text style={styles.toolbarMenuText}>{t('customList.repeatYearly')}</Text>
                   </TouchableOpacity>
                   <View style={[styles.divider, { backgroundColor: '#444' }]} />
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setActiveToolbarMenu(null); setShowCustomRepeatModal(true); }}>
                     <Repeat color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Customised</Text>
+                    <Text style={styles.toolbarMenuText}>{t('customList.repeatCustomised')}</Text>
                   </TouchableOpacity>
                 </Animated.View>
               )}
@@ -1088,7 +1111,7 @@ export const CustomListScreen = ({ navigation, route }) => {
                 </TouchableOpacity>
                 <TextInput
                   style={[styles.bottomInput, { color: '#fff' }]}
-                  placeholder="Add a task"
+                  placeholder={t('customList.addTaskPlaceholder')}
                   placeholderTextColor="#666"
                   value={newTaskTitle}
                   onChangeText={setNewTaskTitle}
@@ -1104,19 +1127,19 @@ export const CustomListScreen = ({ navigation, route }) => {
               <View style={styles.toolbarRow}>
                 <TouchableOpacity style={[styles.toolbarButton, pendingDueDate && styles.toolbarButtonActive]} onPress={() => setActiveToolbarMenu(activeToolbarMenu === 'date' ? null : 'date')}>
                   <Calendar color={pendingDueDate ? '#fff' : '#888'} size={18} />
-                  <Text style={[styles.toolbarText, pendingDueDate && { color: '#fff' }]}>Due date</Text>
+                  <Text style={[styles.toolbarText, pendingDueDate && { color: '#fff' }]}>{t('customList.toolbarDueDate')}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={[styles.toolbarButton, pendingReminder && styles.toolbarButtonActive]} onPress={() => setActiveToolbarMenu(activeToolbarMenu === 'reminder' ? null : 'reminder')}>
                   <Bell color={pendingReminder ? '#fff' : '#888'} size={18} />
-                  <Text style={[styles.toolbarText, pendingReminder && { color: '#fff' }]}>Remind me</Text>
+                  <Text style={[styles.toolbarText, pendingReminder && { color: '#fff' }]}>{t('customList.toolbarRemindMe')}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={[styles.toolbarButton, pendingRepeatRule && styles.toolbarButtonActive]} onPress={() => setActiveToolbarMenu(activeToolbarMenu === 'repeat' ? null : 'repeat')}>
                   <Repeat color={pendingRepeatRule ? '#fff' : '#888'} size={18} />
-                  <Text style={[styles.toolbarText, pendingRepeatRule && { color: '#fff' }]}>Repeat</Text>
+                  <Text style={[styles.toolbarText, pendingRepeatRule && { color: '#fff' }]}>{t('customList.toolbarRepeat')}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={[styles.toolbarButton, pendingPriority !== 1 && styles.toolbarButtonActive]} onPress={() => setActiveToolbarMenu(activeToolbarMenu === 'priority' ? null : 'priority')}>
                   <Flag color={pendingPriority !== 1 ? getPriorityColor(pendingPriority) : '#888'} size={18} fill={pendingPriority !== 1 ? getPriorityColor(pendingPriority) : 'transparent'} />
-                  <Text style={[styles.toolbarText, pendingPriority !== 1 && { color: '#fff' }]}>Priority</Text>
+                  <Text style={[styles.toolbarText, pendingPriority !== 1 && { color: '#fff' }]}>{t('customList.toolbarPriority')}</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -1138,7 +1161,7 @@ export const CustomListScreen = ({ navigation, route }) => {
             <View style={styles.pickerModalOverlay}>
               <View style={styles.pickerModalContent}>
                 <View style={styles.pickerHeader}>
-                  <Text style={styles.pickerTitle}>Pick a due date</Text>
+                  <Text style={styles.pickerTitle}>{t('customList.pickDueDateTitle')}</Text>
                   <TouchableOpacity onPress={() => setShowDatePicker(false)}>
                     <X color="#fff" size={24} />
                   </TouchableOpacity>
@@ -1154,7 +1177,7 @@ export const CustomListScreen = ({ navigation, route }) => {
                 />
                 {Platform.OS === 'ios' && (
                   <TouchableOpacity style={styles.pickerDoneBtn} onPress={() => { setPendingDueDate(pendingDueDate || new Date()); setShowDatePicker(false); }}>
-                    <Text style={styles.pickerDoneText}>Done</Text>
+                    <Text style={styles.pickerDoneText}>{t('customList.doneButton')}</Text>
                   </TouchableOpacity>
                 )}
               </View>
@@ -1168,7 +1191,7 @@ export const CustomListScreen = ({ navigation, route }) => {
             <View style={styles.pickerModalOverlay}>
               <View style={styles.pickerModalContent}>
                 <View style={styles.pickerHeader}>
-                  <Text style={styles.pickerTitle}>Pick date & time</Text>
+                  <Text style={styles.pickerTitle}>{t('customList.pickDateTimeTitle')}</Text>
                   <TouchableOpacity onPress={() => setShowReminderDatePicker(false)}>
                     <X color="#fff" size={24} />
                   </TouchableOpacity>
@@ -1187,7 +1210,7 @@ export const CustomListScreen = ({ navigation, route }) => {
                 />
                 {Platform.OS === 'ios' && (
                   <TouchableOpacity style={styles.pickerDoneBtn} onPress={() => { setPendingReminder(reminderPickerDate); setShowReminderDatePicker(false); }}>
-                    <Text style={styles.pickerDoneText}>Done</Text>
+                    <Text style={styles.pickerDoneText}>{t('customList.doneButton')}</Text>
                   </TouchableOpacity>
                 )}
               </View>
@@ -1210,14 +1233,14 @@ export const CustomListScreen = ({ navigation, route }) => {
           <View style={styles.pickerModalOverlay}>
             <View style={styles.customRepeatModal}>
               <View style={styles.pickerHeader}>
-                <Text style={styles.pickerTitle}>Custom repeat</Text>
+                <Text style={styles.pickerTitle}>{t('customList.customRepeatTitle')}</Text>
                 <TouchableOpacity onPress={() => setShowCustomRepeatModal(false)}>
                   <X color="#fff" size={24} />
                 </TouchableOpacity>
               </View>
 
               {/* Repeat every ___ [unit] */}
-              <Text style={styles.customLabel}>Repeat every</Text>
+              <Text style={styles.customLabel}>{t('customList.repeatEveryLabel')}</Text>
               <View style={styles.customRow}>
                 <TextInput
                   style={styles.customNumberInput}
@@ -1242,7 +1265,7 @@ export const CustomListScreen = ({ navigation, route }) => {
               {/* Day selector (only for weeks) */}
               {customRepeatUnit === 'weeks' && (
                 <>
-                  <Text style={[styles.customLabel, { marginTop: 20 }]}>On these days</Text>
+                  <Text style={[styles.customLabel, { marginTop: 20 }]}>{t('customList.onTheseDaysLabel')}</Text>
                   <View style={styles.dayRow}>
                     {DAY_LABELS.map(day => (
                       <TouchableOpacity
@@ -1258,7 +1281,7 @@ export const CustomListScreen = ({ navigation, route }) => {
               )}
 
               <TouchableOpacity style={[styles.pickerDoneBtn, { marginTop: 24 }]} onPress={saveCustomRepeat}>
-                <Text style={styles.pickerDoneText}>Save</Text>
+                <Text style={styles.pickerDoneText}>{t('common.save')}</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -1284,10 +1307,7 @@ export const CustomListScreen = ({ navigation, route }) => {
         savedPlan={generatedPlan}
         onPlanGenerated={(plan) => {
           setGeneratedPlan(plan);
-          if (userId) {
-            Storage.set(`generated_plan_${userId}`, plan);
-            Storage.set(`generated_plan_date_${userId}`, new Date().toDateString());
-          }
+          savePlanForToday(userId, plan);
         }}
         onToggleTask={toggleTask}
       />
@@ -1296,7 +1316,7 @@ export const CustomListScreen = ({ navigation, route }) => {
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.6)' }}>
           <View style={{ width: '85%', backgroundColor: '#1E1E1E', borderColor: '#333', borderWidth: 1, borderRadius: 16, padding: 20 }}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <Text style={{ color: '#fff', fontSize: 18, fontWeight: '700' }}>Rename List</Text>
+              <Text style={{ color: '#fff', fontSize: 18, fontWeight: '700' }}>{t('customList.renameListLabel')}</Text>
               <TouchableOpacity onPress={() => setShowRenameModal(false)}>
                 <X color="#aaa" size={24} />
               </TouchableOpacity>
@@ -1307,7 +1327,7 @@ export const CustomListScreen = ({ navigation, route }) => {
                 value={renameText}
                 onChangeText={setRenameText}
                 autoFocus
-                placeholder="List Name"
+                placeholder={t('customList.listNamePlaceholder')}
                 placeholderTextColor="#666"
                 selectionColor={COLORS.dark.primary}
                 onSubmitEditing={handleRenameList}
@@ -1316,7 +1336,7 @@ export const CustomListScreen = ({ navigation, route }) => {
                 style={{ backgroundColor: COLORS.dark.primary, padding: 14, borderRadius: 8, alignItems: 'center', marginTop: 16 }} 
                 onPress={handleRenameList}
               >
-                <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700' }}>Rename</Text>
+                <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700' }}>{t('customList.renameButton')}</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -1421,7 +1441,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16, 
     paddingBottom: 100 
   },
-
   // Completed Section
   completedHeader: {
     flexDirection: 'row',

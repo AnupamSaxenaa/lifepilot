@@ -1,10 +1,17 @@
-import { Storage } from './storage';
-import { supabase } from '../lib/supabase';
 import { cacheTasks } from '../lib/dataManager';
+import { syncToSupabase } from '../lib/syncQueue';
+import { Storage } from './storage';
 
 /**
- * Repeat Engine — Resets completed repeating tasks when they are due again.
- * 
+ * Repeat Engine — Resets repeating tasks IN PLACE when they are due again.
+ *
+ * Model (important):
+ *   A recurring task is ONE persistent row. When it becomes due again for a
+ *   new period we simply flip it back to uncompleted on the SAME row. We do
+ *   NOT spawn new rows and we do NOT delete anything. This is what keeps the
+ *   task from duplicating and stops recurring tasks from inflating lifetime
+ *   metrics (each recurring task counts as exactly one row, forever).
+ *
  * Supported repeat_rule values:
  *   'daily'
  *   'weekdays'
@@ -120,45 +127,41 @@ const shouldResetToday = (task) => {
 };
 
 export const runRepeatEngine = async (userId) => {
-  if (!userId) return;
+  if (!userId) return false;
 
-  // Check if we already ran today
+  // Run at most once per day per device (the reset itself is idempotent, so
+  // an extra run is harmless — this is just to avoid needless work).
   const todayStr = new Date().toDateString();
   const lastRunDate = await Storage.get(`repeatEngine_lastRun_${userId}`);
-  if (lastRunDate === todayStr) return; // Already processed today
+  if (lastRunDate === todayStr) return false;
 
   try {
-    // 🔴 Use local cache instead of fetching from Supabase directly
-    // This preserves all offline-first state and local-only fields
+    // Offline-first: work off the local cache so we never lose local-only state.
     const tasks = await Storage.get(`tasks_${userId}`) || [];
 
     if (tasks.length === 0) {
-      // If tasks are empty, we might not have loaded them yet. Wait until next time.
-      return;
+      // Tasks probably not loaded yet — try again on the next pass.
+      return false;
     }
 
     const tasksToReset = tasks.filter(t => shouldResetToday(t));
 
     if (tasksToReset.length === 0) {
-      // Nothing to reset, just mark as run
       await Storage.set(`repeatEngine_lastRun_${userId}`, todayStr);
-      return;
+      return false;
     }
 
-    const oldTaskUpdates = [];
-    const newTasksToInsert = [];
+    const resetIds = new Set(tasksToReset.map(t => t.id));
     const nowISO = new Date().toISOString();
 
-    for (const t of tasksToReset) {
-      // Mark the old task as completed (so it doesn't duplicate) and strip its repeat_rule
-      oldTaskUpdates.push({
-        id: t.id,
-        repeat_rule: null,
-        is_completed: true,
-        completed_at: nowISO,
-      });
+    // ── Reset each due repeating task IN PLACE (same row) ──
+    // No new rows, no deletes, no stripping repeat_rule. This is what prevents
+    // duplication and stops recurring tasks from inflating lifetime metrics.
+    const updatedTasks = tasks.map(t => {
+      if (!resetIds.has(t.id)) return t;
 
-      let updatedReminder = null;
+      // Roll the reminder time forward to today, preserving the hour/minute.
+      let updatedReminder = t.reminder_time;
       if (t.reminder_time) {
         const oldRem = new Date(t.reminder_time);
         const newRem = new Date();
@@ -166,69 +169,55 @@ export const runRepeatEngine = async (userId) => {
         updatedReminder = newRem.toISOString();
       }
 
-      const newTask = {
+      // Steps belong to the same recurring row, so a new period must start with
+      // them unchecked too. Without this the parent flipped back to open while
+      // every micro-task stayed ticked from the previous run.
+      const updatedSubtasks = Array.isArray(t.subtasks) && t.subtasks.length > 0
+        ? t.subtasks.map((subtask) => (
+          subtask?.is_completed ? { ...subtask, is_completed: false } : subtask
+        ))
+        : t.subtasks;
+
+      return {
         ...t,
         is_completed: false,
         completed_at: null,
-        created_at: nowISO,
-        due_date: t.due_date ? nowISO : null,
+        xp_awarded: null,           // clear so the next completion grants/deducts cleanly
+        last_reset_date: nowISO,    // local-only marker (not synced) for shouldResetToday
         reminder_time: updatedReminder,
-        added_to_today: t.added_to_today, // carry over today flag
-        repeat_rule: t.repeat_rule, // carry over the repeat tag (daily/weekly/etc)
+        due_date: t.due_date ? nowISO : null,
+        subtasks: updatedSubtasks,
       };
-      
-      const generateUUID = () => {
-        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-          const r = (Math.random() * 16) | 0;
-          const v = c === 'x' ? r : (r & 0x3) | 0x8;
-          return v.toString(16);
-        });
-      };
-      
-      newTask.id = generateUUID(); // Assign a valid UUID
-      delete newTask.last_reset_date; // Remove just in case t has it, to prevent insert error
-      newTasksToInsert.push(newTask);
-    }
+    });
 
-    // 1. Mark old tasks as completed and clear their repeat_rule
-    for (const update of oldTaskUpdates) {
-      await supabase
-        .from('tasks')
-        .update({ repeat_rule: null, is_completed: true, completed_at: nowISO })
-        .eq('id', update.id);
-    }
-
-    // 2. Insert new tasks
-    const { data: insertedTasks, error: insertError } = await supabase
-      .from('tasks')
-      .insert(newTasksToInsert)
-      .select();
-
-    if (insertError) {
-      console.error('[RepeatEngine] Insert Error:', insertError);
-      return;
-    }
-
-    // 3. Update local cache
-    const oldIds = oldTaskUpdates.map(u => u.id);
-    // 🔴 Read the freshest cache again just in case it was updated while we awaited supabase!
-    const freshTasks = await Storage.get(`tasks_${userId}`) || tasks;
-    
-    const updatedTasks = freshTasks.map(t =>
-      oldIds.includes(t.id) ? { ...t, repeat_rule: null, is_completed: true, completed_at: nowISO } : t
-    );
-    
-    if (insertedTasks && insertedTasks.length > 0) {
-      updatedTasks.push(...insertedTasks);
-    }
-
+    // 1. Persist locally first (optimistic / offline-first).
     await cacheTasks(userId, updatedTasks);
 
-    // Mark engine as run for today
+    // 2. Queue the reset to the server through the offline sync queue (never
+    //    write to Supabase directly). We only send columns that definitely
+    //    exist on the tasks table — `last_reset_date` stays local-only.
+    for (const t of tasksToReset) {
+      const resetTask = updatedTasks.find(u => u.id === t.id);
+      // Only sync real DB columns. `xp_awarded` is a local-only field (the
+      // toggle flows never sync it), so we keep it out of the server payload.
+      const payload = {
+        is_completed: false,
+        completed_at: null,
+        reminder_time: resetTask ? resetTask.reminder_time : t.reminder_time,
+        due_date: resetTask ? resetTask.due_date : t.due_date,
+      };
+      // Push the cleared steps too, but only when the task actually has any —
+      // sending an empty/undefined value would wipe a column needlessly.
+      if (Array.isArray(resetTask?.subtasks) && resetTask.subtasks.length > 0) {
+        payload.subtasks = resetTask.subtasks;
+      }
+      syncToSupabase('tasks', 'update', payload, { column: 'id', value: t.id });
+    }
+
     await Storage.set(`repeatEngine_lastRun_${userId}`, todayStr);
 
-    console.log(`[RepeatEngine] Spawned ${insertedTasks?.length || 0} new repeating tasks for today.`);
-    return insertedTasks?.length > 0;
+    console.log(`[RepeatEngine] Reset ${tasksToReset.length} repeating task(s) in place for today.`);
+    return true; // signal the caller to reload/re-render
   } catch (err) {
     console.error('[RepeatEngine] Error:', err);
     return false;

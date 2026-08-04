@@ -1,131 +1,168 @@
-import React, { useState } from 'react';
-import { Modal, StyleSheet, Text, TouchableOpacity, View, ScrollView } from 'react-native';
-import { X, Award, Flame, Zap, Target, Gem } from 'lucide-react-native';
+import { Award, Flame, Gem, Hexagon, X, Zap } from 'lucide-react-native';
+import { useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { COLORS } from '../theme/theme';
+import { useTheme } from '../context/ThemeContext';
 import { StoneCollectionModal } from './StoneCollectionModal';
 
+// ─── Unified Palette ───
+const BG = '#000000';
+const SURFACE = '#0A0A0A';
+const SURFACE_2 = '#121214';
+const BORDER = '#1C1C1E';
+const TEXT = '#FAFAFA';
+const MUTED = '#71717A';
+const FAINT = '#3F3F46';
+
 export const GamificationGuideModal = ({ isVisible, onClose, gamestate }) => {
-  const theme = COLORS.dark; // Force dark mode for sleek look
   const insets = useSafeAreaInsets();
   const [isStoneModalOpen, setIsStoneModalOpen] = useState(false);
+  const ACCENT = useTheme().theme.accent;
+  const styles = useMemo(() => makeStyles(ACCENT), [ACCENT]);
+  const { t } = useTranslation();
 
   return (
-    <Modal
-      visible={isVisible}
-      animationType="slide"
-      presentationStyle="pageSheet"
-      onRequestClose={onClose}
-    >
-      <View style={[styles.container, { backgroundColor: theme.background, paddingTop: Math.max(insets.top, 16) }]}>
+    <Modal visible={isVisible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+      <View style={[styles.container, { paddingTop: Math.max(insets.top, 16) }]}>
         <View style={styles.header}>
-          <Text style={[styles.headerTitle, { color: theme.text }]}>XP & Rewards Guide</Text>
-          <TouchableOpacity onPress={onClose} style={styles.closeButton}>
-            <X color={theme.textMuted} size={28} />
+          <Text style={styles.headerTitle}>{t('gamificationGuide.headerTitle')}</Text>
+          <TouchableOpacity onPress={onClose} style={styles.closeButton} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+            <X color={MUTED} size={24} />
           </TouchableOpacity>
         </View>
 
-        <ScrollView style={styles.scroll} showsVerticalScrollIndicator={false}>
-          
-          <Text style={[styles.introText, { color: theme.textMuted }]}>
-            Welcome to LifePilot's Gamification Engine. Completing tasks earns you Experience Points (XP). Level up to unlock higher ranks and build an unbreakable streak!
+        <ScrollView style={styles.scroll} contentContainerStyle={{ padding: 24 }} showsVerticalScrollIndicator={false}>
+          <Text style={styles.introText}>
+            {t('gamificationGuide.introText')}
           </Text>
 
           {/* Stone Catalog Button */}
-          <TouchableOpacity 
-            style={[styles.stoneCatalogBtn, { backgroundColor: 'rgba(168, 85, 247, 0.15)', borderColor: '#A855F7' }]}
-            onPress={() => setIsStoneModalOpen(true)}
-            activeOpacity={0.8}
-          >
-            <View style={styles.stoneBtnContent}>
-              <Gem color="#A855F7" size={28} />
-              <View style={{ flex: 1, marginLeft: 16 }}>
-                <Text style={{ color: '#fff', fontSize: 18, fontWeight: 'bold' }}>Stone Catalog</Text>
-                <Text style={{ color: '#A855F7', fontSize: 14, marginTop: 4 }}>View your collection (Level {gamestate?.level || 1})</Text>
-              </View>
+          <TouchableOpacity style={styles.stoneCatalogBtn} onPress={() => setIsStoneModalOpen(true)} activeOpacity={0.8}>
+            <Gem color={ACCENT} size={26} />
+            <View style={{ flex: 1, marginLeft: 16 }}>
+              <Text style={styles.stoneBtnTitle}>{t('gamificationGuide.stoneCatalogTitle')}</Text>
+              <Text style={styles.stoneBtnSub}>{t('gamificationGuide.stoneCatalogSubtitle', { level: gamestate?.level || 1 })}</Text>
             </View>
+            <Text style={styles.chevron}>›</Text>
           </TouchableOpacity>
 
-          {/* Section: Task XP */}
-          <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+          {/* Earning XP */}
+          <View style={styles.card}>
             <View style={styles.cardHeader}>
-              <Zap color="#F59E0B" size={24} />
-              <Text style={[styles.cardTitle, { color: theme.text }]}>Earning XP</Text>
+              <Zap color={ACCENT} size={20} />
+              <Text style={styles.cardTitle}>{t('gamificationGuide.earningXpTitle')}</Text>
             </View>
-            <Text style={[styles.cardDesc, { color: theme.textMuted }]}>
-              XP scales based on how critical your task is. Focus on high priority items to level up faster!
+            <Text style={styles.cardDesc}>
+              {t('gamificationGuide.earningXpDesc')}
             </Text>
+
             <View style={styles.xpRow}>
-              <View style={styles.xpBullet}><View style={[styles.dot, { backgroundColor: '#10B981' }]} /><Text style={{ color: theme.text, fontSize: 16 }}>Low Priority</Text></View>
-              <Text style={styles.xpAmount}>+5 XP</Text>
+              <View style={styles.xpBullet}><View style={[styles.dot, { backgroundColor: FAINT }]} /><Text style={styles.xpLabel}>{t('gamificationGuide.lowPriorityLabel')}</Text></View>
+              <Text style={styles.xpAmount}>+5</Text>
             </View>
             <View style={styles.xpRow}>
-              <View style={styles.xpBullet}><View style={[styles.dot, { backgroundColor: '#6B7280' }]} /><Text style={{ color: theme.text, fontSize: 16 }}>Basic Task</Text></View>
-              <Text style={styles.xpAmount}>+10 XP</Text>
+              <View style={styles.xpBullet}><View style={[styles.dot, { backgroundColor: MUTED }]} /><Text style={styles.xpLabel}>{t('gamificationGuide.basicTaskLabel')}</Text></View>
+              <Text style={styles.xpAmount}>+10</Text>
             </View>
             <View style={styles.xpRow}>
-              <View style={styles.xpBullet}><View style={[styles.dot, { backgroundColor: '#F59E0B' }]} /><Text style={{ color: theme.text, fontSize: 16 }}>Important (High)</Text></View>
-              <Text style={styles.xpAmount}>+40 XP</Text>
+              <View style={styles.xpBullet}><View style={[styles.dot, { backgroundColor: '#FFFFFF' }]} /><Text style={styles.xpLabel}>{t('gamificationGuide.importantLabel')}</Text></View>
+              <Text style={styles.xpAmount}>+40</Text>
             </View>
             <View style={[styles.xpRow, { borderBottomWidth: 0 }]}>
-              <View style={styles.xpBullet}><View style={[styles.dot, { backgroundColor: '#EF4444' }]} /><Text style={{ color: theme.text, fontSize: 16 }}>Urgent Task</Text></View>
-              <Text style={styles.xpAmount}>+50 XP</Text>
+              <View style={styles.xpBullet}><View style={[styles.dot, { backgroundColor: ACCENT }]} /><Text style={styles.xpLabel}>{t('gamificationGuide.urgentLabel')}</Text></View>
+              <Text style={styles.xpAmount}>+50</Text>
             </View>
           </View>
 
-          {/* Section: Streaks & Freezes */}
-          <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+          {/* Shards & Marketplace */}
+          <View style={styles.card}>
             <View style={styles.cardHeader}>
-              <Flame color="#EF4444" size={24} />
-              <Text style={[styles.cardTitle, { color: theme.text }]}>Streaks & Freezes</Text>
+              <Hexagon color={ACCENT} size={20} fill={ACCENT} />
+              <Text style={styles.cardTitle}>{t('gamificationGuide.shardsMarketplaceTitle')}</Text>
             </View>
-            <Text style={[styles.cardDesc, { color: theme.textMuted }]}>
-              Complete at least one task every day to keep your streak alive. The fire icon on your dashboard will evolve as your streak grows!
+            <Text style={styles.cardDesc}>
+              {t('gamificationGuide.shardsMarketplaceDesc')}
+            </Text>
+            <View style={styles.xpRow}>
+              <View style={styles.xpBullet}><View style={[styles.dot, { backgroundColor: FAINT }]} /><Text style={styles.xpLabel}>{t('gamificationGuide.commonStoneLabel')}</Text></View>
+              <Text style={styles.xpAmount}>10–35</Text>
+            </View>
+            <View style={styles.xpRow}>
+              <View style={styles.xpBullet}><View style={[styles.dot, { backgroundColor: '#FFFFFF' }]} /><Text style={styles.xpLabel}>{t('gamificationGuide.epicStoneLabel')}</Text></View>
+              <Text style={styles.xpAmount}>400–850</Text>
+            </View>
+            <View style={[styles.xpRow, { borderBottomWidth: 0 }]}>
+              <View style={styles.xpBullet}><View style={[styles.dot, { backgroundColor: ACCENT }]} /><Text style={styles.xpLabel}>{t('gamificationGuide.mythicStoneLabel')}</Text></View>
+              <Text style={styles.xpAmount}>2.8k–10k</Text>
+            </View>
+          </View>
+
+          {/* Streaks & Freezes */}
+          <View style={styles.card}>
+            <View style={styles.cardHeader}>
+              <Flame color={ACCENT} size={20} />
+              <Text style={styles.cardTitle}>{t('gamificationGuide.streaksFreezesTitle')}</Text>
+            </View>
+            <Text style={styles.cardDesc}>
+              {t('gamificationGuide.streaksFreezesDesc')}
             </Text>
             <View style={styles.freezeBox}>
-               <Text style={{ color: '#0EA5E9', fontWeight: 'bold', marginBottom: 4, fontSize: 16 }}>❄️ Streak Freeze (500 XP)</Text>
-               <Text style={{ color: theme.textMuted, fontSize: 14, lineHeight: 20 }}>
-                 If you miss a day, the system will automatically consume 500 XP per missed day to save your streak from resetting.
-               </Text>
+              <Text style={styles.freezeTitle}>
+                {t('gamificationGuide.streakFreezeSafeTitle', { defaultValue: 'Streak Freeze · Up to 500 XP' })}
+              </Text>
+              <Text style={styles.freezeDesc}>
+                {t('gamificationGuide.streakFreezeSafeDesc', {
+                  defaultValue: 'When enabled, protection spends only XP earned in your current level. Your level and unlocked stones are never reduced.',
+                })}
+              </Text>
             </View>
           </View>
 
-          {/* Section: Leveling Curve */}
-          <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.border, marginBottom: 40 }]}>
+          {/* Level Progression */}
+          <View style={[styles.card, { marginBottom: 40 }]}>
             <View style={styles.cardHeader}>
-              <Award color="#A855F7" size={24} />
-              <Text style={[styles.cardTitle, { color: theme.text }]}>Level Progression</Text>
+              <Award color={ACCENT} size={20} />
+              <Text style={styles.cardTitle}>{t('gamificationGuide.levelProgressionTitle')}</Text>
             </View>
-            <Text style={[styles.cardDesc, { color: theme.textMuted }]}>
-              Leveling up gets progressively harder. Can you reach the legendary Level 30?
-            </Text>
+            <Text style={styles.cardDesc}>{t('gamificationGuide.levelProgressionDesc')}</Text>
             <View style={styles.levelTable}>
-              <View style={styles.levelRow}><Text style={styles.levelCol}>Level 1</Text><Text style={styles.xpCol}>0 XP</Text></View>
-              <View style={styles.levelRow}><Text style={styles.levelCol}>Level 2</Text><Text style={styles.xpCol}>200 XP</Text></View>
-              <View style={styles.levelRow}><Text style={styles.levelCol}>Level 3</Text><Text style={styles.xpCol}>500 XP</Text></View>
-              <View style={styles.levelRow}><Text style={styles.levelCol}>Level 4</Text><Text style={styles.xpCol}>900 XP</Text></View>
-              <View style={styles.levelRow}><Text style={styles.levelCol}>Level 5</Text><Text style={styles.xpCol}>1,400 XP</Text></View>
-              <View style={styles.levelRow}><Text style={styles.levelCol}>Level 10</Text><Text style={styles.xpCol}>5,400 XP</Text></View>
-              <View style={styles.levelRow}><Text style={styles.levelCol}>Level 20</Text><Text style={styles.xpCol}>20,900 XP</Text></View>
-              <View style={[styles.levelRow, { borderBottomWidth: 0 }]}><Text style={[styles.levelCol, { color: '#A855F7', fontWeight: 'bold' }]}>Level 30</Text><Text style={[styles.xpCol, { color: '#A855F7', fontWeight: 'bold' }]}>46,400 XP</Text></View>
+              {[
+                [t('gamificationGuide.level1'), t('gamificationGuide.xp0')],
+                [t('gamificationGuide.level2'), t('gamificationGuide.xp200')],
+                [t('gamificationGuide.level3'), t('gamificationGuide.xp500')],
+                [t('gamificationGuide.level4'), t('gamificationGuide.xp900')],
+                [t('gamificationGuide.level5'), t('gamificationGuide.xp1400')],
+                [t('gamificationGuide.level10'), t('gamificationGuide.xp5400')],
+                [t('gamificationGuide.level20'), t('gamificationGuide.xp20900')],
+              ].map(([lvl, xp]) => (
+                <View style={styles.levelRow} key={lvl}>
+                  <Text style={styles.levelCol}>{lvl}</Text>
+                  <Text style={styles.xpCol}>{xp}</Text>
+                </View>
+              ))}
+              <View style={[styles.levelRow, { borderBottomWidth: 0 }]}>
+                <Text style={[styles.levelCol, { color: ACCENT, fontWeight: '800' }]}>{t('gamificationGuide.level30')}</Text>
+                <Text style={[styles.xpCol, { color: ACCENT, fontWeight: '800' }]}>{t('gamificationGuide.xp46400')}</Text>
+              </View>
             </View>
           </View>
-
         </ScrollView>
       </View>
 
-      <StoneCollectionModal 
-        isVisible={isStoneModalOpen} 
-        onClose={() => setIsStoneModalOpen(false)} 
-        currentLevel={gamestate?.level || 1} 
+      <StoneCollectionModal
+        isVisible={isStoneModalOpen}
+        onClose={() => setIsStoneModalOpen(false)}
+        currentLevel={gamestate?.level || 1}
       />
     </Modal>
   );
 };
 
-const styles = StyleSheet.create({
+const makeStyles = (ACCENT) => StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: BG,
   },
   header: {
     flexDirection: 'row',
@@ -134,44 +171,75 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingVertical: 16,
     borderBottomWidth: 1,
-    borderBottomColor: '#222',
+    borderBottomColor: BORDER,
   },
   headerTitle: {
-    fontSize: 22,
+    fontSize: 16,
     fontWeight: '800',
-    letterSpacing: -0.5,
+    letterSpacing: 2,
+    color: TEXT,
   },
   closeButton: {
     padding: 4,
   },
   scroll: {
-    padding: 24,
+    flex: 1,
   },
   introText: {
-    fontSize: 16,
-    lineHeight: 24,
+    fontSize: 15,
+    lineHeight: 23,
     marginBottom: 24,
+    color: MUTED,
+  },
+  stoneCatalogBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: ACCENT,
+    backgroundColor: ACCENT + '1A',
+    padding: 18,
+    marginBottom: 24,
+  },
+  stoneBtnTitle: {
+    color: TEXT,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  stoneBtnSub: {
+    color: ACCENT,
+    fontSize: 13,
+    marginTop: 3,
+  },
+  chevron: {
+    color: ACCENT,
+    fontSize: 26,
+    fontWeight: '300',
   },
   card: {
     borderRadius: 16,
     borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: SURFACE,
     padding: 20,
-    marginBottom: 20,
+    marginBottom: 16,
   },
   cardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 12,
-    gap: 12,
+    gap: 10,
   },
   cardTitle: {
-    fontSize: 20,
+    fontSize: 17,
     fontWeight: '700',
+    color: TEXT,
   },
   cardDesc: {
-    fontSize: 15,
-    lineHeight: 22,
-    marginBottom: 20,
+    fontSize: 14,
+    lineHeight: 21,
+    marginBottom: 16,
+    color: MUTED,
   },
   xpRow: {
     flexDirection: 'row',
@@ -179,7 +247,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#333',
+    borderBottomColor: BORDER,
   },
   xpBullet: {
     flexDirection: 'row',
@@ -187,51 +255,57 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   dot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  xpLabel: {
+    color: TEXT,
+    fontSize: 15,
   },
   xpAmount: {
-    color: '#10B981',
-    fontWeight: 'bold',
-    fontSize: 16,
+    color: TEXT,
+    fontWeight: '800',
+    fontSize: 15,
   },
   freezeBox: {
-    backgroundColor: 'rgba(14, 165, 233, 0.1)',
+    backgroundColor: SURFACE_2,
     padding: 16,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: 'rgba(14, 165, 233, 0.3)',
+    borderColor: BORDER,
+  },
+  freezeTitle: {
+    color: ACCENT,
+    fontWeight: '700',
+    marginBottom: 6,
+    fontSize: 15,
+  },
+  freezeDesc: {
+    color: MUTED,
+    fontSize: 13,
+    lineHeight: 20,
   },
   levelTable: {
-    backgroundColor: '#111',
+    backgroundColor: SURFACE_2,
     borderRadius: 12,
     overflow: 'hidden',
   },
   levelRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    padding: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
     borderBottomWidth: 1,
-    borderBottomColor: '#222',
+    borderBottomColor: BORDER,
   },
   levelCol: {
-    color: '#fff',
-    fontSize: 16,
+    color: TEXT,
+    fontSize: 15,
     fontWeight: '500',
   },
   xpCol: {
-    color: '#aaa',
-    fontSize: 16,
+    color: MUTED,
+    fontSize: 15,
   },
-  stoneCatalogBtn: {
-    borderRadius: 16,
-    borderWidth: 1,
-    padding: 20,
-    marginBottom: 24,
-  },
-  stoneBtnContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  }
 });

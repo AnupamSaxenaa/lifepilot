@@ -11,16 +11,17 @@ import {
     Trash2
 } from 'lucide-react-native';
 import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
     ActivityIndicator,
+    Alert,
     ScrollView,
     StyleSheet,
     Text,
     TextInput,
     TouchableOpacity,
     useColorScheme,
-    View,
-    Alert
+    View
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { GlassSidebar } from '../components/GlassSidebar';
@@ -32,6 +33,7 @@ import { Storage } from '../utils/storage';
 const THEME_COLOR = '#FFFFFF';
 
 export const HistoryScreen = ({ navigation }) => {
+  const { t } = useTranslation();
   const colorScheme = useColorScheme();
   const insets = useSafeAreaInsets();
 
@@ -90,9 +92,9 @@ export const HistoryScreen = ({ navigation }) => {
   };
 
   const handleClearHistory = () => {
-    Alert.alert('Clear History', 'Are you sure you want to permanently delete all your completed tasks?', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: async () => {
+    Alert.alert(t('history.clearHistoryTitle'), t('history.clearHistoryMessage'), [
+      { text: t('common.cancel'), style: 'cancel' },
+      { text: t('history.deleteButton'), style: 'destructive', onPress: async () => {
         setTasks(prev => prev.filter(t => !t.is_completed));
         const latestTasks = await Storage.get(`tasks_${userId}`) || [];
         const uncompleted = latestTasks.filter(t => !t.is_completed);
@@ -134,11 +136,11 @@ export const HistoryScreen = ({ navigation }) => {
     const thisMonth = new Date(today.getFullYear(), today.getMonth(), 1);
 
     const groups = {
-      today: { title: 'Today', data: [] },
-      yesterday: { title: 'Yesterday', data: [] },
-      lastWeek: { title: 'Previous 7 Days', data: [] },
-      thisMonth: { title: 'This Month', data: [] },
-      older: { title: 'Older', data: [] }
+      today: { title: t('history.groupToday'), data: [] },
+      yesterday: { title: t('history.groupYesterday'), data: [] },
+      lastWeek: { title: t('history.groupLastWeek'), data: [] },
+      thisMonth: { title: t('history.groupThisMonth'), data: [] },
+      older: { title: t('history.groupOlder'), data: [] }
     };
 
     completed.forEach(task => {
@@ -165,7 +167,7 @@ export const HistoryScreen = ({ navigation }) => {
       groups.thisMonth,
       groups.older
     ].filter(g => g.data.length > 0);
-  }, [tasks, searchQuery]);
+  }, [tasks, searchQuery, t]);
 
   const renderTask = (task) => {
     const hasSubtasks = task.subtasks && task.subtasks.length > 0;
@@ -179,7 +181,7 @@ export const HistoryScreen = ({ navigation }) => {
           onPress={() => handleRestoreTask(task)}
           activeOpacity={0.6}
         >
-          <CheckCircle2 color="#10B981" size={24} />
+          <CheckCircle2 color="#34D399" size={24} />
           <View style={styles.restoreIconContainer}>
             <RotateCcw color="#000" size={12} />
           </View>
@@ -200,8 +202,8 @@ export const HistoryScreen = ({ navigation }) => {
             )}
             {task.due_date && (
               <View style={styles.metaPill}>
-                <Calendar size={12} color={isOverdue ? '#EF4444' : '#888'} />
-                <Text style={[styles.metaText, isOverdue && { color: '#EF4444' }]}>
+                <Calendar size={12} color={isOverdue ? '#FB7185' : '#888'} />
+                <Text style={[styles.metaText, isOverdue && { color: '#FB7185' }]}>
                   {new Date(task.due_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                 </Text>
               </View>
@@ -239,9 +241,9 @@ export const HistoryScreen = ({ navigation }) => {
           <TouchableOpacity onPress={() => setIsSidebarOpen(true)} style={styles.iconBtn}>
             <Menu color={THEME_COLOR} size={26} />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>History</Text>
+          <Text style={styles.headerTitle}>{t('history.headerTitle')}</Text>
           <TouchableOpacity onPress={handleClearHistory} style={styles.iconBtn}>
-            <Trash2 color="#EF4444" size={24} />
+            <Trash2 color="#FB7185" size={24} />
           </TouchableOpacity>
         </View>
 
@@ -251,7 +253,7 @@ export const HistoryScreen = ({ navigation }) => {
             <Search color="#666" size={20} />
             <TextInput 
               style={styles.searchInput}
-              placeholder="Search history..."
+              placeholder={t('history.searchPlaceholder')}
               placeholderTextColor="#666"
               value={searchQuery}
               onChangeText={setSearchQuery}
@@ -268,7 +270,7 @@ export const HistoryScreen = ({ navigation }) => {
           <View style={styles.centerContainer}>
             <History color="#333" size={64} style={{ marginBottom: 16 }} />
             <Text style={styles.emptyText}>
-              {searchQuery ? "No matching history found." : "Your history is empty."}
+              {searchQuery ? t('history.emptyNoMatch') : t('history.emptyNoHistory')}
             </Text>
           </View>
         ) : (
@@ -391,7 +393,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     bottom: -4,
     right: -4,
-    backgroundColor: '#10B981',
+    backgroundColor: '#34D399',
     borderRadius: 10,
     width: 16,
     height: 16,

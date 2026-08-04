@@ -2,13 +2,15 @@ import notifee from '@notifee/react-native';
 import * as Calendar from 'expo-calendar';
 import * as IntentLauncher from 'expo-intent-launcher';
 import { ExpoSpeechRecognitionModule } from 'expo-speech-recognition';
-import { ArrowLeft, Bell, Calendar as CalendarIcon, CheckCircle2, Mic, Settings, XCircle, Shield } from 'lucide-react-native';
+import { ArrowLeft, Bell, Calendar as CalendarIcon, CheckCircle2, Mic, Settings, Shield, XCircle } from 'lucide-react-native';
 import { useEffect, useState } from 'react';
-import { Alert, AppState, Linking, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View, NativeModules } from 'react-native';
-const { AppBlocker } = NativeModules;
+import { useTranslation } from 'react-i18next';
+import { Alert, AppState, Linking, NativeModules, PermissionsAndroid, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+const { AppBlocker } = NativeModules;
 
 const PermissionItem = ({ title, description, icon: Icon, isGranted, onRequest, isAndroidOnly }) => {
+  const { t } = useTranslation();
   if (isAndroidOnly && Platform.OS !== 'android') return null;
 
   return (
@@ -17,11 +19,11 @@ const PermissionItem = ({ title, description, icon: Icon, isGranted, onRequest, 
       onPress={() => {
         if (isGranted) {
           Alert.alert(
-            'Already Granted',
-            'This permission is already granted. You can manage it in your device settings.',
+            t('permissions.alreadyGrantedTitle'),
+            t('permissions.alreadyGrantedMessage'),
             [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Open Settings', onPress: () => Linking.openSettings() }
+              { text: t('common.cancel'), style: 'cancel' },
+              { text: t('permissions.openSettings'), onPress: () => Linking.openSettings() }
             ]
           );
         } else {
@@ -32,7 +34,7 @@ const PermissionItem = ({ title, description, icon: Icon, isGranted, onRequest, 
     >
       <View style={styles.permissionLeft}>
         <View style={[styles.iconCircle, isGranted && styles.iconCircleGranted]}>
-          <Icon color={isGranted ? '#fff' : '#A855F7'} size={20} />
+          <Icon color={isGranted ? '#fff' : '#FFFFFF'} size={20} />
         </View>
         <View style={styles.permissionText}>
           <Text style={styles.permissionTitle}>{title}</Text>
@@ -42,7 +44,7 @@ const PermissionItem = ({ title, description, icon: Icon, isGranted, onRequest, 
       
       <View style={styles.permissionRight}>
         {isGranted ? (
-          <CheckCircle2 color="#22c55e" size={24} />
+          <CheckCircle2 color="#E5E7EB" size={24} />
         ) : (
           <XCircle color="#444" size={24} />
         )}
@@ -51,6 +53,7 @@ const PermissionItem = ({ title, description, icon: Icon, isGranted, onRequest, 
   );
 };
 export const PermissionsScreen = ({ navigation }) => {
+  const { t } = useTranslation();
   const [permissions, setPermissions] = useState({
     notifications: false,
     calendar: false,
@@ -135,15 +138,15 @@ export const PermissionsScreen = ({ navigation }) => {
       console.log('[Permissions] Notification result:', result);
       
       if (result.authorizationStatus === 1) {
-        Alert.alert('Success', 'Notifications enabled!');
+        Alert.alert(t('common.success'), t('permissions.notificationsEnabled'));
       } else {
         // OS didn't show dialog — open settings directly
         Alert.alert(
-          'Permission Required',
-          'Please enable Notifications for LifePilot in Settings.',
+          t('permissions.permissionRequiredTitle'),
+          t('permissions.enableNotificationsMessage'),
           [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Open Settings', onPress: () => Linking.openSettings() }
+            { text: t('common.cancel'), style: 'cancel' },
+            { text: t('permissions.openSettings'), onPress: () => Linking.openSettings() }
           ]
         );
       }
@@ -151,11 +154,10 @@ export const PermissionsScreen = ({ navigation }) => {
     } catch (error) {
       console.error('[Permissions] Notification error:', error);
       Alert.alert(
-        'Permission Required',
-        'Could not request permission directly. Please enable it in Settings.',
+        t('permissions.permissionRequiredTitle'),
+        t('permissions.requestPermissionErrorMessage'),
         [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Open Settings', onPress: () => Linking.openSettings() }
+          { text: t('permissions.openSettings'), onPress: () => Linking.openSettings() }
         ]
       );
     }
@@ -165,35 +167,32 @@ export const PermissionsScreen = ({ navigation }) => {
     try {
       console.log('[Permissions] Requesting calendar permission...');
       let granted = false;
-      
+
       if (Platform.OS === 'android') {
-        const { PermissionsAndroid } = require('react-native');
-        const perm = PermissionsAndroid.PERMISSIONS.READ_CALENDAR;
-        let status = await PermissionsAndroid.check(perm);
-        if (!status) {
-          const req = await PermissionsAndroid.request(perm);
-          status = req === PermissionsAndroid.RESULTS.GRANTED;
-        }
-        granted = status;
+        // expo-calendar v56 only reports "granted" when BOTH READ and WRITE
+        // calendar permissions are granted, so request them together.
+        const res = await PermissionsAndroid.requestMultiple([
+          PermissionsAndroid.PERMISSIONS.READ_CALENDAR,
+          PermissionsAndroid.PERMISSIONS.WRITE_CALENDAR,
+        ]);
+        granted =
+          res[PermissionsAndroid.PERMISSIONS.READ_CALENDAR] === PermissionsAndroid.RESULTS.GRANTED &&
+          res[PermissionsAndroid.PERMISSIONS.WRITE_CALENDAR] === PermissionsAndroid.RESULTS.GRANTED;
       } else {
-        let result = await Calendar.getCalendarPermissionsAsync();
-        if (result.status !== 'granted') {
-          result = await Calendar.requestCalendarPermissionsAsync();
-        }
-        granted = result.status === 'granted';
+        const { status } = await Calendar.requestCalendarPermissions();
+        granted = status === 'granted';
       }
-      
+
       console.log('[Permissions] Calendar result:', granted);
-      
       if (granted) {
-        Alert.alert('Success', 'Calendar access granted!');
+        Alert.alert(t('common.success'), t('permissions.calendarGranted'));
       } else {
         Alert.alert(
-          'Permission Required',
-          'Please enable Calendar access for LifePilot in Settings.',
+          t('permissions.permissionRequiredTitle'),
+          t('permissions.enableCalendarMessage'),
           [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Open Settings', onPress: () => Linking.openSettings() }
+            { text: t('common.cancel'), style: 'cancel' },
+            { text: t('permissions.openSettings'), onPress: () => Linking.openSettings() }
           ]
         );
       }
@@ -201,11 +200,11 @@ export const PermissionsScreen = ({ navigation }) => {
     } catch (error) {
       console.error('[Permissions] Calendar error:', error);
       Alert.alert(
-        'Permission Required',
-        'Could not request permission directly. Please enable it in Settings.',
+        t('permissions.permissionRequiredTitle'),
+        t('permissions.requestPermissionErrorMessage'),
         [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Open Settings', onPress: () => Linking.openSettings() }
+          { text: t('common.cancel'), style: 'cancel' },
+          { text: t('permissions.openSettings'), onPress: () => Linking.openSettings() }
         ]
       );
     }
@@ -218,14 +217,14 @@ export const PermissionsScreen = ({ navigation }) => {
       console.log('[Permissions] Mic result:', result);
       
       if (result.granted) {
-        Alert.alert('Success', 'Microphone access granted!');
+        Alert.alert(t('common.success'), t('permissions.microphoneGranted'));
       } else {
         Alert.alert(
-          'Permission Required',
-          'Please enable Microphone access for LifePilot in Settings.',
+          t('permissions.permissionRequiredTitle'),
+          t('permissions.enableMicrophoneMessage'),
           [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Open Settings', onPress: () => Linking.openSettings() }
+            { text: t('common.cancel'), style: 'cancel' },
+            { text: t('permissions.openSettings'), onPress: () => Linking.openSettings() }
           ]
         );
       }
@@ -233,11 +232,11 @@ export const PermissionsScreen = ({ navigation }) => {
     } catch (error) {
       console.error('[Permissions] Microphone error:', error);
       Alert.alert(
-        'Permission Required',
-        'Could not request permission directly. Please enable it in Settings.',
+        t('permissions.permissionRequiredTitle'),
+        t('permissions.requestPermissionErrorMessage'),
         [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Open Settings', onPress: () => Linking.openSettings() }
+          { text: t('common.cancel'), style: 'cancel' },
+          { text: t('permissions.openSettings'), onPress: () => Linking.openSettings() }
         ]
       );
     }
@@ -250,7 +249,7 @@ export const PermissionsScreen = ({ navigation }) => {
         await IntentLauncher.startActivityAsync(IntentLauncher.ActivityAction.MANAGE_APP_USE_FULL_SCREEN_INTENT);
       } catch (e) {
         console.error('[Permissions] Full screen intent error:', e);
-        Alert.alert('Error', 'Could not open system settings');
+        Alert.alert(t('common.error'), t('permissions.openSystemSettingsError'));
       }
     }
   };
@@ -261,15 +260,15 @@ export const PermissionsScreen = ({ navigation }) => {
         const isEnabled = await AppBlocker.isAccessibilityServiceEnabled();
         if (!isEnabled) {
           Alert.alert(
-            'Action Required',
-            'Please enable the Accessibility Service for LifePilot in Settings.',
+            t('permissions.actionRequiredTitle'),
+            t('permissions.enableAccessibilityMessage'),
             [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Open Settings', onPress: () => AppBlocker.openAccessibilitySettings() }
+              { text: t('common.cancel'), style: 'cancel' },
+              { text: t('permissions.openSettings'), onPress: () => AppBlocker.openAccessibilitySettings() }
             ]
           );
         } else {
-          Alert.alert('Success', 'Accessibility Service is already enabled!');
+          Alert.alert(t('common.success'), t('permissions.accessibilityAlreadyEnabled'));
         }
       } catch (e) {
         console.error('[Permissions] Accessibility error:', e);
@@ -284,48 +283,48 @@ export const PermissionsScreen = ({ navigation }) => {
         <TouchableOpacity style={styles.backButton} onPress={() => navigation.replace('Dashboard')}>
           <ArrowLeft color="#fff" size={24} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>App Permissions</Text>
+        <Text style={styles.headerTitle}>{t('permissions.headerTitle')}</Text>
         <View style={{ width: 24 }} />
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         {/* Header Section */}
         <View style={styles.headerSection}>
-          <Text style={styles.title}>PERMISSIONS</Text>
+          <Text style={styles.title}>{t('permissions.title')}</Text>
           <Text style={styles.subtitle}>
-            Tap any permission to grant access
+            {t('permissions.subtitle')}
           </Text>
         </View>
 
         {/* Permissions List */}
         <View style={styles.permissionsList}>
           <PermissionItem 
-            title="Notifications"
-            description="Reminders and alarm triggers"
+            title={t('permissions.notificationsTitle')}
+            description={t('permissions.notificationsDesc')}
             icon={Bell}
             isGranted={permissions.notifications}
             onRequest={handleRequestNotification}
           />
 
           <PermissionItem 
-            title="Calendar Sync"
-            description="Import calendar events"
+            title={t('permissions.calendarTitle')}
+            description={t('permissions.calendarDesc')}
             icon={CalendarIcon}
             isGranted={permissions.calendar}
             onRequest={handleRequestCalendar}
           />
 
           <PermissionItem 
-            title="Microphone"
-            description="Voice commands for Aura"
+            title={t('permissions.microphoneTitle')}
+            description={t('permissions.microphoneDesc')}
             icon={Mic}
             isGranted={permissions.microphone}
             onRequest={handleRequestMic}
           />
 
           <PermissionItem 
-            title="Full Screen Alarms"
-            description="Wake screen for alarms"
+            title={t('permissions.fullScreenTitle')}
+            description={t('permissions.fullScreenDesc')}
             icon={Settings}
             isGranted={permissions.fullScreenIntent}
             onRequest={handleRequestFullScreen}
@@ -333,8 +332,8 @@ export const PermissionsScreen = ({ navigation }) => {
           />
 
           <PermissionItem 
-            title="Accessibility Service"
-            description="Required for strict mode app blocking"
+            title={t('permissions.accessibilityTitle')}
+            description={t('permissions.accessibilityDesc')}
             icon={Shield}
             isGranted={permissions.accessibility}
             onRequest={handleRequestAccessibility}
@@ -344,7 +343,7 @@ export const PermissionsScreen = ({ navigation }) => {
         
         {/* Privacy Note */}
         <Text style={styles.privacyNote}>
-          Your data is stored locally and encrypted. We never share your information with third parties.
+          {t('permissions.privacyNote')}
         </Text>
         
         <View style={{ height: 40 }} />
@@ -420,9 +419,9 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: 'rgba(168, 85, 247, 0.1)',
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
     borderWidth: 1,
-    borderColor: 'rgba(168, 85, 247, 0.3)',
+    borderColor: 'rgba(255, 255, 255, 0.3)',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 16,

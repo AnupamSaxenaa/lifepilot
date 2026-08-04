@@ -1,15 +1,18 @@
-import React, { useEffect, useState, useRef } from 'react';
-import { View, Text, StyleSheet, Modal, TouchableOpacity, Dimensions, Animated } from 'react-native';
-import { BlurView } from 'expo-blur';
+import { ArrowRight, Hexagon, Sparkles, X } from 'lucide-react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { Animated, Dimensions, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import ConfettiCannon from 'react-native-confetti-cannon';
-import { X, ArrowRight, Sparkles } from 'lucide-react-native';
-import { StoneIcon } from './StoneIcon';
 import { STONES_CATALOG } from '../config/stonesConfig';
-import { COLORS } from '../theme/theme';
+import { useTheme } from '../context/ThemeContext';
+import { StoneIcon } from './StoneIcon';
 
 const { width, height } = Dimensions.get('window');
 
 export const LevelUpModal = ({ isVisible, oldLevel, newLevel, onClose }) => {
+  const ACCENT = useTheme().theme.accent;
+  const styles = useMemo(() => makeStyles(ACCENT), [ACCENT]);
+  const { t } = useTranslation();
   const [showConfetti, setShowConfetti] = useState(false);
   const scaleAnim = useRef(new Animated.Value(0.8)).current;
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -84,16 +87,16 @@ export const LevelUpModal = ({ isVisible, oldLevel, newLevel, onClose }) => {
 
           <View style={styles.header}>
             <Sparkles color="#a1a1aa" size={20} />
-            <Text style={styles.title}>LEVEL UP</Text>
+            <Text style={styles.title}>{t('levelUp.title')}</Text>
             <Sparkles color="#a1a1aa" size={20} />
           </View>
 
           <View style={styles.levelTransition}>
-            <Text style={styles.oldLevelText}>Lvl {oldLevel}</Text>
+            <Text style={styles.oldLevelText}>{t('levelUp.levelLabel', { level: oldLevel })}</Text>
             <View style={styles.arrowContainer}>
               <ArrowRight color="#71717a" size={18} />
             </View>
-            <Text style={styles.newLevelText}>Lvl {newLevel}</Text>
+            <Text style={styles.newLevelText}>{t('levelUp.levelLabel', { level: newLevel })}</Text>
           </View>
 
           <View style={styles.stoneContainer}>
@@ -101,7 +104,7 @@ export const LevelUpModal = ({ isVisible, oldLevel, newLevel, onClose }) => {
             <StoneIcon imageSource={stone.image} size={140} isLocked={false} />
           </View>
 
-          <Text style={styles.unlockedText}>New Stone Unlocked</Text>
+          <Text style={styles.unlockedText}>{t('levelUp.newStoneUnlocked')}</Text>
           <Text style={[styles.stoneName, { color: stone.rarity.colors[0] }]}>{stone.name}</Text>
           
           <View style={[styles.rarityBadge, { backgroundColor: '#18181b', borderColor: stone.rarity.colors[2] }]}>
@@ -110,9 +113,18 @@ export const LevelUpModal = ({ isVisible, oldLevel, newLevel, onClose }) => {
             </Text>
           </View>
 
+          {/* Shard reward for unlocking this stone */}
+          {stone.shards ? (
+            <View style={styles.shardReward}>
+              <Hexagon color={ACCENT} size={16} fill={ACCENT} />
+              <Text style={styles.shardRewardText}>{t('levelUp.shardReward', { shards: stone.shards.toLocaleString() })}</Text>
+            </View>
+          ) : null}
+          <Text style={styles.shardHint}>{t('levelUp.shardHint')}</Text>
+
           <TouchableOpacity onPress={handleClose} activeOpacity={0.8} style={{ width: '100%' }}>
             <View style={styles.continueBtn}>
-              <Text style={styles.continueText}>Continue</Text>
+              <Text style={styles.continueText}>{t('levelUp.continueButton')}</Text>
             </View>
           </TouchableOpacity>
         </Animated.View>
@@ -121,7 +133,7 @@ export const LevelUpModal = ({ isVisible, oldLevel, newLevel, onClose }) => {
   );
 };
 
-const styles = StyleSheet.create({
+const makeStyles = (ACCENT) => StyleSheet.create({
   backdrop: {
     flex: 1,
     justifyContent: 'center',
@@ -220,8 +232,34 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 6,
     borderRadius: 8,
-    marginBottom: 35,
+    marginBottom: 18,
     borderWidth: 1,
+  },
+  shardReward: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    backgroundColor: ACCENT + '1F',
+    borderWidth: 1,
+    borderColor: ACCENT + '59',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 12,
+    marginBottom: 10,
+  },
+  shardRewardText: {
+    color: '#FAFAFA',
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  shardHint: {
+    color: '#52525b',
+    fontSize: 11,
+    textAlign: 'center',
+    marginBottom: 28,
+    paddingHorizontal: 20,
+    lineHeight: 16,
   },
   rarityText: {
     fontSize: 12,

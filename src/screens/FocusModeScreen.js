@@ -5,9 +5,11 @@ import * as Brightness from 'expo-brightness';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { StatusBar } from 'expo-status-bar';
 import { Brain, Clock, Coffee, Gamepad2, Info, Moon, Music, Pause, Pizza, Play, Save, Sun, X, Zap } from 'lucide-react-native';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Alert, Animated, BackHandler, Easing, KeyboardAvoidingView, Modal, Platform, StyleSheet, Text, TextInput, TouchableOpacity, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useTheme } from '../context/ThemeContext';
 import { getCoachAdvice } from '../lib/AIEngine';
 import { addTask, cacheTasks } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
@@ -15,9 +17,12 @@ import { syncToSupabase } from '../lib/syncQueue';
 import { Storage } from '../utils/storage';
 
 export default function FocusModeScreen() {
+  const { t } = useTranslation();
   const { width, height } = useWindowDimensions();
   const isLandscape = width > height;
   const insets = useSafeAreaInsets();
+  const ACCENT = useTheme().theme.accent;
+  const styles = useMemo(() => makeStyles(ACCENT), [ACCENT]);
   const navigation = useNavigation();
   const route = useRoute();
   
@@ -58,7 +63,7 @@ export default function FocusModeScreen() {
 
   // AI Tough Love State
   const [showQuitModal, setShowQuitModal] = useState(false);
-  const [toughLoveMessage, setToughLoveMessage] = useState("Great things never came from comfort zones. Get back to work!");
+  const [toughLoveMessage, setToughLoveMessage] = useState(t('focusMode.defaultToughLoveMessage'));
 
   // AI Flow Coach State
   const [isCoaching, setIsCoaching] = useState(true);
@@ -230,12 +235,12 @@ export default function FocusModeScreen() {
 
   const handleTimerComplete = () => {
     Alert.alert(
-      "Focus Session Complete! 🎉",
-      "Did you finish the task?",
+      t('focusMode.sessionCompleteTitle'),
+      t('focusMode.sessionCompleteMessage'),
       [
-        { text: "No, need a break", onPress: () => startBreak(5 * 60) },
-        { text: "No, but I'm done", style: "cancel", onPress: () => navigation.goBack() },
-        { text: "Yes, I finished it! 🏆", onPress: () => completeTaskAndExit() }
+        { text: t('focusMode.needBreakButton'), onPress: () => startBreak(5 * 60) },
+        { text: t('focusMode.notDoneButton'), style: "cancel", onPress: () => navigation.goBack() },
+        { text: t('focusMode.finishedButton'), onPress: () => completeTaskAndExit() }
       ]
     );
   };
@@ -258,7 +263,7 @@ export default function FocusModeScreen() {
           if (!ourTask) {
             console.error('[FocusMode] Task not found in latest data:', task.id);
             // Task might have been deleted while in focus mode
-            Alert.alert('Task Not Found', 'This task may have been deleted. Returning to previous screen.');
+            Alert.alert(t('focusMode.taskNotFoundTitle'), t('focusMode.taskNotFoundMessage'));
             navigation.goBack();
             return;
           }
@@ -293,7 +298,7 @@ export default function FocusModeScreen() {
         }
       } catch (err) {
         console.error('[FocusMode] Error completing task:', err);
-        Alert.alert('Error', 'Failed to complete task. Please try again.');
+        Alert.alert(t('focusMode.errorTitle'), t('focusMode.errorCompletingTask'));
         return;
       }
     }
@@ -388,9 +393,9 @@ export default function FocusModeScreen() {
   if (isCoaching) {
     return (
       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
-        <Brain color="#A855F7" size={64} style={{ marginBottom: 20 }} />
-        <Text style={styles.coachTitle}>Aura is analyzing your task...</Text>
-        <Text style={styles.coachSub}>Designing the perfect focus interval</Text>
+        <Brain color={ACCENT} size={64} style={{ marginBottom: 20 }} />
+        <Text style={styles.coachTitle}>{t('focusMode.coachAnalyzing')}</Text>
+        <Text style={styles.coachSub}>{t('focusMode.coachSubtitle')}</Text>
       </View>
     );
   }
@@ -403,11 +408,11 @@ export default function FocusModeScreen() {
         <TouchableOpacity style={styles.iconBtn} onPress={attemptQuit}>
           <X color="#fff" size={24} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>{isBreak ? "Break Time" : "Deep Focus"}</Text>
+        <Text style={styles.headerTitle}>{isBreak ? t('focusMode.breakTime') : t('focusMode.deepFocus')}</Text>
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
           {isLandscape && (
             <TouchableOpacity style={[styles.iconBtn, { marginRight: 12 }]} onPress={() => setShowBrainDump(true)}>
-              <Info color="#fff" size={24} />
+              <Info color="#60A5FA" size={24} />
             </TouchableOpacity>
           )}
           <TouchableOpacity style={styles.iconBtn} onPress={() => setShowBrightnessModal(true)}>
@@ -423,8 +428,8 @@ export default function FocusModeScreen() {
         {/* Left Side: Progress Bar (Landscape only) */}
         {isLandscape && (timeSpentWork > 0 || timeSpentBreak > 0) ? (
           <View style={{ width: 8, height: '70%', backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 4, overflow: 'hidden' }}>
-            {timeSpentWork > 0 && <View style={{ flex: timeSpentWork, backgroundColor: '#A855F7' }} />}
-            {timeSpentBreak > 0 && <View style={{ flex: timeSpentBreak, backgroundColor: '#10B981' }} />}
+            {timeSpentWork > 0 && <View style={{ flex: timeSpentWork, backgroundColor: ACCENT }} />}
+            {timeSpentBreak > 0 && <View style={{ flex: timeSpentBreak, backgroundColor: '#34D399' }} />}
           </View>
         ) : (
           isLandscape && <View style={{ width: 8 }} />
@@ -434,17 +439,17 @@ export default function FocusModeScreen() {
         <View style={isLandscape ? { flex: 1, alignItems: 'center', justifyContent: 'center' } : { alignItems: 'center' }}>
           {!isLandscape && coachAdvice ? (
             <View style={styles.adviceBadge}>
-              <Zap color="#A855F7" size={16} style={{ marginRight: 8, marginTop: 2 }} />
+              <Zap color={ACCENT} size={16} style={{ marginRight: 8, marginTop: 2 }} />
               <Text style={styles.adviceText}>{coachAdvice}</Text>
             </View>
           ) : null}
           
           <Animated.View style={[styles.ringContainer, { transform: [{ scale: pulseAnim }] }, isLandscape && { width: 280, height: 280 }]}>
-            <View style={[styles.ringOuter, { borderColor: isBreak ? '#10B981' : '#A855F7' }, isLandscape && { width: 280, height: 280, borderRadius: 140, borderWidth: 6 }]}>
+            <View style={[styles.ringOuter, { borderColor: isBreak ? '#34D399' : ACCENT }, isLandscape && { width: 280, height: 280, borderRadius: 140, borderWidth: 6 }]}>
               <View style={[styles.ringInner, isLandscape && { width: 250, height: 250, borderRadius: 125 }]}>
                 <TouchableOpacity onPress={() => setShowTimeModal(true)} style={{ alignItems: 'center' }}>
                   <Text style={[styles.timeText, isLandscape && { fontSize: 64 }]}>{formatTime(secondsLeft)}</Text>
-                  <Text style={[styles.taskTitle, isLandscape && { fontSize: 16 }]} numberOfLines={2}>{task?.title || "Custom Focus Session"}</Text>
+                  <Text style={[styles.taskTitle, isLandscape && { fontSize: 16 }]} numberOfLines={2}>{task?.title || t('focusMode.customFocusSession')}</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -467,8 +472,8 @@ export default function FocusModeScreen() {
             {/* Center Action: Play/Pause */}
             <TouchableOpacity 
               style={[styles.playBtn, isLandscape && { marginHorizontal: 0, width: 80, height: 80, borderRadius: 40 }, { 
-                backgroundColor: isRunning ? (isBreak ? '#064E3B' : '#3B0764') : (isBreak ? '#10B981' : '#A855F7'),
-                shadowColor: isBreak ? '#10B981' : '#A855F7'
+                backgroundColor: isRunning ? (isBreak ? '#064E3B' : ACCENT + '55') : (isBreak ? '#34D399' : ACCENT),
+                shadowColor: isBreak ? '#34D399' : ACCENT
               }]} 
               onPress={toggleTimer}
             >
@@ -487,10 +492,10 @@ export default function FocusModeScreen() {
               </Animated.View>
             ) : (
               <TouchableOpacity 
-                style={[styles.secondaryBtn, { borderColor: '#EF4444', backgroundColor: 'rgba(239, 68, 68, 0.1)' }]}
+                style={[styles.secondaryBtn, { borderColor: '#A1A1AA', backgroundColor: 'rgba(161, 161, 170, 0.1)' }]}
                 onPress={endBreak}
               >
-                <X color="#EF4444" size={24} />
+                <X color="#A1A1AA" size={24} />
               </TouchableOpacity>
             )}
           </View>
@@ -510,8 +515,8 @@ export default function FocusModeScreen() {
           </View>
           {showStats && (
             <View style={styles.statsDetails}>
-              <Text style={styles.statTextWork}>Work: {Math.floor(timeSpentWork / 60)}m {timeSpentWork % 60}s</Text>
-              <Text style={styles.statTextBreak}>Break: {Math.floor(timeSpentBreak / 60)}m {timeSpentBreak % 60}s</Text>
+              <Text style={styles.statTextWork}>{t('focusMode.statWork', { minutes: Math.floor(timeSpentWork / 60), seconds: timeSpentWork % 60 })}</Text>
+              <Text style={styles.statTextBreak}>{t('focusMode.statBreak', { minutes: Math.floor(timeSpentBreak / 60), seconds: timeSpentBreak % 60 })}</Text>
             </View>
           )}
         </TouchableOpacity>
@@ -521,8 +526,8 @@ export default function FocusModeScreen() {
       {!isLandscape && (
         <View style={styles.bottomBar}>
           <TouchableOpacity style={styles.brainDumpBtn} onPress={() => setShowBrainDump(true)}>
-            <Info color="#fff" size={20} />
-            <Text style={styles.brainDumpText}>Brain Dump Distraction</Text>
+            <Info color="#60A5FA" size={20} />
+            <Text style={styles.brainDumpText}>{t('focusMode.brainDumpDistraction')}</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -532,11 +537,11 @@ export default function FocusModeScreen() {
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalContainer}>
           <BlurView intensity={80} tint="dark" style={StyleSheet.absoluteFill} />
           <View style={styles.brainDumpCard}>
-            <Text style={styles.modalTitle}>Dump Your Distraction</Text>
-            <Text style={styles.modalSub}>Write it down here. Aura will automatically add it to your Inbox for later so you can get back to work immediately.</Text>
+            <Text style={styles.modalTitle}>{t('focusMode.dumpDistractionTitle')}</Text>
+            <Text style={styles.modalSub}>{t('focusMode.dumpDistractionSub')}</Text>
             <TextInput
               style={styles.brainDumpInput}
-              placeholder="e.g., Remember to pay the electricity bill..."
+              placeholder={t('focusMode.dumpPlaceholder')}
               placeholderTextColor="#666"
               value={dumpText}
               onChangeText={setDumpText}
@@ -545,11 +550,11 @@ export default function FocusModeScreen() {
             />
             <View style={styles.modalActions}>
               <TouchableOpacity style={styles.modalCancel} onPress={() => setShowBrainDump(false)}>
-                <Text style={styles.modalCancelText}>Cancel</Text>
+                <Text style={styles.modalCancelText}>{t('focusMode.cancel')}</Text>
               </TouchableOpacity>
               <TouchableOpacity style={styles.modalSave} onPress={saveBrainDump}>
                 <Save color="#fff" size={20} style={{ marginRight: 8 }} />
-                <Text style={styles.modalSaveText}>Save & Return to Focus</Text>
+                <Text style={styles.modalSaveText}>{t('focusMode.saveAndReturn')}</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -561,17 +566,17 @@ export default function FocusModeScreen() {
         <View style={styles.modalContainer}>
           <BlurView intensity={90} tint="dark" style={StyleSheet.absoluteFill} />
           <View style={styles.toughLoveCard}>
-            <Brain color="#A855F7" size={48} style={{ alignSelf: 'center', marginBottom: 16 }} />
-            <Text style={styles.modalTitle}>Quitting so soon?</Text>
+            <Brain color={ACCENT} size={48} style={{ alignSelf: 'center', marginBottom: 16 }} />
+            <Text style={styles.modalTitle}>{t('focusMode.quittingTitle')}</Text>
             
             <Text style={styles.toughLoveText}>"{toughLoveMessage}"</Text>
 
             <View style={{ marginTop: 32 }}>
               <TouchableOpacity style={styles.resumeBtn} onPress={resumeFromQuit}>
-                <Text style={styles.resumeText}>You're right. Let's finish this.</Text>
+                <Text style={styles.resumeText}>{t('focusMode.resumeButtonText')}</Text>
               </TouchableOpacity>
               <TouchableOpacity style={styles.quitBtn} onPress={confirmQuit}>
-                <Text style={styles.quitText}>I'm weak. I quit.</Text>
+                <Text style={styles.quitText}>{t('focusMode.quitButtonText')}</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -583,11 +588,11 @@ export default function FocusModeScreen() {
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalContainer}>
           <BlurView intensity={80} tint="dark" style={StyleSheet.absoluteFill} />
           <View style={styles.brainDumpCard}>
-            <Text style={styles.modalTitle}>Set Custom Time</Text>
-            <Text style={styles.modalSub}>Override Aura's suggested time (in minutes).</Text>
+            <Text style={styles.modalTitle}>{t('focusMode.setCustomTimeTitle')}</Text>
+            <Text style={styles.modalSub}>{t('focusMode.setCustomTimeSub')}</Text>
             <TextInput
               style={[styles.brainDumpInput, { fontSize: 24, textAlign: 'center' }]}
-              placeholder="e.g., 25"
+              placeholder={t('focusMode.customTimePlaceholder')}
               placeholderTextColor="#666"
               keyboardType="number-pad"
               value={customMinutes}
@@ -596,7 +601,7 @@ export default function FocusModeScreen() {
             />
             <View style={styles.modalActions}>
               <TouchableOpacity style={styles.modalCancel} onPress={() => setShowTimeModal(false)}>
-                <Text style={styles.modalCancelText}>Cancel</Text>
+                <Text style={styles.modalCancelText}>{t('focusMode.cancel')}</Text>
               </TouchableOpacity>
               <TouchableOpacity style={styles.modalSave} onPress={() => {
                 const mins = parseInt(customMinutes, 10);
@@ -608,7 +613,7 @@ export default function FocusModeScreen() {
                 setCustomMinutes('');
               }}>
                 <Clock color="#fff" size={20} style={{ marginRight: 8 }} />
-                <Text style={styles.modalSaveText}>Set Timer</Text>
+                <Text style={styles.modalSaveText}>{t('focusMode.setTimerButton')}</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -620,10 +625,10 @@ export default function FocusModeScreen() {
           <BlurView intensity={80} tint="dark" style={StyleSheet.absoluteFill} />
           <View style={[styles.brainDumpCard, isLandscape && { width: '60%', alignSelf: 'center' }]}>
             <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
-              <Sun color="#A855F7" size={24} style={{ marginRight: 8 }} />
-              <Text style={styles.modalTitle}>Display Brightness</Text>
+              <Sun color={ACCENT} size={24} style={{ marginRight: 8 }} />
+              <Text style={styles.modalTitle}>{t('focusMode.displayBrightness')}</Text>
             </View>
-            <Text style={styles.modalSub}>Adjust screen brightness to reduce eye strain.</Text>
+            <Text style={styles.modalSub}>{t('focusMode.brightnessSub')}</Text>
             
             <View style={{ height: 40, justifyContent: 'center', marginVertical: 20 }}>
               <Slider
@@ -639,14 +644,14 @@ export default function FocusModeScreen() {
                     console.log('Brightness error:', e);
                   }
                 }}
-                minimumTrackTintColor="#A855F7"
+                minimumTrackTintColor={ACCENT}
                 maximumTrackTintColor="rgba(255,255,255,0.2)"
-                thumbTintColor="#D8B4FE"
+                thumbTintColor={ACCENT}
               />
             </View>
             
             <TouchableOpacity style={[styles.modalSave, { width: '100%' }]} onPress={() => setShowBrightnessModal(false)}>
-              <Text style={styles.modalSaveText}>Done</Text>
+              <Text style={styles.modalSaveText}>{t('focusMode.doneButton')}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -655,7 +660,7 @@ export default function FocusModeScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (ACCENT) => StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#000',
@@ -690,14 +695,14 @@ const styles = StyleSheet.create({
   adviceBadge: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    backgroundColor: 'rgba(168, 85, 247, 0.1)',
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
     paddingHorizontal: 20,
     paddingVertical: 12,
     borderRadius: 24,
     marginBottom: 48,
     maxWidth: '85%',
     borderWidth: 1,
-    borderColor: 'rgba(168, 85, 247, 0.2)',
+    borderColor: 'rgba(255, 255, 255, 0.2)',
   },
   adviceText: {
     color: '#D8B4FE',
@@ -720,7 +725,7 @@ const styles = StyleSheet.create({
     borderWidth: 8,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(168, 85, 247, 0.05)',
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
   },
   ringInner: {
     width: 280,
@@ -791,10 +796,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#333',
   },
   progressWork: {
-    backgroundColor: '#A855F7',
+    backgroundColor: ACCENT,
   },
   progressBreak: {
-    backgroundColor: '#EF4444',
+    backgroundColor: '#34D399',
   },
   statsDetails: {
     flexDirection: 'row',
@@ -802,12 +807,12 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   statTextWork: {
-    color: '#A855F7',
+    color: ACCENT,
     fontSize: 12,
     fontWeight: '600',
   },
   statTextBreak: {
-    color: '#EF4444',
+    color: '#34D399',
     fontSize: 12,
     fontWeight: '600',
   },
@@ -879,7 +884,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     padding: 16,
     borderRadius: 16,
-    backgroundColor: '#A855F7',
+    backgroundColor: ACCENT,
     flex: 2,
     alignItems: 'center',
     justifyContent: 'center',
@@ -907,13 +912,13 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
   },
   generatingText: {
-    color: '#A855F7',
+    color: ACCENT,
     fontSize: 16,
     textAlign: 'center',
     marginTop: 16,
   },
   resumeBtn: {
-    backgroundColor: '#A855F7',
+    backgroundColor: ACCENT,
     padding: 16,
     borderRadius: 16,
     alignItems: 'center',
@@ -929,7 +934,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   quitText: {
-    color: '#ef4444',
+    color: '#A1A1AA',
     fontWeight: '600',
     fontSize: 14,
   }

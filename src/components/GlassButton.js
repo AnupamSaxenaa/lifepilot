@@ -1,9 +1,10 @@
-import React from 'react';
-import { StyleSheet, Text, TouchableOpacity, useColorScheme, View, Image } from 'react-native';
+import { Image, StyleSheet, Text, TouchableOpacity, useColorScheme, View } from 'react-native';
+import { useTheme as useAppTheme } from '../context/ThemeContext';
 import { COLORS } from '../theme/theme';
 
 export const GlassButton = ({ title, onPress, icon: Icon, imageSource, style, textStyle }) => {
   const colorScheme = useColorScheme();
+  useAppTheme().themeVersion;
   const theme = colorScheme === 'dark' ? COLORS.dark : COLORS.light;
 
   return (

@@ -1,16 +1,15 @@
-import React, { useEffect } from 'react';
-import { StyleSheet, View, Text, Dimensions } from 'react-native';
+import { Mountain } from 'lucide-react-native';
+import { useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
+import { StyleSheet, Text, View } from 'react-native';
 import Animated, {
-  useSharedValue,
-  useAnimatedStyle,
-  withSpring,
-  interpolate,
-  Extrapolation,
-  withTiming,
-  Easing
+    Extrapolation,
+    interpolate,
+    useAnimatedStyle,
+    useSharedValue,
+    withSpring
 } from 'react-native-reanimated';
-import Svg, { Path, Circle, Defs, LinearGradient, Stop, Polygon } from 'react-native-svg';
-import { Flag, Mountain, TrendingDown } from 'lucide-react-native';
+import Svg, { Circle, Defs, LinearGradient, Path, Stop } from 'react-native-svg';
 
 const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 const AnimatedView = Animated.createAnimatedComponent(View);
@@ -37,6 +36,7 @@ const MOUNTAIN_PATH = POINTS.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`
 const MOUNTAIN_FILL = `${MOUNTAIN_PATH} L280,180 L20,180 Z`;
 
 export const ExpeditionAnimation = ({ progress = 0, onSimulateMiss }) => {
+  const { t } = useTranslation();
   // Reanimated shared value
   const animatedProgress = useSharedValue(0);
 
@@ -63,12 +63,12 @@ export const ExpeditionAnimation = ({ progress = 0, onSimulateMiss }) => {
   });
 
   const getLabel = () => {
-    if (progress >= 100) return 'The Summit';
-    if (progress >= 76.8) return 'Death Zone';
-    if (progress >= 63.8) return 'Camp 3';
-    if (progress >= 39.1) return 'Camp 2';
-    if (progress >= 20.3) return 'Camp 1';
-    return 'Base Camp';
+    if (progress >= 100) return t('expeditionAnimation.theSummit');
+    if (progress >= 76.8) return t('expeditionAnimation.deathZone');
+    if (progress >= 63.8) return t('expeditionAnimation.camp3');
+    if (progress >= 39.1) return t('expeditionAnimation.camp2');
+    if (progress >= 20.3) return t('expeditionAnimation.camp1');
+    return t('expeditionAnimation.baseCamp');
   };
 
   const getElevation = () => {
@@ -81,12 +81,12 @@ export const ExpeditionAnimation = ({ progress = 0, onSimulateMiss }) => {
       <View style={styles.header}>
         <View style={styles.headerTitleRow}>
           <Mountain color="#fff" size={20} />
-          <Text style={styles.title}>EXPEDITION PROGRESS</Text>
+          <Text style={styles.title}>{t('expeditionAnimation.headerTitle')}</Text>
         </View>
-        <Text style={styles.elevation}>{getElevation().toLocaleString()}m</Text>
+        <Text style={styles.elevation}>{t('expeditionAnimation.elevationMeters', { elevation: getElevation().toLocaleString() })}</Text>
       </View>
 
-      <Text style={styles.subtitle}>Current Stage: <Text style={{ color: '#F59E0B' }}>{getLabel()}</Text></Text>
+      <Text style={styles.subtitle}>{t('expeditionAnimation.currentStage')} <Text style={{ color: '#C7C7C7' }}>{getLabel()}</Text></Text>
 
       {/* SVG Mountain Range */}
       <View style={styles.mountainWrapper}>
@@ -121,8 +121,8 @@ export const ExpeditionAnimation = ({ progress = 0, onSimulateMiss }) => {
               cx={p.x}
               cy={p.y}
               r={index === POINTS.length - 1 ? 6 : 4}
-              fill={index === POINTS.length - 1 ? "#F59E0B" : "#1A1A1A"}
-              stroke={index === POINTS.length - 1 ? "#F59E0B" : "#666"}
+              fill={index === POINTS.length - 1 ? "#C7C7C7" : "#1A1A1A"}
+              stroke={index === POINTS.length - 1 ? "#C7C7C7" : "#666"}
               strokeWidth="2"
             />
           ))}

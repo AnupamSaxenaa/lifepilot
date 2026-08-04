@@ -1,23 +1,45 @@
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { decode } from 'base64-arraybuffer';
+import Constants from 'expo-constants';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
+import * as Updates from 'expo-updates';
 import {
-    Camera, ChevronRight, ImagePlus, KeyRound, LogOut, Mail, Menu,
-    RefreshCw, Calendar,
-    Shield, Trash2, User, UserCog, X
+    Calendar,
+    Camera,
+    CheckCircle2,
+    ChevronRight,
+    CloudOff,
+    Globe,
+    ImagePlus, KeyRound, LayoutGrid, LogOut, Mail, Menu,
+    MessageSquare,
+    RefreshCw,
+    Rocket,
+    Shield,
+    Trash2, User, UserCog, X,
+    Zap
 } from 'lucide-react-native';
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
-    ActivityIndicator, Alert, Image, Modal, Platform, ScrollView,
-    StyleSheet, Text, TextInput, TouchableOpacity, View
+    ActivityIndicator, Alert,
+    Image, Modal, Platform, ScrollView,
+    StyleSheet, Switch,
+    Text, TextInput, TouchableOpacity, View
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { GlassSidebar } from '../components/GlassSidebar';
+import { LanguagePickerModal } from '../components/LanguagePickerModal';
+import { MarketplaceButton } from '../components/MarketplaceButton';
+import { PLAYSTORE_MODE } from '../config/flags';
+import { useTheme } from '../context/ThemeContext';
+import { getCurrentLanguage, setAppLanguage } from '../i18n';
+import { SUPPORTED_LANGUAGES } from '../i18n/languages';
 import { deleteUserAccountData, loadProfile, updateProfile } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
+import { clearDeadLetters, drainSyncQueue, getDeadLetters, getPendingCount } from '../lib/syncQueue';
 import { Storage } from '../utils/storage';
 import { UpdateManager } from '../utils/updateManager';
-import DateTimePicker from '@react-native-community/datetimepicker';
 
 const THEME_COLOR = '#FFFFFF';
 const DARK_BG = '#000000';
@@ -27,8 +49,39 @@ const BORDER_COLOR = '#1A1A1A';
 const MAX_AVATAR_SIZE_MB = 2;
 const MAX_AVATAR_SIZE_BYTES = MAX_AVATAR_SIZE_MB * 1024 * 1024;
 
+// Deterministic snowflake icon (no lucide dependency) for the Streak Freeze toggle
+const SnowIcon = ({ size = 18 }) => (
+  <Text style={{ fontSize: size, lineHeight: size + 2 }}>❄️</Text>
+);
+
 export const SettingsScreen = ({ navigation }) => {
   const insets = useSafeAreaInsets();
+  const ACCENT = useTheme().theme.accent;
+  const { t } = useTranslation();
+  const [showLanguageModal, setShowLanguageModal] = useState(false);
+  const [currentLanguage, setCurrentLanguage] = useState(getCurrentLanguage());
+
+  const currentLanguageInfo = SUPPORTED_LANGUAGES.find((l) => l.code === currentLanguage) || SUPPORTED_LANGUAGES[0];
+
+  const handleSelectLanguage = async (code) => {
+    setShowLanguageModal(false);
+    if (code === currentLanguage) return;
+    const { needsReload } = await setAppLanguage(code);
+    setCurrentLanguage(code);
+    // Persist to profile so the choice follows the user to other devices.
+    if (userId) {
+      supabase.from('profiles').update({ preferred_language: code }).eq('id', userId).then(() => {}, () => {});
+    }
+    if (needsReload) {
+      // RTL direction changed (e.g. switching to/from Arabic/Urdu) — RN can't
+      // re-flip layout direction without a full reload.
+      Alert.alert(
+        t('settings.selectLanguage'),
+        t('settings.rtlReloadMessage'),
+        [{ text: t('common.ok'), onPress: () => Updates.reloadAsync().catch(() => {}) }]
+      );
+    }
+  };
 
   const [profile, setProfile] = useState(null);
   const [email, setEmail] = useState('');
@@ -36,6 +89,7 @@ export const SettingsScreen = ({ navigation }) => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [avatarUploading, setAvatarUploading] = useState(false);
+  const [streakFreezeEnabled, setStreakFreezeEnabled] = useState(false);
 
   // ─── Modal States ─────────────────────────────────────
   const [showNameModal, setShowNameModal] = useState(false);
@@ -53,6 +107,61 @@ export const SettingsScreen = ({ navigation }) => {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [formError, setFormError] = useState('');
+
+  // ─── Sync Status ──────────────────────────────────────
+  // Surfaces the offline mutation queue instead of leaving sync failures
+  // completely invisible. `deadLetterCount` is the number of edits that were
+  // permanently given up on (see syncQueue.js) — data loss the user can now
+  // actually see instead of it silently vanishing.
+  const [pendingSyncCount, setPendingSyncCount] = useState(0);
+  const [deadLetterCount, setDeadLetterCount] = useState(0);
+  const [syncing, setSyncing] = useState(false);
+
+  const refreshSyncStatus = async () => {
+    try {
+      const [pending, letters] = await Promise.all([getPendingCount(), getDeadLetters()]);
+      setPendingSyncCount(pending);
+      setDeadLetterCount(letters.length);
+    } catch (_e) {}
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    const tick = () => { if (!cancelled) refreshSyncStatus(); };
+    // Deferred rather than called inline so the first poll doesn't set state
+    // synchronously inside the effect body.
+    const firstRun = setTimeout(tick, 0);
+    const interval = setInterval(tick, 10000);
+    return () => {
+      cancelled = true;
+      clearTimeout(firstRun);
+      clearInterval(interval);
+    };
+  }, []);
+
+  const handleSyncNow = async () => {
+    setSyncing(true);
+    try {
+      await drainSyncQueue();
+    } catch (_e) {}
+    await refreshSyncStatus();
+    setSyncing(false);
+  };
+
+  const handleViewSyncIssues = () => {
+    if (deadLetterCount === 0) {
+      Alert.alert(t('settings.allSyncedTitle'), t('settings.allSyncedMessage'));
+      return;
+    }
+    Alert.alert(
+      t('settings.syncIssuesTitle'),
+      t(deadLetterCount === 1 ? 'settings.syncIssuesMessage_one' : 'settings.syncIssuesMessage_other', { count: deadLetterCount }),
+      [
+        { text: t('settings.dismiss'), style: 'cancel' },
+        { text: t('settings.clearLog'), style: 'destructive', onPress: async () => { await clearDeadLetters(); await refreshSyncStatus(); } },
+      ]
+    );
+  };
 
   // ─── OTA Update States ────────────────────────────────
   const [checkingUpdate, setCheckingUpdate] = useState(false);
@@ -80,6 +189,11 @@ export const SettingsScreen = ({ navigation }) => {
       if (!session) return;
       setUserId(session.user.id);
       setEmail(session.user.email);
+
+      // Load the opt-in streak-protection preference. Missing means OFF, so XP
+      // cannot be deducted until the user explicitly enables the setting.
+      const freezePref = await Storage.get(`streak_freeze_enabled_${session.user.id}`);
+      setStreakFreezeEnabled(freezePref === true || freezePref === 'true');
 
       // Load profile: cache first → Supabase background
       // Force fresh load to ensure avatar_url is current (especially after reinstall)
@@ -130,7 +244,7 @@ export const SettingsScreen = ({ navigation }) => {
     }
 
     if (!granted) {
-      Alert.alert('Permission required', 'Please allow access to your photo library.');
+      Alert.alert(t('settings.permissionRequiredTitle'), t('settings.permissionRequiredMessage'));
       return;
     }
 
@@ -147,7 +261,7 @@ export const SettingsScreen = ({ navigation }) => {
 
     // Check file size if available
     if (asset.fileSize && asset.fileSize > MAX_AVATAR_SIZE_BYTES) {
-      Alert.alert('File too large', `Max avatar size is ${MAX_AVATAR_SIZE_MB}MB. Please choose a smaller image.`);
+      Alert.alert(t('settings.fileTooLargeTitle'), t('settings.fileTooLargeMessage', { size: MAX_AVATAR_SIZE_MB }));
       return;
     }
 
@@ -162,14 +276,14 @@ export const SettingsScreen = ({ navigation }) => {
       });
 
       if (!base64 || base64.length < 100) {
-        Alert.alert('Error', 'Could not read the image file.');
+        Alert.alert(t('settings.errorTitle'), t('settings.errorReadImage'));
         setAvatarUploading(false);
         return;
       }
 
       const approxBytes = (base64.length * 3) / 4;
       if (approxBytes > MAX_AVATAR_SIZE_BYTES) {
-        Alert.alert('File too large', `Max avatar size is ${MAX_AVATAR_SIZE_MB}MB.`);
+        Alert.alert(t('settings.fileTooLargeTitle'), t('settings.fileTooLargeMessageShort', { size: MAX_AVATAR_SIZE_MB }));
         setAvatarUploading(false);
         return;
       }
@@ -184,7 +298,7 @@ export const SettingsScreen = ({ navigation }) => {
 
       if (uploadError) {
         console.log('Supabase upload error:', JSON.stringify(uploadError));
-        Alert.alert('Upload failed', uploadError.message || 'Unknown storage error. Check that the "avatars" bucket exists and is public.');
+        Alert.alert(t('settings.uploadFailedTitle'), uploadError.message || t('settings.uploadFailedMessage'));
         setAvatarUploading(false);
         return;
       }
@@ -201,16 +315,16 @@ export const SettingsScreen = ({ navigation }) => {
         .eq('id', userId);
 
       if (updateError) {
-        Alert.alert('Error', updateError.message);
+        Alert.alert(t('settings.errorTitle'), updateError.message);
       } else {
         const updated = { ...profile, avatar_url: publicUrl };
         setProfile(updated);
         Storage.set(`profile_${userId}`, updated);
-        Alert.alert('Success', 'Avatar updated!');
+        Alert.alert(t('settings.successTitle'), t('settings.avatarUpdated'));
       }
     } catch (e) {
       console.log('Avatar upload error:', e?.message || e);
-      Alert.alert('Upload Error', e?.message || 'Something went wrong. Please try again.');
+      Alert.alert(t('settings.uploadErrorTitle'), e?.message || t('settings.uploadErrorMessage'));
     }
 
     setAvatarUploading(false);
@@ -229,13 +343,13 @@ export const SettingsScreen = ({ navigation }) => {
     setProfile(updated);
     Storage.set(`profile_${userId}`, updated);
     setAvatarUploading(false);
-    Alert.alert('Done', 'Avatar removed. A random avatar has been assigned.');
+    Alert.alert(t('settings.doneTitle'), t('settings.avatarRemoved'));
   };
 
   // ─── Check for OTA Updates ────────────────────────────
   const handleCheckForUpdates = async () => {
     if (!UpdateManager.isEnabled()) {
-      Alert.alert('Updates', 'OTA updates are only available in production builds.');
+      Alert.alert(t('settings.updatesTitle'), t('settings.updatesProductionOnly'));
       return;
     }
 
@@ -243,23 +357,26 @@ export const SettingsScreen = ({ navigation }) => {
     setUpdateInfo(null);
 
     try {
-      const { isAvailable } = await UpdateManager.checkForUpdates();
+      const { isAvailable, isRollBack } = await UpdateManager.checkForUpdates();
 
-      if (isAvailable) {
+      if (isAvailable || isRollBack) {
         Alert.alert(
-          'Update Available',
-          'A new version is available. Would you like to download it now?',
+          t('settings.updateAvailableTitle'),
+          t('settings.updateAvailableMessage'),
           [
-            { text: 'Later', style: 'cancel', onPress: () => setCheckingUpdate(false) },
+            { text: t('settings.later'), style: 'cancel', onPress: () => setCheckingUpdate(false) },
             {
-              text: 'Update Now',
+              text: t('settings.updateNow'),
               onPress: async () => {
-                const result = await UpdateManager.downloadAndApply(() => {});
-                if (result.success && result.isNew) {
-                  // App will reload automatically
+                // Download the new bundle, then reload into it. Unlike the old
+                // flow, download and apply are explicit steps so a failed
+                // download never silently pretends to succeed.
+                const dl = await UpdateManager.downloadUpdate();
+                if (dl.success && (dl.isNew || dl.isRollBack)) {
+                  await UpdateManager.applyUpdate(); // reloads the app
                 } else {
                   setCheckingUpdate(false);
-                  Alert.alert('Update', 'Update downloaded. Restart the app to apply.');
+                  Alert.alert(t('settings.updatesTitle'), t('settings.updateDownloadedMessage'));
                 }
               },
             },
@@ -267,17 +384,17 @@ export const SettingsScreen = ({ navigation }) => {
         );
       } else {
         setCheckingUpdate(false);
-        Alert.alert('No Updates', 'You are running the latest version!');
+        Alert.alert(t('settings.noUpdatesTitle'), t('settings.noUpdatesMessage'));
       }
     } catch (error) {
       setCheckingUpdate(false);
-      Alert.alert('Error', 'Failed to check for updates. Please try again later.');
+      Alert.alert(t('settings.errorTitle'), t('settings.updateCheckFailedMessage'));
     }
   };
 
   // ─── Change Display Name ──────────────────────────────
   const handleChangeName = async () => {
-    if (!newDisplayName.trim()) { setFormError('Name cannot be empty'); return; }
+    if (!newDisplayName.trim()) { setFormError(t('settings.nameEmptyError')); return; }
     setFormLoading(true); setFormError('');
     try {
       const updated = await updateProfile(userId, profile, { display_name: newDisplayName.trim() });
@@ -285,7 +402,7 @@ export const SettingsScreen = ({ navigation }) => {
       setFormLoading(false);
       setShowNameModal(false);
     } catch (e) {
-      setFormError(e.message || 'Failed to update name');
+      setFormError(e.message || t('settings.nameUpdateFailedError'));
       setFormLoading(false);
     }
   };
@@ -299,7 +416,7 @@ export const SettingsScreen = ({ navigation }) => {
       setFormLoading(false);
       setShowDobModal(false);
     } catch (e) {
-      setFormError(e.message || 'Failed to update date of birth');
+      setFormError(e.message || t('settings.dobUpdateFailedError'));
       setFormLoading(false);
     }
   };
@@ -322,9 +439,9 @@ export const SettingsScreen = ({ navigation }) => {
 
   const handleChangeUsername = async () => {
     const username = newUsername.trim().toLowerCase();
-    if (!username) { setFormError('Username cannot be empty'); return; }
-    if (username.length < 3) { setFormError('Username must be at least 3 characters'); return; }
-    if (!/^[a-z0-9._]+$/.test(username)) { setFormError('Only lowercase letters, numbers, dots and underscores'); return; }
+    if (!username) { setFormError(t('settings.usernameEmptyError')); return; }
+    if (username.length < 3) { setFormError(t('settings.usernameLengthError')); return; }
+    if (!/^[a-z0-9._]+$/.test(username)) { setFormError(t('settings.usernameCharsError')); return; }
 
     setFormLoading(true); setFormError('');
 
@@ -335,7 +452,7 @@ export const SettingsScreen = ({ navigation }) => {
       .neq('id', userId)
       .maybeSingle();
 
-    if (existing) { setFormError('Username is already taken'); setFormLoading(false); return; }
+    if (existing) { setFormError(t('settings.usernameTakenError')); setFormLoading(false); return; }
 
     try {
       const updated = await updateProfile(userId, profile, { username, username_changed_at: new Date().toISOString() });
@@ -343,15 +460,15 @@ export const SettingsScreen = ({ navigation }) => {
       setFormLoading(false);
       setShowUsernameModal(false);
     } catch (e) {
-      setFormError(e.message || 'Failed to update username');
+      setFormError(e.message || t('settings.usernameUpdateFailedError'));
       setFormLoading(false);
     }
   };
 
   // ─── Change Password (with OTP) ───────────────────────
   const handleRequestOtp = async () => {
-    if (newPassword.length < 6) { setFormError('Password must be at least 6 characters'); return; }
-    if (newPassword !== confirmPassword) { setFormError('Passwords do not match'); return; }
+    if (newPassword.length < 6) { setFormError(t('settings.passwordLengthError')); return; }
+    if (newPassword !== confirmPassword) { setFormError(t('settings.passwordMismatchError')); return; }
 
     setFormLoading(true); setFormError('');
 
@@ -371,7 +488,7 @@ export const SettingsScreen = ({ navigation }) => {
   };
 
   const handleVerifyOtpAndChangePassword = async () => {
-    if (otp.length < 6) { setFormError('Enter the 6-digit code from your email'); return; }
+    if (otp.length < 6) { setFormError(t('settings.otpEnterCodeError')); return; }
 
     setFormLoading(true); setFormError('');
 
@@ -382,7 +499,7 @@ export const SettingsScreen = ({ navigation }) => {
     });
 
     if (verifyError) {
-      setFormError('Invalid or expired code. Please try again.');
+      setFormError(t('settings.otpInvalidError'));
       setFormLoading(false);
       return;
     }
@@ -399,7 +516,7 @@ export const SettingsScreen = ({ navigation }) => {
     setShowPasswordModal(false);
     setPasswordStep('input');
     setNewPassword(''); setConfirmPassword(''); setOtp('');
-    Alert.alert('Success', 'Password changed successfully!');
+    Alert.alert(t('settings.successTitle'), t('settings.passwordChangedMessage'));
   };
 
   const handleResendOtp = async () => {
@@ -413,13 +530,22 @@ export const SettingsScreen = ({ navigation }) => {
 
   // ─── Delete Account ───────────────────────────────────
   const handleDeleteAccount = async () => {
-    if (deleteConfirmText !== 'DELETE') { setFormError('Type DELETE to confirm'); return; }
+    if (deleteConfirmText !== 'DELETE') { setFormError(t('settings.deleteConfirmError')); return; }
     setFormLoading(true); setFormError('');
 
     await deleteUserAccountData(userId);
     await supabase.auth.signOut();
     await Storage.clear();
     navigation.replace('Onboarding');
+  };
+
+  // ─── Streak Freeze Toggle ─────────────────────────────
+  const handleToggleStreakFreeze = async (value) => {
+    // Optimistic UI first, then persist the local offline preference.
+    setStreakFreezeEnabled(value);
+    if (userId) {
+      await Storage.set(`streak_freeze_enabled_${userId}`, Boolean(value));
+    }
   };
 
   // ─── Logout ───────────────────────────────────────────
@@ -443,44 +569,74 @@ export const SettingsScreen = ({ navigation }) => {
         <TouchableOpacity onPress={() => setIsSidebarOpen(true)} style={styles.iconButton}>
           <Menu color="#FFFFFF" size={24} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Settings</Text>
+        <Text style={styles.headerTitle}>{t('settings.headerTitle')}</Text>
         <View style={{ width: 40 }} />
       </View>
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scroll}>
 
-        {/* Profile Header (Borderless, Centered) */}
-        <View style={styles.profileHeader}>
-          <TouchableOpacity onPress={() => setShowAvatarOptions(true)} style={styles.avatarWrap} disabled={avatarUploading}>
+        {/* ── Identity: avatar beside the details instead of a tall centred
+              stack, so the first screenful reaches actual settings. ── */}
+        <TouchableOpacity
+          style={styles.profileHeader}
+          activeOpacity={0.8}
+          onPress={() => setShowAvatarOptions(true)}
+          disabled={avatarUploading}
+          accessibilityRole="button"
+          accessibilityLabel={t('settings.profilePhotoTitle')}
+        >
+          <View style={styles.avatarWrap}>
             {avatarUploading ? (
-              <View style={[styles.avatar, { alignItems: 'center', justifyContent: 'center' }]}>
-                <ActivityIndicator color="#fff" size="large" />
+              <View style={[styles.avatar, styles.avatarLoading]}>
+                <ActivityIndicator color="#fff" size="small" />
               </View>
             ) : (
               <Image source={getAvatarSource()} style={styles.avatar} />
             )}
-            <View style={styles.cameraBadge}>
-              <Camera color="#fff" size={14} />
+            <View style={[styles.cameraBadge, { backgroundColor: ACCENT }]}>
+              <Camera color="#000" size={11} />
             </View>
-          </TouchableOpacity>
-          <Text style={styles.profileName}>{profile?.display_name || 'User'}</Text>
-          <Text style={styles.profileUsername}>@{profile?.username || 'username'}</Text>
-          <Text style={styles.profileEmail}>{email}</Text>
-        </View>
+          </View>
+          <View style={styles.profileInfo}>
+            <Text style={styles.profileName} numberOfLines={1}>
+              {profile?.display_name || t('settings.defaultUserName')}
+            </Text>
+            <Text style={styles.profileUsername} numberOfLines={1}>
+              @{profile?.username || t('settings.defaultUsername')}
+            </Text>
+            <Text style={styles.profileEmail} numberOfLines={1}>{email}</Text>
+          </View>
+        </TouchableOpacity>
 
-        {/* Group 1: Account */}
-        <Text style={styles.sectionTitle}>ACCOUNT</Text>
+        {/* Upgrade to Pro banner — hidden while PLAYSTORE_MODE is off */}
+        {PLAYSTORE_MODE && (
+          <TouchableOpacity
+            style={[styles.proBanner, { borderColor: `${ACCENT}55` }]}
+            activeOpacity={0.85}
+            onPress={() => navigation.navigate('Paywall')}
+          >
+            <Zap color={ACCENT} size={17} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.proBannerTitle}>LifePilot Pro</Text>
+              <Text style={styles.proBannerSub}>{t('settings.proBannerSub', { defaultValue: 'Unlock everything' })}</Text>
+            </View>
+            <ChevronRight color={ACCENT} size={17} />
+          </TouchableOpacity>
+        )}
+
+        {/* ── Account ── */}
+        <SettingsSection label={t('settings.sectionAccount')} />
         <View style={styles.settingGroup}>
           <SettingRow
-            icon={User} iconColor="#3B82F6" label="Display Name" value={profile?.display_name}
+            icon={User} iconColor="#FFFFFF" label={t('settings.displayNameLabel')} value={profile?.display_name}
             onPress={() => { setNewDisplayName(profile?.display_name || ''); setFormError(''); setShowNameModal(true); }}
           />
           <View style={styles.divider} />
           <SettingRow
-            icon={UserCog} iconColor="#8B5CF6" label="Username" value={`@${profile?.username || 'not set'}`}
+            icon={UserCog} iconColor="#FFFFFF" label={t('settings.usernameLabel')} value={`@${profile?.username || t('settings.usernameNotSet')}`}
             onPress={() => {
               if (!canChangeUsername()) {
-                Alert.alert('Too soon', `You can change your username again after ${getNextUsernameChangeDate()}`);
+                Alert.alert(t('settings.tooSoonTitle'), t('settings.tooSoonMessage', { date: getNextUsernameChangeDate() }));
                 return;
               }
               setNewUsername(profile?.username || ''); setFormError(''); setShowUsernameModal(true);
@@ -488,88 +644,182 @@ export const SettingsScreen = ({ navigation }) => {
           />
           <View style={styles.divider} />
           <SettingRow
-            icon={Calendar} iconColor="#F59E0B" label="Date of Birth" value={profile?.dob ? new Date(profile.dob).toLocaleDateString() : 'Not Set'}
+            icon={Calendar} iconColor="#FFFFFF" label={t('settings.dobLabel')} value={profile?.dob ? new Date(profile.dob).toLocaleDateString() : t('settings.dobNotSet')}
             onPress={() => {
               setNewDob(profile?.dob ? new Date(profile.dob) : new Date());
               setFormError('');
               setShowDobModal(true);
             }}
           />
-          <View style={styles.divider} />
           <SettingRow
-            icon={Mail} iconColor="#10B981" label="Email" value={email}
-            onPress={() => Alert.alert('Email', 'Email cannot be changed from the app.')}
+            icon={Mail} iconColor="#FFFFFF" label={t('settings.emailLabel')} value={email}
+            onPress={() => Alert.alert(t('settings.emailTitle'), t('settings.emailCannotChange'))}
+          />
+          <SettingRow
+            icon={KeyRound} iconColor="#FFFFFF" label={t('settings.changePasswordLabel')}
+            onPress={() => { setNewPassword(''); setConfirmPassword(''); setOtp(''); setPasswordStep('input'); setFormError(''); setShowPasswordModal(true); }}
             isLast
           />
         </View>
 
-        {/* Group 2: Security */}
-        <Text style={styles.sectionTitle}>SECURITY</Text>
+        {/* ── Appearance: the marketplace is the personalisation surface ── */}
+        <SettingsSection label={t('settings.sectionPersonalization')} />
+        <MarketplaceButton onPress={() => navigation.navigate('Marketplace', { userId: profile?.id })} />
+        <Text style={styles.prefHint}>{t('settings.marketplaceHint')}</Text>
+
+        {/* ── Preferences ── */}
+        <SettingsSection label={t('settings.sectionPreferences')} />
         <View style={styles.settingGroup}>
           <SettingRow
-            icon={KeyRound} iconColor="#FFF" label="Change Password"
-            onPress={() => { setNewPassword(''); setConfirmPassword(''); setOtp(''); setPasswordStep('input'); setFormError(''); setShowPasswordModal(true); }}
+            icon={Globe}
+            iconColor="#FFFFFF"
+            label={t('settings.language')}
+            value={currentLanguageInfo.nativeLabel}
+            onPress={() => setShowLanguageModal(true)}
           />
-          <View style={styles.divider} />
+          <SettingRow
+            icon={LayoutGrid}
+            iconColor="#FFFFFF"
+            label={t('widgetSettings.settingsEntryLabel')}
+            onPress={() => navigation.navigate('WidgetSettings')}
+          />
+          <SettingRow
+            icon={SnowIcon}
+            iconColor="#FFFFFF"
+            label={t('settings.autoStreakFreezeLabel')}
+            rightComponent={
+              <Switch
+                value={streakFreezeEnabled}
+                onValueChange={handleToggleStreakFreeze}
+                trackColor={{ false: '#27272a', true: ACCENT + '55' }}
+                thumbColor={streakFreezeEnabled ? ACCENT : '#52525b'}
+              />
+            }
+            isLast
+          />
+        </View>
+        <Text style={styles.prefHint}>
+          {streakFreezeEnabled
+            ? t('settings.streakFreezeSafeHint', {
+              defaultValue: 'Uses up to 500 XP per missed day from XP earned in your current level. Your level and stones stay safe.',
+            })
+            : t('settings.streakFreezeOffHint')}
+        </Text>
+
+        {/* ── System: device-level state and maintenance ── */}
+        <SettingsSection label={t('settings.sectionSystem', { defaultValue: 'System' })} />
+        <View style={styles.settingGroup}>
+          <SettingRow
+            icon={pendingSyncCount > 0 || deadLetterCount > 0 ? CloudOff : CheckCircle2}
+            iconColor={deadLetterCount > 0 ? '#FB7185' : (pendingSyncCount > 0 ? '#FBBF24' : '#34D399')}
+            valueColor={deadLetterCount > 0 ? '#FB7185' : (pendingSyncCount > 0 ? '#FBBF24' : '#34D399')}
+            label={t('settings.syncStatusLabel')}
+            value={
+              deadLetterCount > 0
+                ? t('settings.syncFailedToSave', { count: deadLetterCount })
+                : pendingSyncCount > 0
+                  ? t('settings.syncWaitingToSync', { count: pendingSyncCount })
+                  : t('settings.syncAllSaved')
+            }
+            onPress={pendingSyncCount > 0 ? handleSyncNow : handleViewSyncIssues}
+            rightComponent={syncing ? <ActivityIndicator size="small" color={ACCENT} /> : undefined}
+          />
           <SettingRow
             icon={RefreshCw}
-            iconColor="#A78BFA"
-            label="Check for Updates"
+            iconColor="#FFFFFF"
+            label={t('settings.checkForUpdatesLabel')}
             onPress={handleCheckForUpdates}
+            rightComponent={checkingUpdate ? <ActivityIndicator size="small" color={ACCENT} /> : undefined}
+          />
+          <SettingRow
+            icon={Shield}
+            iconColor="#FFFFFF"
+            label={t('settings.permissionsHubLabel')}
+            onPress={() => navigation.navigate('Permissions')}
             isLast
-            rightComponent={checkingUpdate && <ActivityIndicator size="small" color="#A78BFA" />}
           />
         </View>
 
-        {/* Group 3: Danger Zone */}
-        <Text style={[styles.sectionTitle, { color: '#EF4444' }]}>DANGER ZONE</Text>
+        {/* ── Support ── */}
+        <SettingsSection label={t('settings.sectionSupport', { defaultValue: 'Support' })} />
         <View style={styles.settingGroup}>
-          <SettingRow icon={LogOut} iconColor="#EF4444" label="Log Out" danger onPress={() => {
-            Alert.alert('Log Out', 'Are you sure?', [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Log Out', style: 'destructive', onPress: handleLogout },
+          <SettingRow
+            icon={MessageSquare}
+            iconColor="#FFFFFF"
+            label={t('settings.feedbackLabel')}
+            onPress={() => navigation.navigate('Feedback')}
+          />
+          <SettingRow
+            icon={Rocket}
+            iconColor="#FFFFFF"
+            label={t('settings.comingSoonLabel')}
+            onPress={() => navigation.navigate('ComingSoon')}
+            isLast
+          />
+        </View>
+
+        {/* ── Danger zone ── */}
+        <SettingsSection label={t('settings.sectionDangerZone')} tone="#FB7185" />
+        <View style={styles.settingGroup}>
+          <SettingRow icon={LogOut} iconColor="#FB7185" label={t('settings.logOutLabel')} danger onPress={() => {
+            Alert.alert(t('settings.logOutConfirmTitle'), t('settings.logOutConfirmMessage'), [
+              { text: t('settings.cancel'), style: 'cancel' },
+              { text: t('settings.logOutLabel'), style: 'destructive', onPress: handleLogout },
             ]);
           }} />
-          <View style={styles.divider} />
-          <SettingRow icon={Trash2} iconColor="#EF4444" label="Delete Account" danger
+          <SettingRow icon={Trash2} iconColor="#FB7185" label={t('settings.deleteAccountLabel')} danger
             onPress={() => { setDeleteConfirmText(''); setFormError(''); setShowDeleteModal(true); }}
             isLast
           />
         </View>
 
-        <View style={{ height: 80 }} />
+        {/* ─── Brand footer: wordmark, version, dedication ─── */}
+        <View style={styles.brandFooter}>
+          <Text style={styles.brandWordmark}>
+            <Text style={styles.brandDouble}>double</Text>
+            <Text style={[styles.brandThree, { color: ACCENT }]}>three</Text>
+          </Text>
+          <Text style={styles.brandVersion}>
+            {t('settings.brandVersion', { version: Constants.expoConfig?.version || '1.0.0' })}
+          </Text>
+          <Text style={[styles.brandJasper, { color: ACCENT }]}>
+            {t('settings.brandJasper')}
+          </Text>
+        </View>
+
+        <View style={{ height: 60 }} />
       </ScrollView>
 
       {/* ─── Avatar Options Modal ────────────────────── */}
-      <BottomModal visible={showAvatarOptions} onClose={() => setShowAvatarOptions(false)} title="Profile Photo">
+      <BottomModal visible={showAvatarOptions} onClose={() => setShowAvatarOptions(false)} title={t('settings.profilePhotoTitle')}>
         <TouchableOpacity style={styles.avatarOption} onPress={handlePickAvatar}>
-          <View style={[styles.settingIconWrap, { backgroundColor: '#3B82F620' }]}>
-            <ImagePlus color="#3B82F6" size={20} />
+          <View style={[styles.settingIconWrap, { backgroundColor: '#9CA3AF20' }]}>
+            <ImagePlus color="#9CA3AF" size={20} />
           </View>
           <View style={styles.settingInfo}>
-            <Text style={styles.settingLabel}>Upload Photo</Text>
-            <Text style={styles.modalHint}>Max {MAX_AVATAR_SIZE_MB}MB · JPG, PNG</Text>
+            <Text style={styles.settingLabel}>{t('settings.uploadPhoto')}</Text>
+            <Text style={styles.modalHint}>{t('settings.maxSizeHint', { size: MAX_AVATAR_SIZE_MB })}</Text>
           </View>
         </TouchableOpacity>
         {profile?.avatar_url && (
           <TouchableOpacity style={styles.avatarOption} onPress={handleRemoveAvatar}>
-            <View style={[styles.settingIconWrap, { backgroundColor: '#EF444420' }]}>
-              <Trash2 color="#EF4444" size={20} />
+            <View style={[styles.settingIconWrap, { backgroundColor: '#A1A1AA20' }]}>
+              <Trash2 color="#A1A1AA" size={20} />
             </View>
-            <Text style={[styles.settingLabel, { color: '#EF4444' }]}>Remove Photo</Text>
+            <Text style={[styles.settingLabel, { color: '#A1A1AA' }]}>{t('settings.removePhoto')}</Text>
           </TouchableOpacity>
         )}
       </BottomModal>
 
       {/* ─── Change Name Modal ───────────────────────── */}
-      <BottomModal visible={showNameModal} onClose={() => setShowNameModal(false)} title="Change Display Name">
+      <BottomModal visible={showNameModal} onClose={() => setShowNameModal(false)} title={t('settings.changeDisplayNameTitle')}>
         <TextInput
           style={styles.modalInput} value={newDisplayName} onChangeText={setNewDisplayName}
-          placeholder="Enter new name" placeholderTextColor="#666" autoFocus
+          placeholder={t('settings.enterNewNamePlaceholder')} placeholderTextColor="#666" autoFocus
         />
         {formError ? <Text style={styles.formError}>{formError}</Text> : null}
         <TouchableOpacity style={styles.modalBtn} onPress={handleChangeName} disabled={formLoading}>
-          {formLoading ? <ActivityIndicator color="#000" /> : <Text style={styles.modalBtnText}>Save Changes</Text>}
+          {formLoading ? <ActivityIndicator color="#000" /> : <Text style={styles.modalBtnText}>{t('settings.saveChanges')}</Text>}
         </TouchableOpacity>
       </BottomModal>
 
@@ -587,14 +837,14 @@ export const SettingsScreen = ({ navigation }) => {
               // Run update async without blocking the UI thread
               updateProfile(userId, profile, { dob: selectedDate.toISOString().split('T')[0] })
                 .then(updated => setProfile(updated))
-                .catch(e => Alert.alert('Error', e.message || 'Failed to update date of birth'));
+                .catch(e => Alert.alert(t('settings.errorTitle'), e.message || t('settings.dobUpdateFailedError')));
             }
           }}
         />
       )}
 
       {Platform.OS === 'ios' && (
-        <BottomModal visible={showDobModal} onClose={() => setShowDobModal(false)} title="Update Date of Birth">
+        <BottomModal visible={showDobModal} onClose={() => setShowDobModal(false)} title={t('settings.updateDobTitle')}>
           <View style={{ alignItems: 'center', marginBottom: 20 }}>
             <DateTimePicker
               value={newDob}
@@ -609,25 +859,25 @@ export const SettingsScreen = ({ navigation }) => {
           </View>
           {formError ? <Text style={styles.formError}>{formError}</Text> : null}
           <TouchableOpacity style={styles.modalBtn} onPress={handleChangeDob} disabled={formLoading}>
-            {formLoading ? <ActivityIndicator color="#000" /> : <Text style={styles.modalBtnText}>Save Changes</Text>}
+            {formLoading ? <ActivityIndicator color="#000" /> : <Text style={styles.modalBtnText}>{t('settings.saveChanges')}</Text>}
           </TouchableOpacity>
         </BottomModal>
       )}
 
       {/* ─── Change Username Modal ───────────────────── */}
-      <BottomModal visible={showUsernameModal} onClose={() => setShowUsernameModal(false)} title="Change Username">
-        <Text style={styles.modalHint}>You can only change your username once every 30 days.</Text>
+      <BottomModal visible={showUsernameModal} onClose={() => setShowUsernameModal(false)} title={t('settings.changeUsernameTitle')}>
+        <Text style={styles.modalHint}>{t('settings.usernameChangeLimitHint')}</Text>
         <View style={styles.usernameInputRow}>
           <Text style={styles.usernamePrefix}>@</Text>
           <TextInput
             style={[styles.modalInput, { flex: 1, borderWidth: 0, backgroundColor: 'transparent', paddingLeft: 8 }]} value={newUsername}
-            onChangeText={(t) => setNewUsername(t.toLowerCase().replace(/[^a-z0-9._]/g, ''))}
-            placeholder="new_username" placeholderTextColor="#666" autoCapitalize="none" autoCorrect={false} autoFocus
+            onChangeText={(text) => setNewUsername(text.toLowerCase().replace(/[^a-z0-9._]/g, ''))}
+            placeholder={t('settings.newUsernamePlaceholder')} placeholderTextColor="#666" autoCapitalize="none" autoCorrect={false} autoFocus
           />
         </View>
         {formError ? <Text style={styles.formError}>{formError}</Text> : null}
         <TouchableOpacity style={styles.modalBtn} onPress={handleChangeUsername} disabled={formLoading}>
-          {formLoading ? <ActivityIndicator color="#000" /> : <Text style={styles.modalBtnText}>Save Changes</Text>}
+          {formLoading ? <ActivityIndicator color="#000" /> : <Text style={styles.modalBtnText}>{t('settings.saveChanges')}</Text>}
         </TouchableOpacity>
       </BottomModal>
 
@@ -635,33 +885,33 @@ export const SettingsScreen = ({ navigation }) => {
       <BottomModal
         visible={showPasswordModal}
         onClose={() => { setShowPasswordModal(false); setPasswordStep('input'); }}
-        title="Change Password"
+        title={t('settings.changePasswordTitle')}
       >
         {passwordStep === 'input' ? (
           <>
             <TextInput
               style={styles.modalInput} value={newPassword} onChangeText={setNewPassword}
-              placeholder="New password" placeholderTextColor="#666" secureTextEntry autoFocus
+              placeholder={t('settings.newPasswordPlaceholder')} placeholderTextColor="#666" secureTextEntry autoFocus
             />
             <TextInput
               style={[styles.modalInput, { marginTop: 12 }]} value={confirmPassword} onChangeText={setConfirmPassword}
-              placeholder="Repeat password" placeholderTextColor="#666" secureTextEntry
+              placeholder={t('settings.repeatPasswordPlaceholder')} placeholderTextColor="#666" secureTextEntry
             />
             {formError ? <Text style={styles.formError}>{formError}</Text> : null}
             <TouchableOpacity style={styles.modalBtn} onPress={handleRequestOtp} disabled={formLoading}>
               {formLoading
                 ? <ActivityIndicator color="#000" />
-                : <Text style={styles.modalBtnText}>Send Verification Code</Text>}
+                : <Text style={styles.modalBtnText}>{t('settings.sendVerificationCode')}</Text>}
             </TouchableOpacity>
-            <Text style={styles.otpHint}>A 6-digit code will be sent to {email}</Text>
+            <Text style={styles.otpHint}>{t('settings.otpSentHint', { email })}</Text>
           </>
         ) : (
           <>
             <View style={styles.otpSentBanner}>
-              <Mail color="#10B981" size={20} />
-              <Text style={styles.otpSentText}>Code sent to {email}</Text>
+              <Mail color="#34D399" size={20} />
+              <Text style={styles.otpSentText}>{t('settings.codeSentTo', { email })}</Text>
             </View>
-            <Text style={[styles.modalHint, { marginTop: 16 }]}>Enter the 6-digit verification code:</Text>
+            <Text style={[styles.modalHint, { marginTop: 16 }]}>{t('settings.enterVerificationCode')}</Text>
             <TextInput
               style={[styles.modalInput, styles.otpInput]} value={otp} onChangeText={setOtp}
               placeholder="000000" placeholderTextColor="#444" keyboardType="number-pad"
@@ -675,37 +925,37 @@ export const SettingsScreen = ({ navigation }) => {
             >
               {formLoading
                 ? <ActivityIndicator color="#000" />
-                : <Text style={[styles.modalBtnText, otp.length < 6 && { color: '#666' }]}>Verify & Change Password</Text>}
+                : <Text style={[styles.modalBtnText, otp.length < 6 && { color: '#666' }]}>{t('settings.verifyAndChangePassword')}</Text>}
             </TouchableOpacity>
             <TouchableOpacity onPress={handleResendOtp} disabled={otpTimer > 0} style={styles.resendBtn}>
               <Text style={[styles.resendText, otpTimer > 0 && { color: '#555' }]}>
-                {otpTimer > 0 ? `Resend code in ${otpTimer}s` : 'Resend code'}
+                {otpTimer > 0 ? t('settings.resendCodeIn', { seconds: otpTimer }) : t('settings.resendCode')}
               </Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={() => { setPasswordStep('input'); setFormError(''); }} style={{ marginTop: 12 }}>
-              <Text style={styles.resendText}>← Back</Text>
+              <Text style={styles.resendText}>{t('settings.backButton')}</Text>
             </TouchableOpacity>
           </>
         )}
       </BottomModal>
 
       {/* ─── Delete Account Modal ────────────────────── */}
-      <BottomModal visible={showDeleteModal} onClose={() => setShowDeleteModal(false)} title="Delete Account">
+      <BottomModal visible={showDeleteModal} onClose={() => setShowDeleteModal(false)} title={t('settings.deleteAccountTitle')}>
         <View style={styles.deleteWarning}>
-          <Shield color="#EF4444" size={28} />
+          <Shield color="#FB7185" size={28} />
           <Text style={styles.deleteWarningText}>
-            This action is permanent and cannot be undone. All your tasks, profile data, and account will be permanently deleted.
+            {t('settings.deleteAccountWarning')}
           </Text>
         </View>
-        <Text style={styles.modalHint}>Type DELETE to confirm:</Text>
+        <Text style={styles.modalHint}>{t('settings.typeDeleteToConfirm')}</Text>
         <TextInput
-          style={[styles.modalInput, { borderColor: '#EF4444', color: '#EF4444' }]} value={deleteConfirmText}
-          onChangeText={setDeleteConfirmText} placeholder="DELETE" placeholderTextColor="#EF444466"
+          style={[styles.modalInput, { borderColor: '#FB7185', color: '#FB7185' }]} value={deleteConfirmText}
+          onChangeText={setDeleteConfirmText} placeholder="DELETE" placeholderTextColor="#FB718566"
           autoCapitalize="characters" autoFocus
         />
         {formError ? <Text style={styles.formError}>{formError}</Text> : null}
-        <TouchableOpacity style={[styles.modalBtn, { backgroundColor: '#EF4444' }]} onPress={handleDeleteAccount} disabled={formLoading}>
-          {formLoading ? <ActivityIndicator color="#fff" /> : <Text style={[styles.modalBtnText, { color: '#fff' }]}>Delete My Account</Text>}
+        <TouchableOpacity style={[styles.modalBtn, { backgroundColor: '#FB7185' }]} onPress={handleDeleteAccount} disabled={formLoading}>
+          {formLoading ? <ActivityIndicator color="#fff" /> : <Text style={[styles.modalBtnText, { color: '#fff' }]}>{t('settings.deleteMyAccount')}</Text>}
         </TouchableOpacity>
       </BottomModal>
 
@@ -717,22 +967,54 @@ export const SettingsScreen = ({ navigation }) => {
         navigation={navigation}
         currentRoute="Settings"
       />
+
+      <LanguagePickerModal
+        isVisible={showLanguageModal}
+        onClose={() => setShowLanguageModal(false)}
+        currentCode={currentLanguage}
+        onSelect={handleSelectLanguage}
+      />
     </View>
   );
 };
 
 // ─── Setting Row Component ────────────────────────────
-const SettingRow = ({ icon: Icon, iconColor, label, value, onPress, danger, isLast, rightComponent }) => (
-  <TouchableOpacity style={[styles.settingRow, isLast && { paddingBottom: 14 }]} onPress={onPress} activeOpacity={0.6}>
-    <View style={[styles.settingIconWrap, { backgroundColor: (danger ? '#EF444420' : iconColor + '20') }]}>
-      <Icon color={danger ? '#EF4444' : iconColor} size={18} />
-    </View>
-    <View style={styles.settingInfo}>
-      <Text style={[styles.settingLabel, danger && { color: '#EF4444' }]}>{label}</Text>
-      {value ? <Text style={styles.settingValue} numberOfLines={1}>{value}</Text> : null}
-    </View>
-    {rightComponent || (!danger && <ChevronRight color="#444" size={20} />)}
-  </TouchableOpacity>
+// Bare icon, label, and a right-aligned value. The old filled icon tile on
+// every row made long lists read as a wall of coloured chips; the icon now
+// carries the accent on its own and the value sits inline.
+const SettingRow = ({ icon: Icon, iconColor, valueColor, label, value, onPress, danger, isLast, rightComponent }) => {
+  const accent = useTheme().theme.accent;
+  const tint = (!iconColor || iconColor === '#FFFFFF') ? accent : iconColor;
+  const dangerColor = '#FB7185';
+  return (
+    <TouchableOpacity
+      style={[styles.settingRow, !isLast && styles.settingRowDivided]}
+      onPress={onPress}
+      activeOpacity={0.6}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityValue={value ? { text: String(value) } : undefined}
+    >
+      <Icon color={danger ? dangerColor : tint} size={18} />
+      <Text style={[styles.settingLabel, danger && { color: dangerColor }]} numberOfLines={1}>
+        {label}
+      </Text>
+      {value ? (
+        <Text
+          style={[styles.settingValue, valueColor && { color: valueColor }]}
+          numberOfLines={1}
+        >
+          {value}
+        </Text>
+      ) : null}
+      {rightComponent || (!danger && <ChevronRight color="#3F3F46" size={17} />)}
+    </TouchableOpacity>
+  );
+};
+
+/** Tracked micro-caption used to separate groups of rows. */
+const SettingsSection = ({ label, tone }) => (
+  <Text style={[styles.sectionTitle, tone && { color: tone }]}>{label}</Text>
 );
 
 // ─── Bottom Sheet Modal ───────────────────────────────
@@ -757,6 +1039,40 @@ const BottomModal = ({ visible, onClose, title, children }) => (
 // ─── Styles ─────────────────────────────────────────────
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: DARK_BG },
+
+  // ─── Brand Footer ───
+  brandFooter: {
+    alignItems: 'center',
+    paddingVertical: 26,
+    marginTop: 16,
+  },
+  brandWordmark: {
+    fontSize: 13,
+    fontWeight: '500',
+    letterSpacing: 0.3,
+  },
+  brandDouble: {
+    color: '#71717A',
+  },
+  brandThree: {
+    color: '#FFFFFF',
+  },
+  brandVersion: {
+    color: '#3F3F46',
+    fontSize: 10,
+    fontWeight: '400',
+    letterSpacing: 0.4,
+    marginTop: 5,
+  },
+  brandJasper: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: '400',
+    fontStyle: 'italic',
+    marginTop: 8,
+    opacity: 0.7,
+  },
+
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -766,114 +1082,135 @@ const styles = StyleSheet.create({
     backgroundColor: DARK_BG,
   },
   iconButton: { padding: 6 },
-  headerTitle: { color: THEME_COLOR, fontSize: 18, fontWeight: '700', letterSpacing: 0.5 },
+  headerTitle: { color: THEME_COLOR, fontSize: 15, fontWeight: '500', letterSpacing: 0.2 },
   scroll: { paddingBottom: 60 },
 
-  // Profile Header
-  profileHeader: { alignItems: 'center', marginTop: 24, marginBottom: 36 },
-  avatarWrap: { position: 'relative', marginBottom: 18 },
-  avatar: { 
-    width: 96, 
-    height: 96, 
-    borderRadius: 48, 
-    backgroundColor: CARD_BG, 
-    borderWidth: 3, 
-    borderColor: BORDER_COLOR 
+  // ── Identity row ──
+  profileHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    paddingHorizontal: 20,
+    marginTop: 8,
+    marginBottom: 26,
   },
+  avatarWrap: { position: 'relative' },
+  avatar: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: CARD_BG,
+  },
+  avatarLoading: { alignItems: 'center', justifyContent: 'center' },
   cameraBadge: {
     position: 'absolute',
-    bottom: 2,
-    right: 2,
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: '#3B82F6',
+    bottom: -2,
+    right: -2,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 3,
+    borderWidth: 2,
     borderColor: DARK_BG,
-    shadowColor: "#3B82F6",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.4,
-    shadowRadius: 6,
-    elevation: 5,
   },
-  profileName: { 
-    color: THEME_COLOR, 
-    fontSize: 26, 
-    fontWeight: '700', 
-    marginBottom: 6,
-    letterSpacing: 0.3 
+  profileInfo: { flex: 1 },
+  profileName: {
+    color: THEME_COLOR,
+    fontSize: 18,
+    lineHeight: 23,
+    fontWeight: '400',
+    letterSpacing: -0.2,
   },
-  profileUsername: { 
-    color: '#888', 
-    fontSize: 16, 
-    fontWeight: '600', 
-    marginBottom: 4 
+  profileUsername: {
+    color: '#8A8A93',
+    fontSize: 13,
+    fontWeight: '400',
+    marginTop: 2,
   },
-  profileEmail: { 
-    color: '#555', 
-    fontSize: 14, 
-    fontWeight: '500' 
+  profileEmail: {
+    color: '#55555C',
+    fontSize: 12,
+    fontWeight: '400',
+    marginTop: 2,
   },
 
-  // Sections
-  sectionTitle: { 
-    color: '#666', 
-    fontSize: 11, 
-    fontWeight: '700', 
-    letterSpacing: 1.2, 
-    marginBottom: 12, 
-    marginLeft: 24, 
+  proBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+    marginHorizontal: 20,
+    marginBottom: 10,
+  },
+  proBannerTitle: {
+    color: '#FAFAFA',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  proBannerSub: {
+    color: '#71717A',
+    fontSize: 11.5,
+    marginTop: 2,
+    fontWeight: '400',
+  },
+  prefHint: {
+    color: '#55555C',
+    fontSize: 11.5,
+    fontWeight: '400',
+    paddingHorizontal: 20,
     marginTop: 8,
-    textTransform: 'uppercase' 
+    lineHeight: 16,
   },
-  settingGroup: { 
-    backgroundColor: CARD_BG, 
-    borderRadius: 18, 
-    marginHorizontal: 16, 
-    marginBottom: 28,
-    borderWidth: 1,
-    borderColor: BORDER_COLOR,
+
+  // ── Sections ──
+  sectionTitle: {
+    color: '#5F5F66',
+    fontSize: 10,
+    fontWeight: '600',
+    letterSpacing: 1.3,
+    marginBottom: 6,
+    marginLeft: 20,
+    marginTop: 26,
+    textTransform: 'uppercase',
   },
-  
-  // Setting Rows
-  settingRow: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    paddingVertical: 16, 
-    paddingRight: 16, 
-    paddingLeft: 14 
+  // Rows sit on the page separated by hairlines rather than inside a bordered
+  // card, so a long settings list stops reading as a stack of heavy boxes.
+  settingGroup: {
+    paddingHorizontal: 20,
   },
-  settingIconWrap: { 
-    width: 36, 
-    height: 36, 
-    borderRadius: 10, 
-    alignItems: 'center', 
-    justifyContent: 'center', 
-    marginRight: 14 
+
+  // ── Rows ──
+  settingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    minHeight: 52,
+    paddingVertical: 13,
   },
-  settingInfo: { 
-    flex: 1, 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    justifyContent: 'space-between' 
+  settingRowDivided: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: BORDER_COLOR,
   },
-  settingLabel: { 
-    color: THEME_COLOR, 
-    fontSize: 16, 
-    fontWeight: '600' 
+  settingLabel: {
+    flex: 1,
+    color: THEME_COLOR,
+    fontSize: 14.5,
+    fontWeight: '400',
   },
-  settingValue: { 
-    color: '#777', 
-    fontSize: 15, 
-    fontWeight: '500', 
-    marginRight: 8 
+  settingValue: {
+    color: '#77777F',
+    fontSize: 13,
+    fontWeight: '400',
+    maxWidth: '45%',
+    textAlign: 'right',
   },
-  divider: { 
-    height: 1, 
-    backgroundColor: BORDER_COLOR, 
-    marginLeft: 64 
+  divider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: BORDER_COLOR,
   },
 
   // Avatar Options
@@ -960,89 +1297,89 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 0.3 
   },
-  formError: { 
-    color: '#EF4444', 
-    fontSize: 14, 
-    fontWeight: '600', 
+  formError: {
+    color: '#FB7185',
+    fontSize: 14,
+    fontWeight: '600',
     marginTop: 10,
-    marginLeft: 4 
+    marginLeft: 4
   },
 
   // Username
-  usernameInputRow: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    backgroundColor: DARK_BG, 
-    borderRadius: 14, 
-    borderWidth: 1.5, 
-    borderColor: BORDER_COLOR, 
-    paddingLeft: 18 
+  usernameInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: DARK_BG,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: BORDER_COLOR,
+    paddingLeft: 18
   },
-  usernamePrefix: { 
-    color: '#777', 
-    fontSize: 18, 
-    fontWeight: '600' 
+  usernamePrefix: {
+    color: '#777',
+    fontSize: 18,
+    fontWeight: '600'
   },
 
   // OTP / Password
-  otpHint: { 
-    color: '#666', 
-    fontSize: 13, 
-    fontWeight: '500', 
-    textAlign: 'center', 
+  otpHint: {
+    color: '#666',
+    fontSize: 13,
+    fontWeight: '500',
+    textAlign: 'center',
     marginTop: 18,
-    lineHeight: 20 
+    lineHeight: 20
   },
-  otpSentBanner: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    gap: 12, 
-    backgroundColor: '#10B98118', 
-    padding: 16, 
+  otpSentBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: '#34D39918',
+    padding: 16,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#10B98130' 
+    borderColor: '#34D39930'
   },
-  otpSentText: { 
-    color: '#10B981', 
-    fontSize: 15, 
-    fontWeight: '600', 
-    flex: 1 
+  otpSentText: {
+    color: '#34D399',
+    fontSize: 15,
+    fontWeight: '600',
+    flex: 1
   },
-  otpInput: { 
-    fontSize: 32, 
-    fontWeight: '700', 
-    letterSpacing: 12, 
-    paddingVertical: 22, 
-    textAlign: 'center' 
+  otpInput: {
+    fontSize: 32,
+    fontWeight: '700',
+    letterSpacing: 12,
+    paddingVertical: 22,
+    textAlign: 'center'
   },
-  resendBtn: { 
-    alignItems: 'center', 
-    marginTop: 20 
+  resendBtn: {
+    alignItems: 'center',
+    marginTop: 20
   },
-  resendText: { 
-    color: '#888', 
-    fontSize: 15, 
-    fontWeight: '600' 
+  resendText: {
+    color: '#888',
+    fontSize: 15,
+    fontWeight: '600'
   },
 
   // Delete
-  deleteWarning: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    gap: 16, 
-    backgroundColor: '#EF444412', 
-    padding: 18, 
-    borderRadius: 14, 
+  deleteWarning: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+    backgroundColor: '#FB718512',
+    padding: 18,
+    borderRadius: 14,
     marginBottom: 24,
     borderWidth: 1,
-    borderColor: '#EF444430' 
+    borderColor: '#FB718530'
   },
-  deleteWarningText: { 
-    flex: 1, 
-    color: '#EF4444', 
-    fontSize: 14, 
-    fontWeight: '600', 
-    lineHeight: 22 
+  deleteWarningText: {
+    flex: 1,
+    color: '#FB7185',
+    fontSize: 14,
+    fontWeight: '600',
+    lineHeight: 22
   },
 });

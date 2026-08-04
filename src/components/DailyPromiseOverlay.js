@@ -1,12 +1,14 @@
-import React, { useState, useEffect } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, Dimensions, AppState } from 'react-native';
-import Animated, { useSharedValue, useAnimatedStyle, withTiming, Easing, runOnJS } from 'react-native-reanimated';
+import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { AppState, Dimensions, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { Storage } from '../utils/storage';
 import { FadeText } from './FadeText';
 
 const { width, height } = Dimensions.get('window');
 
 export const DailyPromiseOverlay = ({ userId }) => {
+  const { t } = useTranslation();
   const [isVisible, setIsVisible] = useState(false);
   const [promiseText, setPromiseText] = useState('');
   const [countdown, setCountdown] = useState(5);
@@ -39,7 +41,19 @@ export const DailyPromiseOverlay = ({ userId }) => {
       
       const config = await Storage.get(`promisesConfig_${userId}`);
       const isEnabled = config?.enabled !== false; // Default true
-      const promisesList = config?.promises || [];
+
+      // Fall back to a default promise if the user hasn't opened the Promises
+      // screen yet (config not seeded). This is why the popup previously only
+      // worked after visiting the Promises section first.
+      const DEFAULT_PROMISE = t('dailyPromise.defaultPromise');
+      let promisesList = config?.promises || [];
+      if (promisesList.length === 0) {
+        promisesList = [DEFAULT_PROMISE];
+        // Seed config so the Promises screen stays consistent
+        if (!config) {
+          await Storage.set(`promisesConfig_${userId}`, { enabled: true, promises: [DEFAULT_PROMISE] });
+        }
+      }
 
       // Only show if enabled, we have promises, and haven't shown today
       if (isEnabled && promisesList.length > 0 && lastShown !== today) {
@@ -102,7 +116,7 @@ export const DailyPromiseOverlay = ({ userId }) => {
   return (
     <Animated.View style={[styles.overlay, animatedContainerStyle]}>
       <View style={styles.content}>
-        <Text style={styles.title}>YOUR DAILY PROMISE</Text>
+        <Text style={styles.title}>{t('dailyPromise.title')}</Text>
         
         <View style={styles.promiseWrapper}>
           <FadeText 
@@ -113,13 +127,13 @@ export const DailyPromiseOverlay = ({ userId }) => {
 
         <View style={styles.bottomSection}>
           {showCountdown && countdown > 0 && (
-            <Text style={styles.countdown}>Locking in for {countdown}s...</Text>
+            <Text style={styles.countdown}>{t('dailyPromise.lockingInFor', { count: countdown })}</Text>
           )}
 
           {showButton && (
             <Animated.View style={[animatedButtonStyle, { width: '100%' }]}>
               <TouchableOpacity style={styles.button} onPress={handleDismiss}>
-                <Text style={styles.buttonText}>I Respect Myself & My Promise</Text>
+                <Text style={styles.buttonText}>{t('dailyPromise.respectButton')}</Text>
               </TouchableOpacity>
             </Animated.View>
           )}

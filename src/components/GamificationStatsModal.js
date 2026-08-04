@@ -1,181 +1,227 @@
-import React from 'react';
-import { Modal, StyleSheet, Text, TouchableOpacity, View, Dimensions, useColorScheme, ScrollView, Image, Alert } from 'react-native';
-import { Award, Flame, Star, X, Gem } from 'lucide-react-native';
-import { COLORS } from '../theme/theme';
-import { Gamification } from '../utils/gamification';
-import { BlurView } from 'expo-blur';
+import { Flame, Gem, Hexagon, Shield, Snowflake, Sparkles, X } from 'lucide-react-native';
+import React, { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
+import { Dimensions, Image, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { STONES_CATALOG } from '../config/stonesConfig';
+import { useTheme } from '../context/ThemeContext';
+import { Gamification } from '../utils/gamification';
+import { Storage } from '../utils/storage';
+import { XPAvatarRing } from './XPAvatarRing';
 
 const { width } = Dimensions.get('window');
 
+// ─── Unified Palette ───
+const BG = '#000000';
+const SURFACE = '#0A0A0A';
+const SURFACE_2 = '#121214';
+const BORDER = '#1C1C1E';
+const TEXT = '#FAFAFA';
+const MUTED = '#71717A';
+
 export const GamificationStatsModal = ({ isVisible, onClose, gamestate, profile }) => {
-  const colorScheme = useColorScheme();
-  const theme = colorScheme === 'dark' ? COLORS.dark : COLORS.light;
-  
   const [selectedStone, setSelectedStone] = React.useState(null);
+  const [protectionPreference, setProtectionPreference] = React.useState({ userId: null, enabled: false });
+  const ACCENT = useTheme().theme.accent;
+  const styles = useMemo(() => makeStyles(ACCENT), [ACCENT]);
+  const { t } = useTranslation();
+
+  React.useEffect(() => {
+    let active = true;
+    if (!isVisible || !profile?.id) return () => { active = false; };
+
+    Storage.get(`streak_freeze_enabled_${profile.id}`).then((value) => {
+      if (active) {
+        setProtectionPreference({
+          userId: profile.id,
+          enabled: value === true || value === 'true',
+        });
+      }
+    });
+    return () => { active = false; };
+  }, [isVisible, profile?.id]);
+
+  const protectionEnabled = protectionPreference.userId === profile?.id && protectionPreference.enabled;
 
   if (!gamestate) return null;
 
   const currentLevel = gamestate.level || 1;
   const currentXP = gamestate.xp || 0;
-  
+  const streak = gamestate.streak || 0;
+
   const baseXPForCurrentLevel = Gamification.getRequiredXPForLevel(currentLevel);
   const baseXPForNextLevel = Gamification.getRequiredXPForLevel(currentLevel + 1);
-  
+
   const totalXpNeededForNextLevel = baseXPForNextLevel - baseXPForCurrentLevel;
   const xpInCurrentLevel = currentXP - baseXPForCurrentLevel;
+  const progressPct = Math.max(4, Math.min(100, (xpInCurrentLevel / totalXpNeededForNextLevel) * 100));
+  const xpRemaining = Math.max(0, totalXpNeededForNextLevel - xpInCurrentLevel);
 
   const collectedStones = STONES_CATALOG.filter(s => currentLevel >= s.level);
+  const totalShardsEarned = collectedStones.reduce((sum, s) => sum + (s.shards || 0), 0);
+  // Only XP above the current level floor may fund streak protection.
+  const safeProtectionXP = Math.max(0, currentXP - baseXPForCurrentLevel);
+
+  const getAvatarSource = () => {
+    if (profile?.avatar_url) return { uri: profile.avatar_url };
+    const seed = profile?.avatar_seed || profile?.username || 'fallback';
+    return { uri: `https://api.dicebear.com/7.x/adventurer/png?seed=${seed}&backgroundColor=b6e3f4,c0aede,d1d4f9` };
+  };
 
   return (
-    <Modal
-      visible={isVisible}
-      animationType="fade"
-      transparent={true}
-      onRequestClose={onClose}
-    >
+    <Modal visible={isVisible} animationType="fade" transparent onRequestClose={onClose}>
       <View style={styles.overlay}>
-        <BlurView intensity={colorScheme === 'dark' ? 60 : 80} tint={colorScheme} style={StyleSheet.absoluteFill} />
-        
-        <View style={[styles.modalContainer, { backgroundColor: theme.surface, borderColor: theme.border }]}>
-          <TouchableOpacity style={styles.closeButton} onPress={onClose}>
-            <X color={theme.textMuted} size={24} />
+        <View style={styles.modalContainer}>
+          {/* Close */}
+          <TouchableOpacity style={styles.closeButton} onPress={onClose} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+            <X color={MUTED} size={20} />
           </TouchableOpacity>
 
-          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 20 }}>
-            <Text style={[styles.title, { color: theme.text }]}>Your Journey</Text>
+          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 4 }}>
+            {/* ── Hero: avatar + identity ── */}
+            <View style={styles.hero}>
+              <View style={styles.avatarWrap}>
+                <XPAvatarRing
+                  avatarSource={getAvatarSource()}
+                  xp={currentXP}
+                  level={currentLevel}
+                  size={92}
+                  strokeWidth={4}
+                />
+                <View style={styles.levelPill}>
+                  <Text style={styles.levelPillText}>{currentLevel}</Text>
+                </View>
+              </View>
 
-          <View style={styles.statsGrid}>
-            
-            {/* Level Card */}
-            <View style={[styles.statCard, { backgroundColor: theme.background, borderColor: theme.border }]}>
-              <Award color="#A855F7" size={32} style={styles.icon} />
-              <Text style={[styles.statValue, { color: theme.text }]}>Level {currentLevel}</Text>
-              <Text style={[styles.statLabel, { color: theme.textMuted }]}>Current Rank</Text>
+              <Text style={styles.displayName} numberOfLines={1}>
+                {profile?.display_name || t('gamificationStats.headerTitle')}
+              </Text>
+              <Text style={styles.rankLabel}>
+                {t('gamificationStats.levelValue', { level: currentLevel })} · {t('gamificationStats.currentRankLabel')}
+              </Text>
             </View>
 
-            {/* Streak Card */}
-            <View style={[styles.statCard, { backgroundColor: theme.background, borderColor: theme.border }]}>
-              <Flame color="#EF4444" size={32} style={styles.icon} />
-              <Text style={[styles.statValue, { color: theme.text }]}>{gamestate.streak} Days</Text>
-              <Text style={[styles.statLabel, { color: theme.textMuted }]}>Active Streak</Text>
+            {/* ── XP progress ── */}
+            <View style={styles.xpBlock}>
+              <View style={styles.xpTextRow}>
+                <Text style={styles.xpText}>{t('gamificationStats.xpFraction', { current: xpInCurrentLevel, total: totalXpNeededForNextLevel })}</Text>
+                <Text style={styles.xpTextMuted}>{t('gamificationStats.xpToNextLevel', { remaining: xpRemaining, nextLevel: currentLevel + 1 })}</Text>
+              </View>
+              <View style={styles.progressBarContainer}>
+                <View style={styles.progressBarBg} />
+                <View style={[styles.progressBarFill, { width: `${progressPct}%` }]} />
+              </View>
             </View>
 
-          </View>
+            {/* ── Metrics row ── */}
+            <View style={styles.statsGrid}>
+              <View style={styles.statCard}>
+                <Flame color="#FB923C" size={22} fill="#FB923C33" />
+                <Text style={styles.statValue}>{streak}</Text>
+                <Text style={styles.statLabel}>{t('gamificationStats.activeStreakLabel')}</Text>
+              </View>
 
-          {/* XP Progress Section */}
-          <View style={[styles.progressSection, { backgroundColor: theme.background, borderColor: theme.border, marginBottom: 20 }]}>
-            <View style={styles.progressHeader}>
-              <Star color="#F59E0B" size={20} />
-              <Text style={[styles.progressTitle, { color: theme.text }]}>XP Progress</Text>
-            </View>
-            
-            <View style={styles.progressBarContainer}>
-              <View style={[styles.progressBarBg, { backgroundColor: theme.border }]} />
-              <View style={[styles.progressBarFill, { width: `${Math.max(5, (xpInCurrentLevel / totalXpNeededForNextLevel) * 100)}%` }]} />
-            </View>
+              <View style={styles.statCard}>
+                <Hexagon color={ACCENT} size={22} fill={ACCENT + '33'} />
+                <Text style={styles.statValue}>{totalShardsEarned.toLocaleString()}</Text>
+                <Text style={styles.statLabel}>{t('gamificationStats.shardsLabel', { defaultValue: 'Shards' })}</Text>
+              </View>
 
-            <View style={styles.xpTextRow}>
-              <Text style={[styles.xpText, { color: theme.text }]}>{xpInCurrentLevel} / {totalXpNeededForNextLevel} XP</Text>
-              <Text style={[styles.xpTextMuted, { color: theme.textMuted }]}>{totalXpNeededForNextLevel - xpInCurrentLevel} XP to Level {currentLevel + 1}</Text>
-            </View>
-          </View>
-
-            {/* Special Items / Freezes */}
-            <View style={[styles.progressSection, { backgroundColor: theme.background, borderColor: theme.border, marginBottom: 20 }]}>
-               <View style={styles.progressHeader}>
-                  <Flame color="#0EA5E9" size={20} />
-                  <Text style={[styles.progressTitle, { color: theme.text }]}>Streak Protection</Text>
-               </View>
-               <Text style={[styles.xpTextMuted, { color: theme.text, marginTop: -4, lineHeight: 20 }]}>
-                 If you miss a day, the system will automatically consume <Text style={{fontWeight:'700', color: '#F59E0B'}}>500 XP</Text> per missed day to save your streak.
-               </Text>
-               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 }}>
-                  <Text style={{ fontSize: 13, color: theme.textMuted, fontWeight: '600' }}>Available Freezes:</Text>
-                  <Text style={{ fontSize: 14, color: theme.text, fontWeight: '800' }}>{Math.floor(currentXP / 500)} Days</Text>
-               </View>
+              <View style={styles.statCard}>
+                <Snowflake color="#60A5FA" size={22} />
+                <Text style={styles.statValue}>{safeProtectionXP}</Text>
+                <Text style={styles.statLabel}>
+                  {t('gamificationStats.protectedXpLabel', { defaultValue: 'Safe XP' })}
+                </Text>
+              </View>
             </View>
 
-            {/* Stones Collected */}
-            <View style={[styles.progressSection, { backgroundColor: theme.background, borderColor: theme.border }]}>
-               <View style={styles.progressHeader}>
-                  <Gem color="#A855F7" size={20} />
-                  <Text style={[styles.progressTitle, { color: theme.text }]}>Stones Collected ({collectedStones.length})</Text>
-               </View>
-               
-               {collectedStones.length === 0 ? (
-                 <Text style={{ color: theme.textMuted, fontSize: 13, textAlign: 'center', marginTop: 10 }}>
-                   Level up to start collecting rare stones!
-                 </Text>
-               ) : (
-                 <View style={styles.stonesGrid}>
-                   {collectedStones.map((stone) => (
-                     <TouchableOpacity 
-                       key={stone.level} 
-                       style={styles.stoneItem}
-                       onPress={() => setSelectedStone(stone)}
-                       activeOpacity={0.7}
-                     >
-                       <Image 
-                         source={stone.image} 
-                         style={styles.stoneImage} 
-                         resizeMode="contain" 
-                       />
-                     </TouchableOpacity>
-                   ))}
-                 </View>
-               )}
+            {/* ── Streak protection ── */}
+            <View style={styles.section}>
+              <View style={styles.sectionHeader}>
+                <Shield color={ACCENT} size={15} />
+                <Text style={styles.sectionTitle}>{t('gamificationStats.streakProtectionTitle')}</Text>
+                <View style={[styles.protectionStatus, protectionEnabled && styles.protectionStatusOn]}>
+                  <Text style={[styles.protectionStatusText, protectionEnabled && { color: ACCENT }]}>
+                    {protectionEnabled
+                      ? t('gamificationStats.protectionOn', { defaultValue: 'ON' })
+                      : t('gamificationStats.protectionOff', { defaultValue: 'OFF' })}
+                  </Text>
+                </View>
+              </View>
+              <Text style={styles.bodyText}>
+                {protectionEnabled
+                  ? t('gamificationStats.streakProtectionSafeDesc', {
+                    defaultValue: 'Uses up to 500 XP per missed day, only from XP earned in this level. Your level and stones stay safe.',
+                  })
+                  : t('gamificationStats.streakProtectionOffDesc', {
+                    defaultValue: 'Enable Auto Streak Freeze in Settings to protect your streak. No XP is spent while it is off.',
+                  })}
+              </Text>
             </View>
 
-            {/* Reset Stats */}
-            <TouchableOpacity 
-              style={{ marginTop: 24, marginHorizontal: 20, padding: 14, borderRadius: 12, backgroundColor: '#EF444420', alignItems: 'center' }}
-              onPress={() => {
-                Alert.alert('Reset Progress', 'Are you sure you want to reset your Level, XP, and Streak to zero? This cannot be undone.', [
-                  { text: 'Cancel', style: 'cancel' },
-                  { text: 'Reset', style: 'destructive', onPress: async () => {
-                     if (profile?.id) {
-                       await Gamification.saveState(profile.id, { xp: 0, level: 1, streak: 0, last_active_date: null });
-                       onClose(); 
-                     }
-                  }}
-                ]);
-              }}
-            >
-              <Text style={{ color: '#EF4444', fontWeight: '700', fontSize: 14 }}>Reset Progress Data</Text>
-            </TouchableOpacity>
+            {/* ── Stones collected ── */}
+            <View style={styles.section}>
+              <View style={styles.sectionHeader}>
+                <Gem color={ACCENT} size={15} />
+                <Text style={styles.sectionTitle}>{t('gamificationStats.stonesTitle', { count: collectedStones.length })}</Text>
+              </View>
+
+              {collectedStones.length === 0 ? (
+                <Text style={styles.emptyText}>{t('gamificationStats.stonesEmptyText')}</Text>
+              ) : (
+                <>
+                  <Text style={styles.shardsEarnedNote}>
+                    {t('gamificationStats.shardsEarnedNote', { shards: totalShardsEarned.toLocaleString() })}
+                  </Text>
+                  <View style={styles.stonesGrid}>
+                    {collectedStones.map((stone) => {
+                      const rColor = stone.rarity?.colors?.[1] || ACCENT;
+                      return (
+                        <TouchableOpacity
+                          key={stone.level}
+                          style={[styles.stoneItem, { borderColor: rColor + '55', shadowColor: rColor }]}
+                          onPress={() => setSelectedStone(stone)}
+                          activeOpacity={0.7}
+                        >
+                          <Image source={stone.image} style={styles.stoneImage} resizeMode="contain" />
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </>
+              )}
+            </View>
           </ScrollView>
-
         </View>
       </View>
 
-      {/* Selected Stone Detail Popup */}
+      {/* ── Stone detail ── */}
       {selectedStone && (
         <Modal transparent animationType="fade" visible={!!selectedStone} onRequestClose={() => setSelectedStone(null)}>
           <View style={styles.detailBackdrop}>
-            <BlurView intensity={40} tint="dark" style={StyleSheet.absoluteFill} />
-            <View style={[styles.detailCard, { backgroundColor: '#000000', borderColor: selectedStone.rarity.colors[1] }]}>
-              <TouchableOpacity style={styles.detailClose} onPress={() => setSelectedStone(null)}>
-                <X color={theme.text} size={24} />
+            <View style={[styles.detailCard, { borderColor: (selectedStone.rarity?.colors?.[1] || ACCENT) + '66' }]}>
+              <TouchableOpacity style={styles.detailClose} onPress={() => setSelectedStone(null)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <X color={TEXT} size={22} />
               </TouchableOpacity>
-              
-              <Image 
-                source={selectedStone.image} 
-                style={{ width: 160, height: 160 }} 
-                resizeMode="contain" 
-              />
-              
-              <Text style={[styles.detailName, { color: theme.text }]}>{selectedStone.name}</Text>
-              
-              <View style={[styles.rarityBadge, { backgroundColor: selectedStone.rarity.colors[2] }]}>
-                <Text style={[styles.rarityText, { color: selectedStone.rarity.colors[0] }]}>
-                  {selectedStone.rarity.label}
-                </Text>
+
+              <View style={[styles.detailGlow, { backgroundColor: selectedStone.rarity?.glow || ACCENT + '40' }]} />
+              <Image source={selectedStone.image} style={{ width: 150, height: 150 }} resizeMode="contain" />
+
+              <Text style={styles.detailName}>{selectedStone.name}</Text>
+
+              <View style={[styles.rarityBadge, { borderColor: selectedStone.rarity?.colors?.[1] || ACCENT, backgroundColor: (selectedStone.rarity?.colors?.[1] || ACCENT) + '1F' }]}>
+                <Sparkles color={selectedStone.rarity?.colors?.[0] || ACCENT} size={11} />
+                <Text style={[styles.rarityText, { color: selectedStone.rarity?.colors?.[0] || ACCENT }]}>{selectedStone.rarity.label}</Text>
               </View>
-              
-              <Text style={[styles.detailDesc, { color: theme.textMuted }]}>
-                Unearthed at Level {selectedStone.level}.
-              </Text>
+
+              {selectedStone.shards ? (
+                <View style={styles.detailShardRow}>
+                  <Hexagon color={ACCENT} size={14} fill={ACCENT} />
+                  <Text style={styles.detailShardText}>{t('gamificationStats.detailShards', { shards: selectedStone.shards.toLocaleString() })}</Text>
+                </View>
+              ) : null}
+
+              <Text style={styles.detailDesc}>{t('gamificationStats.unearthedAtLevel', { level: selectedStone.level })}</Text>
             </View>
           </View>
         </Modal>
@@ -184,179 +230,307 @@ export const GamificationStatsModal = ({ isVisible, onClose, gamestate, profile 
   );
 };
 
-const styles = StyleSheet.create({
+const makeStyles = (ACCENT) => StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: 'rgba(0,0,0,0.78)',
     justifyContent: 'center',
     alignItems: 'center',
+    padding: 20,
   },
   modalContainer: {
-    width: width * 0.85,
-    maxHeight: '80%',
-    borderRadius: 24,
+    width: width * 0.9,
+    maxHeight: '86%',
+    borderRadius: 28,
     borderWidth: 1,
-    padding: 24,
-    paddingBottom: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.3,
-    shadowRadius: 20,
-    elevation: 10,
+    borderColor: BORDER,
+    backgroundColor: BG,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 20,
   },
   closeButton: {
     position: 'absolute',
-    top: 16,
-    right: 16,
+    top: 14,
+    right: 14,
     zIndex: 10,
-    padding: 4,
+    padding: 2,
   },
-  title: {
-    fontSize: 24,
-    fontWeight: '800',
-    marginBottom: 24,
-    textAlign: 'center',
-    letterSpacing: -0.5,
+
+  // Hero
+  hero: {
+    alignItems: 'center',
+    marginTop: 8,
+    marginBottom: 22,
   },
-  statsGrid: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 20,
-    gap: 12,
+  avatarWrap: {
+    marginBottom: 14,
   },
-  statCard: {
-    flex: 1,
-    borderRadius: 16,
-    borderWidth: 1,
-    padding: 16,
+  levelPill: {
+    position: 'absolute',
+    bottom: -4,
+    left: '50%',
+    marginLeft: -15,
+    width: 30,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: ACCENT,
     alignItems: 'center',
     justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: BG,
   },
-  icon: {
+  levelPillText: {
+    color: '#000',
+    fontSize: 12,
+    fontWeight: '900',
+  },
+  displayName: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: TEXT,
+    letterSpacing: 0.2,
+  },
+  rankLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: MUTED,
+    marginTop: 4,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
+
+  // XP
+  xpBlock: {
+    marginBottom: 18,
+  },
+  xpTextRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     marginBottom: 8,
   },
-  statValue: {
-    fontSize: 20,
-    fontWeight: '700',
-    marginBottom: 4,
+  xpText: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: TEXT,
   },
-  statLabel: {
-    fontSize: 12,
-    fontWeight: '500',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  progressSection: {
-    borderRadius: 16,
-    borderWidth: 1,
-    padding: 16,
-  },
-  progressHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 16,
-    gap: 8,
-  },
-  progressTitle: {
-    fontSize: 16,
+  xpTextMuted: {
+    fontSize: 11,
     fontWeight: '600',
+    color: MUTED,
   },
   progressBarContainer: {
-    height: 12,
-    borderRadius: 6,
+    height: 10,
+    borderRadius: 5,
     overflow: 'hidden',
     position: 'relative',
-    marginBottom: 12,
   },
   progressBarBg: {
     ...StyleSheet.absoluteFillObject,
+    backgroundColor: BORDER,
   },
   progressBarFill: {
     position: 'absolute',
     left: 0,
     top: 0,
     bottom: 0,
-    backgroundColor: '#F59E0B', // Gold
-    borderRadius: 6,
+    backgroundColor: ACCENT,
+    borderRadius: 5,
   },
-  xpTextRow: {
+
+  // Metrics
+  statsGrid: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    gap: 10,
+    marginBottom: 12,
+  },
+  statCard: {
+    flex: 1,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: SURFACE,
+    paddingVertical: 16,
     alignItems: 'center',
+    gap: 8,
   },
-  xpText: {
-    fontSize: 14,
+  statValue: {
+    fontSize: 19,
+    fontWeight: '800',
+    color: TEXT,
+  },
+  statLabel: {
+    fontSize: 9.5,
     fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+    color: MUTED,
+    textAlign: 'center',
   },
-  xpTextMuted: {
+
+  // Sections
+  section: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: SURFACE,
+    padding: 18,
+    marginTop: 12,
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 12,
+  },
+  sectionTitle: {
     fontSize: 12,
-    fontWeight: '500',
+    fontWeight: '800',
+    letterSpacing: 1.2,
+    color: TEXT,
+  },
+  protectionStatus: {
+    marginLeft: 'auto',
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: SURFACE_2,
+  },
+  protectionStatusOn: {
+    borderColor: ACCENT + '55',
+    backgroundColor: ACCENT + '16',
+  },
+  protectionStatusText: {
+    color: MUTED,
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 0.8,
+  },
+  bodyText: {
+    fontSize: 13,
+    lineHeight: 20,
+    color: MUTED,
+  },
+  accentInline: {
+    color: ACCENT,
+    fontWeight: '800',
+  },
+  emptyText: {
+    color: MUTED,
+    fontSize: 13,
+    textAlign: 'center',
+    lineHeight: 19,
+  },
+  shardsEarnedNote: {
+    color: ACCENT,
+    fontSize: 12,
+    lineHeight: 17,
+    marginBottom: 14,
   },
   stonesGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 12,
-    marginTop: 8,
-    justifyContent: 'center',
+    gap: 10,
+    justifyContent: 'flex-start',
   },
   stoneItem: {
-    width: 60,
-    height: 60,
+    width: 58,
+    height: 58,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#09090b', // Deep dark for contrast
-    borderRadius: 12,
+    backgroundColor: SURFACE_2,
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#27272a',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.5,
+    shadowRadius: 6,
+    elevation: 2,
   },
   stoneImage: {
-    width: 48,
-    height: 48,
+    width: 44,
+    height: 44,
   },
+
+  // Detail
   detailBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.7)',
+    backgroundColor: 'rgba(0,0,0,0.88)',
     alignItems: 'center',
     justifyContent: 'center',
     padding: 24,
   },
   detailCard: {
     width: '100%',
-    maxWidth: 340,
-    borderRadius: 24,
-    borderWidth: 2,
+    maxWidth: 320,
+    borderRadius: 28,
+    borderWidth: 1,
+    backgroundColor: BG,
     padding: 32,
     alignItems: 'center',
-    position: 'relative',
+    overflow: 'hidden',
+  },
+  detailGlow: {
+    position: 'absolute',
+    top: 20,
+    width: 180,
+    height: 180,
+    borderRadius: 90,
+    opacity: 0.35,
   },
   detailClose: {
     position: 'absolute',
     top: 16,
     right: 16,
-    padding: 8,
+    padding: 4,
     zIndex: 10,
   },
   detailName: {
-    fontSize: 24,
+    fontSize: 22,
     fontWeight: '800',
     marginTop: 20,
     marginBottom: 12,
     textAlign: 'center',
+    color: TEXT,
   },
   rarityBadge: {
-    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
     paddingVertical: 6,
-    borderRadius: 12,
-    marginBottom: 16,
+    borderRadius: 20,
+    marginBottom: 14,
+    borderWidth: 1,
   },
   rarityText: {
-    fontSize: 14,
-    fontWeight: 'bold',
+    fontSize: 11,
+    fontWeight: '800',
     textTransform: 'uppercase',
-    letterSpacing: 1,
+    letterSpacing: 1.5,
+  },
+  detailShardRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: ACCENT + '1A',
+    borderWidth: 1,
+    borderColor: ACCENT + '4D',
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 12,
+    marginBottom: 12,
+  },
+  detailShardText: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: TEXT,
   },
   detailDesc: {
-    fontSize: 15,
+    fontSize: 13,
     textAlign: 'center',
-  }
+    color: MUTED,
+  },
 });

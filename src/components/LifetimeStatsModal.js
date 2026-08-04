@@ -1,13 +1,14 @@
-import React from 'react';
-import { View, Text, StyleSheet, Modal, TouchableOpacity, Dimensions, Alert } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { X } from 'lucide-react-native';
+import { useTranslation } from 'react-i18next';
+import { Alert, Dimensions, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LifetimeProgressRing } from './LifetimeProgressRing';
 
 const { width } = Dimensions.get('window');
 
 export const LifetimeStatsModal = ({ isVisible, onClose, stats, onReset }) => {
   const insets = useSafeAreaInsets();
+  const { t } = useTranslation();
 
   if (!isVisible) return null;
 
@@ -20,7 +21,7 @@ export const LifetimeStatsModal = ({ isVisible, onClose, stats, onReset }) => {
       <View style={styles.overlay}>
         <View style={styles.safeArea}>
           <View style={[styles.header, { paddingTop: Math.max(insets.top, 20) }]}>
-            <Text style={styles.headerTitle}>LIFETIME METRICS</Text>
+            <Text style={styles.headerTitle}>{t('lifetimeStats.headerTitle')}</Text>
             <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
               <X color="#fff" size={28} />
             </TouchableOpacity>
@@ -36,36 +37,36 @@ export const LifetimeStatsModal = ({ isVisible, onClose, stats, onReset }) => {
               />
               <View style={styles.percentageCenter}>
                 <Text style={styles.percentageText}>{percentage}%</Text>
-                <Text style={styles.percentageLabel}>COMPLETION</Text>
+                <Text style={styles.percentageLabel}>{t('lifetimeStats.completionLabel')}</Text>
               </View>
             </View>
 
             <View style={styles.statsGrid}>
               <View style={styles.statCard}>
                 <Text style={styles.statValue}>{total}</Text>
-                <Text style={styles.statLabel}>Total Created</Text>
+                <Text style={styles.statLabel}>{t('lifetimeStats.totalCreatedLabel')}</Text>
               </View>
               <View style={styles.statCard}>
-                <Text style={[styles.statValue, { color: '#22c55e' }]}>{completed}</Text>
-                <Text style={styles.statLabel}>Completed</Text>
+                <Text style={[styles.statValue, { color: '#E5E7EB' }]}>{completed}</Text>
+                <Text style={styles.statLabel}>{t('lifetimeStats.completedLabel')}</Text>
               </View>
               <View style={styles.statCard}>
-                <Text style={[styles.statValue, { color: '#ef4444' }]}>{pending}</Text>
-                <Text style={styles.statLabel}>Pending</Text>
+                <Text style={[styles.statValue, { color: '#A1A1AA' }]}>{pending}</Text>
+                <Text style={styles.statLabel}>{t('lifetimeStats.pendingLabel')}</Text>
               </View>
             </View>
 
             {onReset && (
               <TouchableOpacity 
-                style={{ marginTop: 32, paddingVertical: 12, paddingHorizontal: 24, borderRadius: 12, backgroundColor: '#EF444420', alignItems: 'center', width: '100%' }}
+                style={{ marginTop: 32, paddingVertical: 12, paddingHorizontal: 24, borderRadius: 12, backgroundColor: '#A1A1AA20', alignItems: 'center', width: '100%' }}
                 onPress={() => {
-                  Alert.alert('Reset Lifetime Metrics', 'Are you sure you want to reset your lifetime metrics? This will start tracking from zero starting from this exact moment.', [
-                    { text: 'Cancel', style: 'cancel' },
-                    { text: 'Reset', style: 'destructive', onPress: onReset }
+                  Alert.alert(t('lifetimeStats.resetAlertTitle'), t('lifetimeStats.resetAlertMessage'), [
+                    { text: t('lifetimeStats.cancelButton'), style: 'cancel' },
+                    { text: t('lifetimeStats.resetButton'), style: 'destructive', onPress: onReset }
                   ]);
                 }}
               >
-                <Text style={{ color: '#EF4444', fontWeight: '700', fontSize: 13, letterSpacing: 1 }}>RESET METRICS</Text>
+                <Text style={{ color: '#A1A1AA', fontWeight: '700', fontSize: 13, letterSpacing: 1 }}>{t('lifetimeStats.resetMetricsButton')}</Text>
               </TouchableOpacity>
             )}
           </View>

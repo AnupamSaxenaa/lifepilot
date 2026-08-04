@@ -1,19 +1,22 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { StyleSheet, Text, View, SafeAreaView, useColorScheme, TouchableOpacity, TextInput, Platform } from 'react-native';
-import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
-import { BackgroundWrapper } from '../components/BackgroundWrapper';
-import { GlassCard } from '../components/GlassCard';
-import { GlassButton } from '../components/GlassButton';
-import { COLORS } from '../theme/theme';
-import { CheckCircle2, ArrowLeft } from 'lucide-react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-
+import { CheckCircle2, MailCheck } from 'lucide-react-native';
+import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
+import {
+    AuthBackButton,
+    AuthButton,
+    AuthCard,
+    AuthHero,
+    AuthScreen,
+    AuthStatus,
+    useAuthPalette,
+} from '../components/auth/AuthKit';
 import { supabase } from '../lib/supabase';
 
 export const OTPScreen = ({ navigation, route }) => {
-  const colorScheme = useColorScheme();
-  const theme = colorScheme === 'dark' ? COLORS.dark : COLORS.light;
-  const insets = useSafeAreaInsets();
+  const { t } = useTranslation();
+  const palette = useAuthPalette();
   
   const email = route?.params?.email || 'your email';
 
@@ -49,7 +52,7 @@ export const OTPScreen = ({ navigation, route }) => {
   const handleVerify = async () => {
     const fullCode = code.join('');
     if (fullCode.length !== 8) {
-      setErrorText('Please enter the full 8-digit code');
+      setErrorText(t('otp.errorIncompleteCode'));
       return;
     }
 
@@ -77,137 +80,120 @@ export const OTPScreen = ({ navigation, route }) => {
   };
 
   return (
-    <BackgroundWrapper>
-      <SafeAreaView style={styles.container}>
-        <KeyboardAwareScrollView 
-          style={{ flex: 1 }} 
-          contentContainerStyle={styles.scrollContent} 
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-          enableOnAndroid={true}
-          extraScrollHeight={20}
+    <AuthScreen centered contentStyle={styles.screenContent}>
+      <AuthBackButton onPress={() => navigation.goBack()} />
+      <View style={styles.shell}>
+        <AuthHero
+          icon={MailCheck}
+          title={t('otp.title')}
+          subtitle={t('otp.subtitle')}
+          align="center"
+        />
+        <Animated.Text
+          entering={FadeIn.duration(280).delay(90)}
+          style={[styles.email, { color: palette.text, backgroundColor: `${palette.accent}16`, borderColor: `${palette.accent}38` }]}
         >
-            <TouchableOpacity onPress={() => navigation.goBack()} style={[styles.backButton, { top: Math.max(insets.top, 24) }]}>
-              <ArrowLeft color={theme.text} size={24} />
-            </TouchableOpacity>
-
-            <View style={styles.header}>
-              <Text style={[styles.title, { color: theme.text }]}>Verification</Text>
-              <Text style={[styles.subtitle, { color: theme.textMuted }]}>
-                Enter the 8-digit code sent to
-              </Text>
-              <Text style={[styles.emailText, { color: theme.text }]}>{email}</Text>
-            </View>
-
-            <View style={styles.formContainer}>
-              <GlassCard>
-                <View style={styles.codeContainer}>
-                  {code.map((digit, index) => (
-                    <TextInput
-                      key={index}
-                      ref={(ref) => inputs.current[index] = ref}
-                      style={[
-                        styles.codeInput, 
-                        { 
-                          backgroundColor: theme.surface, 
-                          borderColor: theme.border,
-                          color: theme.text 
-                        }
-                      ]}
-                      keyboardType="number-pad"
-                      maxLength={1}
-                      value={digit}
-                      onChangeText={(text) => handleChange(text, index)}
-                      onKeyPress={(e) => handleKeyPress(e, index)}
-                    />
-                  ))}
-                </View>
-
-                <GlassButton 
-                  title="Verify Code" 
-                  icon={CheckCircle2} 
-                  onPress={handleVerify} 
-                  style={{ marginTop: 24 }}
+          {email}
+        </Animated.Text>
+        <AuthCard>
+          <View style={styles.codeContainer}>
+            {code.map((digit, index) => (
+              <Animated.View key={index} entering={FadeInDown.duration(320).delay(160 + index * 45)} style={styles.codeInputWrap}>
+                <TextInput
+                  ref={(ref) => { inputs.current[index] = ref; }}
+                  style={[
+                    styles.codeInput,
+                    {
+                      backgroundColor: palette.surface,
+                      borderColor: digit ? palette.accent : palette.border,
+                      color: palette.text,
+                    },
+                  ]}
+                  selectionColor={palette.accent}
+                  keyboardType="number-pad"
+                  textContentType="oneTimeCode"
+                  maxLength={1}
+                  value={digit}
+                  onChangeText={(text) => handleChange(text.replace(/\D/g, ''), index)}
+                  onKeyPress={(event) => handleKeyPress(event, index)}
                 />
-              </GlassCard>
+              </Animated.View>
+            ))}
+          </View>
+          <AuthStatus>{errorText}</AuthStatus>
+          <AuthButton
+            title={t('otp.verifyButton')}
+            icon={CheckCircle2}
+            onPress={handleVerify}
+            loading={loading}
+            disabled={loading}
+          />
+        </AuthCard>
 
-              <View style={styles.footer}>
-                <Text style={{ color: theme.textMuted }}>{"Didn't receive code? "}</Text>
-                {timer > 0 ? (
-                  <Text style={[styles.link, { color: theme.textMuted }]}>Resend in {timer}s</Text>
-                ) : (
-                  <TouchableOpacity onPress={async () => {
-                    setTimer(30);
-                    const { error } = await supabase.auth.resend({ type: 'signup', email });
-                    if (error) setErrorText(error.message);
-                  }}>
-                    <Text style={[styles.link, { color: theme.primary }]}>Resend Now</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-            </View>
-        </KeyboardAwareScrollView>
-      </SafeAreaView>
-    </BackgroundWrapper>
+        <View style={styles.footer}>
+          <Text style={[styles.footerText, { color: palette.muted }]}>{t('otp.noCode')}</Text>
+          {timer > 0 ? (
+            <Text style={[styles.resendText, { color: palette.muted }]}>{t('otp.resendIn', { seconds: timer })}</Text>
+          ) : (
+            <TouchableOpacity
+              onPress={async () => {
+                setTimer(30);
+                setErrorText('');
+                const { error } = await supabase.auth.resend({ type: 'signup', email });
+                if (error) setErrorText(error.message);
+              }}
+            >
+              <Text style={[styles.resendText, { color: palette.accent }]}>{t('otp.resendNow')}</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      </View>
+    </AuthScreen>
   );
 };
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  scrollContent: {
-    flexGrow: 1,
-    justifyContent: 'center',
-    padding: 24,
-  },
-  backButton: {
-    position: 'absolute',
-    left: 24,
-    zIndex: 10,
-    padding: 8,
-  },
-  header: {
-    alignItems: 'center',
-    marginBottom: 40,
-  },
-  title: {
-    fontFamily: 'PlaywriteGBJ_400Regular',
-    fontSize: 42,
-    marginBottom: 8,
-    paddingHorizontal: 20,
-  },
-  subtitle: {
-    fontSize: 16,
-  },
-  emailText: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    marginTop: 4,
-  },
-  formContainer: {
-    width: '100%',
+  screenContent: { paddingTop: 0 },
+  shell: { width: '100%', maxWidth: 520, alignSelf: 'center' },
+  email: {
+    alignSelf: 'center',
+    fontSize: 13,
+    fontWeight: '700',
+    paddingVertical: 8,
+    paddingHorizontal: 13,
+    borderRadius: 999,
+    borderWidth: 1,
+    marginTop: -10,
+    marginBottom: 18,
   },
   codeContainer: {
     flexDirection: 'row',
+    gap: 5,
     justifyContent: 'space-between',
-    paddingVertical: 12,
+    marginBottom: 18,
+  },
+  codeInputWrap: {
+    flex: 1,
+    minWidth: 28,
+    maxWidth: 42,
   },
   codeInput: {
-    width: 35,
+    width: '100%',
     height: 50,
-    borderRadius: 8,
+    borderRadius: 12,
     borderWidth: 1,
     textAlign: 'center',
-    fontSize: 20,
-    fontWeight: 'bold',
+    fontSize: 18,
+    fontWeight: '800',
   },
   footer: {
     flexDirection: 'row',
     justifyContent: 'center',
-    marginTop: 24,
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 20,
   },
-  link: {
-    fontWeight: 'bold',
-  },
+  footerText: { fontSize: 13 },
+  resendText: { fontSize: 13, fontWeight: '800' },
 });

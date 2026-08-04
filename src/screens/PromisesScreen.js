@@ -1,14 +1,16 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, Switch } from 'react-native';
+import { Menu, Plus, Trash2 } from 'lucide-react-native';
+import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { ScrollView, StyleSheet, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BackgroundWrapper } from '../components/BackgroundWrapper';
 import { GlassSidebar } from '../components/GlassSidebar';
-import { Menu, Plus, Trash2 } from 'lucide-react-native';
-import { Storage } from '../utils/storage';
-import { supabase } from '../lib/supabase';
 import { loadProfile } from '../lib/dataManager';
+import { supabase } from '../lib/supabase';
+import { Storage } from '../utils/storage';
 
 export const PromisesScreen = ({ navigation }) => {
+  const { t } = useTranslation();
   const [isEnabled, setIsEnabled] = useState(true);
   const [promises, setPromises] = useState([]);
   const [newPromise, setNewPromise] = useState('');
@@ -34,7 +36,7 @@ export const PromisesScreen = ({ navigation }) => {
         setPromises(config.promises || []);
       } else {
         // Default promise if empty
-        const defaultPromise = "I promise to respect myself and stay focused on my goals today.";
+        const defaultPromise = t('promises.defaultPromise');
         setPromises([defaultPromise]);
         await Storage.set(`promisesConfig_${uid}`, { enabled: true, promises: [defaultPromise] });
       }
@@ -85,7 +87,7 @@ export const PromisesScreen = ({ navigation }) => {
           <TouchableOpacity onPress={() => setIsSidebarOpen(true)} style={styles.iconBtn}>
             <Menu color="#fff" size={28} />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>PROMISES</Text>
+          <Text style={styles.headerTitle}>{t('promises.headerTitle')}</Text>
         </View>
 
         <ScrollView contentContainerStyle={styles.scroll}>
@@ -93,8 +95,8 @@ export const PromisesScreen = ({ navigation }) => {
           <View style={styles.toggleCard}>
             <View style={styles.toggleRow}>
               <View>
-                <Text style={styles.toggleTitle}>Enable Daily Popup</Text>
-                <Text style={styles.toggleSub}>Show a random promise every morning</Text>
+                <Text style={styles.toggleTitle}>{t('promises.enableDailyPopup')}</Text>
+                <Text style={styles.toggleSub}>{t('promises.enableDailyPopupSubtitle')}</Text>
               </View>
               <Switch
                 trackColor={{ false: "#333", true: "#ffffff" }}
@@ -106,11 +108,11 @@ export const PromisesScreen = ({ navigation }) => {
           </View>
 
           <View style={styles.addSection}>
-            <Text style={styles.sectionTitle}>Add New Promise</Text>
+            <Text style={styles.sectionTitle}>{t('promises.addNewPromise')}</Text>
             <View style={styles.inputRow}>
               <TextInput
                 style={styles.input}
-                placeholder="I promise to..."
+                placeholder={t('promises.inputPlaceholder')}
                 placeholderTextColor="#666"
                 value={newPromise}
                 onChangeText={setNewPromise}
@@ -122,16 +124,16 @@ export const PromisesScreen = ({ navigation }) => {
             </View>
           </View>
 
-          <Text style={styles.sectionTitle}>Your Promises</Text>
+          <Text style={styles.sectionTitle}>{t('promises.yourPromises')}</Text>
           {promises.length === 0 && (
-            <Text style={styles.emptyText}>{"You haven't added any promises yet."}</Text>
+            <Text style={styles.emptyText}>{t('promises.emptyText')}</Text>
           )}
           
           {promises.map((item, index) => (
             <View key={index} style={styles.promiseCard}>
               <Text style={styles.promiseText}>{item}</Text>
               <TouchableOpacity style={styles.deleteBtn} onPress={() => removePromise(index)}>
-                <Trash2 color="#ef4444" size={20} />
+                <Trash2 color="#A1A1AA" size={20} />
               </TouchableOpacity>
             </View>
           ))}

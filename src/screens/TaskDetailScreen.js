@@ -7,14 +7,15 @@ import {
     CheckCircle2,
     Circle,
     FileText,
+    Flag,
     Plus,
     Repeat,
-    Flag,
     Star, Sun,
     Trash2, X,
     Zap
 } from 'lucide-react-native';
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
     Alert,
     Keyboard,
@@ -30,37 +31,38 @@ import {
 import Animated, { FadeIn, Layout, SlideInDown, SlideOutDown } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BackgroundWrapper } from '../components/BackgroundWrapper';
+import { getPriorityColor, getPriorityLabel, PRIORITY_CONFIG } from '../config/priorityConfig';
+import { useTheme } from '../context/ThemeContext';
 import { cacheTasks, deleteTask as dmDeleteTask, toggleTaskImportance, updateTask } from '../lib/dataManager';
 import { syncToSupabase } from '../lib/syncQueue';
 import { Gamification } from '../utils/gamification';
 import { cancelTaskReminder, scheduleTaskReminder } from '../utils/notifications';
 import { Storage } from '../utils/storage';
-import { getPriorityColor, getPriorityLabel, PRIORITY_LEVELS, PRIORITY_CONFIG } from '../config/priorityConfig';
 
 // ─── Helpers ────────────────────────────────────────────
-const formatDate = (d) => {
+const formatDate = (d, t) => {
   if (!d) return null;
   const date = new Date(d);
   const today = new Date();
   const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
-  if (date.toDateString() === today.toDateString()) return 'Today';
-  if (date.toDateString() === tomorrow.toDateString()) return 'Tomorrow';
+  if (date.toDateString() === today.toDateString()) return t('taskDetail.today');
+  if (date.toDateString() === tomorrow.toDateString()) return t('taskDetail.tomorrow');
   return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
 };
 
-const formatDateTime = (d) => {
+const formatDateTime = (d, t) => {
   if (!d) return null;
   const date = new Date(d);
   const today = new Date();
   const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
   let dayPart;
-  if (date.toDateString() === today.toDateString()) dayPart = 'Today';
-  else if (date.toDateString() === tomorrow.toDateString()) dayPart = 'Tomorrow';
+  if (date.toDateString() === today.toDateString()) dayPart = t('taskDetail.today');
+  else if (date.toDateString() === tomorrow.toDateString()) dayPart = t('taskDetail.tomorrow');
   else dayPart = date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
   return `${dayPart}, ${date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`;
 };
 
-const formatCreatedAt = (d) => {
+const formatCreatedAt = (d, t) => {
   if (!d) return '';
   const date = new Date(d);
   const now = new Date();
@@ -68,24 +70,28 @@ const formatCreatedAt = (d) => {
   const diffMins = Math.floor(diffMs / 60000);
   const diffHours = Math.floor(diffMs / 3600000);
   const diffDays = Math.floor(diffMs / 86400000);
-  if (diffMins < 1) return 'Just now';
-  if (diffMins < 60) return `${diffMins}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 7) return `${diffDays}d ago`;
+  if (diffMins < 1) return t('taskDetail.justNow');
+  if (diffMins < 60) return t('taskDetail.minutesAgo', { count: diffMins });
+  if (diffHours < 24) return t('taskDetail.hoursAgo', { count: diffHours });
+  if (diffDays < 7) return t('taskDetail.daysAgo', { count: diffDays });
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 };
 
-const REPEAT_OPTIONS = [
-  { label: 'Daily', value: 'daily' },
-  { label: 'Weekdays', value: 'weekdays' },
-  { label: 'Weekly', value: 'weekly' },
-  { label: 'Monthly', value: 'monthly' },
-  { label: 'Yearly', value: 'yearly' },
+const getRepeatOptions = (t) => [
+  { label: t('taskDetail.repeatDaily'), value: 'daily' },
+  { label: t('taskDetail.repeatWeekdays'), value: 'weekdays' },
+  { label: t('taskDetail.repeatWeekly'), value: 'weekly' },
+  { label: t('taskDetail.repeatMonthly'), value: 'monthly' },
+  { label: t('taskDetail.repeatYearly'), value: 'yearly' },
 ];
 
 export const TaskDetailScreen = ({ route, navigation }) => {
+  const { t } = useTranslation();
   const insets = useSafeAreaInsets();
+  const ACCENT = useTheme().theme.accent;
+  const styles = useMemo(() => makeStyles(ACCENT), [ACCENT]);
   const { task: initialTask, userId } = route.params;
+  const REPEAT_OPTIONS = useMemo(() => getRepeatOptions(t), [t]);
 
   const [task, setTask] = useState(initialTask);
   const [noteText, setNoteText] = useState(initialTask.notes || '');
@@ -133,11 +139,19 @@ export const TaskDetailScreen = ({ route, navigation }) => {
   };
 
   const handleToggleSubtask = async (subId) => {
-    const updated = subtasks.map(s =>
-      s.id === subId ? { ...s, is_completed: !s.is_completed } : s
-    );
+    let becameComplete = false;
+    const updated = subtasks.map(s => {
+      if (s.id !== subId) return s;
+      becameComplete = !s.is_completed;
+      return { ...s, is_completed: !s.is_completed };
+    });
     setSubtasks(updated);
     await handleUpdateField({ subtasks: updated });
+    // Small step XP (also triggers the +/− XP popup via addXP).
+    if (userId) {
+      const delta = becameComplete ? Gamification.xpForSubtask() : -Gamification.xpForSubtask();
+      await Gamification.addXP(userId, delta);
+    }
   };
 
   const handleDeleteSubtask = async (subId) => {
@@ -155,9 +169,17 @@ export const TaskDetailScreen = ({ route, navigation }) => {
     
     // ✅ FIX: Load fresh tasks, update only this task
     const latestTasks = await Storage.get(`tasks_${userId}`) || [];
+    const storedTask = latestTasks.find(t => t.id === task.id) || task;
+
+    // On complete: grant priority-based XP and remember the exact amount.
+    // On uncomplete: deduct that same remembered amount (fallback to priority).
+    const xpAmount = newStatus
+      ? Gamification.xpForTask(task)
+      : ((storedTask.xp_awarded != null) ? storedTask.xp_awarded : Gamification.xpForTask(task));
+
     const updated = latestTasks.map(t =>
       t.id === task.id 
-        ? { ...t, is_completed: newStatus, completed_at: completedAt }
+        ? { ...t, is_completed: newStatus, completed_at: completedAt, xp_awarded: newStatus ? xpAmount : null }
         : t
     );
     
@@ -170,11 +192,6 @@ export const TaskDetailScreen = ({ route, navigation }) => {
     
     if (newStatus && task.reminder_time) cancelTaskReminder(task.id);
     else if (!newStatus && task.reminder_time) scheduleTaskReminder(task.id, task.title, task.reminder_time);
-    
-    let xpAmount = 10;
-    if (task.priority === 3) xpAmount = 50;
-    else if (task.priority === 2) xpAmount = 40;
-    else if (task.priority === 0) xpAmount = 5;
     
     await Gamification.addXP(userId, newStatus ? xpAmount : -xpAmount);
   };
@@ -235,10 +252,10 @@ export const TaskDetailScreen = ({ route, navigation }) => {
   };
 
   const handleDelete = () => {
-    Alert.alert('Delete Task', `Are you sure you want to delete "${task.title}"?`, [
-      { text: 'Cancel', style: 'cancel' },
+    Alert.alert(t('taskDetail.deleteTaskTitle'), t('taskDetail.deleteTaskMessage', { title: task.title }), [
+      { text: t('taskDetail.cancel'), style: 'cancel' },
       {
-        text: 'Delete', style: 'destructive',
+        text: t('taskDetail.deleteButton'), style: 'destructive',
         onPress: async () => {
           cancelTaskReminder(task.id);
           const allTasks = await Storage.get(`tasks_${userId}`);
@@ -268,7 +285,7 @@ export const TaskDetailScreen = ({ route, navigation }) => {
           <TouchableOpacity onPress={handleGoBack} style={styles.headerBtn}>
             <ArrowLeft color="#fff" size={24} />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>My Day</Text>
+          <Text style={styles.headerTitle}>{t('taskDetail.headerTitle')}</Text>
           <View style={{ width: 40 }} />
         </View>
 
@@ -282,7 +299,7 @@ export const TaskDetailScreen = ({ route, navigation }) => {
           <View style={styles.titleRow}>
             <TouchableOpacity onPress={handleToggleComplete} style={styles.titleCheckbox}>
               {task.is_completed
-                ? <CheckCircle2 color="#666" size={28} />
+                ? <CheckCircle2 color="#34D399" size={28} />
                 : <Circle color="#fff" size={28} />}
             </TouchableOpacity>
             <View style={styles.titleContent}>
@@ -299,7 +316,7 @@ export const TaskDetailScreen = ({ route, navigation }) => {
               )}
             </View>
             <TouchableOpacity onPress={handleToggleImportant} style={styles.titleStar}>
-              <Star color={task.is_important ? '#fff' : '#555'} fill={task.is_important ? '#fff' : 'transparent'} size={24} />
+              <Star color={task.is_important ? '#FBBF24' : '#555'} fill={task.is_important ? '#FBBF24' : 'transparent'} size={24} />
             </TouchableOpacity>
           </View>
 
@@ -314,7 +331,7 @@ export const TaskDetailScreen = ({ route, navigation }) => {
               >
                 <TouchableOpacity onPress={() => handleToggleSubtask(sub.id)} style={styles.subtaskCheckbox}>
                   {sub.is_completed
-                    ? <CheckCircle2 color="#4da6ff" size={20} />
+                    ? <CheckCircle2 color="#34D399" size={20} />
                     : <Circle color="#555" size={20} />}
                 </TouchableOpacity>
                 <Text style={[styles.subtaskText, sub.is_completed && styles.subtaskCompleted]}>
@@ -334,7 +351,7 @@ export const TaskDetailScreen = ({ route, navigation }) => {
                   ref={subtaskInputRef}
                   value={newSubtaskTitle}
                   onChangeText={setNewSubtaskTitle}
-                  placeholder="Add a step"
+                  placeholder={t('taskDetail.addStepPlaceholder')}
                   placeholderTextColor="#555"
                   style={styles.subtaskInput}
                   autoFocus
@@ -356,7 +373,7 @@ export const TaskDetailScreen = ({ route, navigation }) => {
               <TouchableOpacity style={styles.addSubtaskBtn} onPress={() => setIsAddingSubtask(true)}>
                 <Plus color="#4da6ff" size={20} style={{ marginRight: 12 }} />
                 <Text style={styles.addSubtaskText}>
-                  {totalSubtasks > 0 ? 'Next step' : 'Add step'}
+                  {totalSubtasks > 0 ? t('taskDetail.nextStep') : t('taskDetail.addStep')}
                 </Text>
               </TouchableOpacity>
             )}
@@ -370,7 +387,7 @@ export const TaskDetailScreen = ({ route, navigation }) => {
                   />
                 </View>
                 <Text style={styles.progressText}>
-                  {completedSubtasks} of {totalSubtasks}
+                  {t('taskDetail.subtaskProgress', { completed: completedSubtasks, total: totalSubtasks })}
                 </Text>
               </View>
             )}
@@ -382,7 +399,7 @@ export const TaskDetailScreen = ({ route, navigation }) => {
             onPress={() => navigation.navigate('FocusMode', { task })}
           >
             <Zap color="#fff" size={20} fill="#fff" style={{ marginRight: 10 }} />
-            <Text style={styles.focusModeBtnText}>Start Focus Mode</Text>
+            <Text style={styles.focusModeBtnText}>{t('taskDetail.startFocusMode')}</Text>
           </TouchableOpacity>
 
           {/* ─── Options List ─────────────────────────── */}
@@ -395,7 +412,7 @@ export const TaskDetailScreen = ({ route, navigation }) => {
               <Sun color={task.added_to_today ? '#4da6ff' : '#888'} size={22} style={styles.optionIcon} />
               <View style={styles.optionTextContainer}>
                 <Text style={[styles.optionText, task.added_to_today && { color: '#4da6ff' }]}>
-                  {task.added_to_today ? 'Added to My Day' : 'Add to My Day'}
+                  {task.added_to_today ? t('taskDetail.addedToMyDay') : t('taskDetail.addToMyDay')}
                 </Text>
               </View>
               {task.added_to_today && (
@@ -413,8 +430,8 @@ export const TaskDetailScreen = ({ route, navigation }) => {
             }}>
               <Bell color={task.reminder_time ? '#4da6ff' : '#888'} size={22} style={styles.optionIcon} />
               <View style={styles.optionTextContainer}>
-                <Text style={[styles.optionText, task.reminder_time && { color: '#4da6ff' }]}>Remind me</Text>
-                {task.reminder_time && <Text style={styles.optionSubtext}>{formatDateTime(task.reminder_time)}</Text>}
+                <Text style={[styles.optionText, task.reminder_time && { color: '#4da6ff' }]}>{t('taskDetail.remindMe')}</Text>
+                {task.reminder_time && <Text style={styles.optionSubtext}>{formatDateTime(task.reminder_time, t)}</Text>}
               </View>
               {task.reminder_time && (
                 <TouchableOpacity onPress={handleRemoveReminder} style={styles.optionAction}><X color="#666" size={18} /></TouchableOpacity>
@@ -430,9 +447,9 @@ export const TaskDetailScreen = ({ route, navigation }) => {
               <Calendar color={task.due_date ? '#4da6ff' : '#888'} size={22} style={styles.optionIcon} />
               <View style={styles.optionTextContainer}>
                 <Text style={[styles.optionText, task.due_date && { color: '#4da6ff' }]}>
-                  {task.due_date ? 'Due date' : 'Add due date'}
+                  {task.due_date ? t('taskDetail.dueDate') : t('taskDetail.addDueDate')}
                 </Text>
-                {task.due_date && <Text style={styles.optionSubtext}>{formatDate(task.due_date)}</Text>}
+                {task.due_date && <Text style={styles.optionSubtext}>{formatDate(task.due_date, t)}</Text>}
               </View>
               {task.due_date && (
                 <TouchableOpacity onPress={handleRemoveDueDate} style={styles.optionAction}><X color="#666" size={18} /></TouchableOpacity>
@@ -448,7 +465,7 @@ export const TaskDetailScreen = ({ route, navigation }) => {
               <Repeat color={task.repeat_rule ? '#4da6ff' : '#888'} size={22} style={styles.optionIcon} />
               <View style={styles.optionTextContainer}>
                 <Text style={[styles.optionText, task.repeat_rule && { color: '#4da6ff' }]}>
-                  {task.repeat_rule ? 'Repeat' : 'Repeat'}
+                  {t('taskDetail.repeat')}
                 </Text>
                 {task.repeat_rule && (
                   <Text style={styles.optionSubtext}>{task.repeat_rule.charAt(0).toUpperCase() + task.repeat_rule.slice(1)}</Text>
@@ -464,7 +481,7 @@ export const TaskDetailScreen = ({ route, navigation }) => {
             <View style={styles.detailRow}>
               <Flag color={getPriorityColor(task.priority ?? 1)} size={22} fill={(task.priority ?? 1) !== 1 ? getPriorityColor(task.priority ?? 1) : 'transparent'} />
               <TouchableOpacity style={{ flex: 1, marginLeft: 16 }} onPress={() => setShowPriorityMenu(!showPriorityMenu)}>
-                <Text style={[styles.detailLabel, { color: '#A1A1AA' }]}>Priority</Text>
+                <Text style={[styles.detailLabel, { color: '#A1A1AA' }]}>{t('taskDetail.priority')}</Text>
                 <Text style={[styles.detailValue, { color: getPriorityColor(task.priority ?? 1) }]}>
                   {getPriorityLabel(task.priority ?? 1)}
                 </Text>
@@ -484,7 +501,7 @@ export const TaskDetailScreen = ({ route, navigation }) => {
                   >
                     <Flag color={config.color} size={20} fill={Number(value) !== 1 ? config.color : 'transparent'} />
                     <Text style={{ color: '#fff', fontSize: 16, marginLeft: 14, flex: 1 }}>{config.label}</Text>
-                    {(task.priority ?? 1) === Number(value) && <Check color="#10B981" size={20} />}
+                    {(task.priority ?? 1) === Number(value) && <Check color={config.color} size={20} />}
                   </TouchableOpacity>
                 ))}
               </Animated.View>
@@ -495,11 +512,11 @@ export const TaskDetailScreen = ({ route, navigation }) => {
           <View style={styles.notesSection}>
             <View style={styles.noteHeader}>
               <FileText color="#888" size={16} />
-              <Text style={styles.noteHeaderText}>Note</Text>
+              <Text style={styles.noteHeaderText}>{t('taskDetail.noteLabel')}</Text>
             </View>
             <TextInput
               value={noteText} onChangeText={setNoteText} onBlur={handleSaveNotes}
-              placeholder="Add a note" placeholderTextColor="#555"
+              placeholder={t('taskDetail.addNotePlaceholder')} placeholderTextColor="#555"
               style={styles.noteInput} multiline textAlignVertical="top"
             />
           </View>
@@ -508,7 +525,7 @@ export const TaskDetailScreen = ({ route, navigation }) => {
         {/* ─── Bottom Bar ─────────────────────────────── */}
         <View style={[styles.bottomBar, { paddingBottom: Math.max(insets.bottom, 16) }]}>
           <Text style={styles.bottomTimestamp}>
-            Created {formatCreatedAt(task.created_at)}
+            {t('taskDetail.createdAt', { time: formatCreatedAt(task.created_at, t) })}
           </Text>
           <TouchableOpacity onPress={handleDelete} style={styles.deleteBtn}>
             <Trash2 color="#888" size={22} />
@@ -528,8 +545,8 @@ export const TaskDetailScreen = ({ route, navigation }) => {
         )}
         {showDatePicker && Platform.OS === 'ios' && (
           <View style={styles.iosPickerButtons}>
-            <TouchableOpacity onPress={() => setShowDatePicker(false)} style={styles.iosPickerBtn}><Text style={styles.iosPickerBtnText}>Cancel</Text></TouchableOpacity>
-            <TouchableOpacity onPress={() => handleSetDueDate(pickerDate)} style={styles.iosPickerBtn}><Text style={[styles.iosPickerBtnText, { color: '#4da6ff' }]}>Done</Text></TouchableOpacity>
+            <TouchableOpacity onPress={() => setShowDatePicker(false)} style={styles.iosPickerBtn}><Text style={styles.iosPickerBtnText}>{t('taskDetail.cancel')}</Text></TouchableOpacity>
+            <TouchableOpacity onPress={() => handleSetDueDate(pickerDate)} style={styles.iosPickerBtn}><Text style={[styles.iosPickerBtnText, { color: '#4da6ff' }]}>{t('taskDetail.done')}</Text></TouchableOpacity>
           </View>
         )}
 
@@ -549,8 +566,8 @@ export const TaskDetailScreen = ({ route, navigation }) => {
         )}
         {showReminderPicker && Platform.OS === 'ios' && (
           <View style={styles.iosPickerButtons}>
-            <TouchableOpacity onPress={() => { setShowReminderPicker(false); setReminderStep('date'); }} style={styles.iosPickerBtn}><Text style={styles.iosPickerBtnText}>Cancel</Text></TouchableOpacity>
-            <TouchableOpacity onPress={() => handleSetReminder(pickerDate)} style={styles.iosPickerBtn}><Text style={[styles.iosPickerBtnText, { color: '#4da6ff' }]}>{reminderStep === 'date' ? 'Next' : 'Done'}</Text></TouchableOpacity>
+            <TouchableOpacity onPress={() => { setShowReminderPicker(false); setReminderStep('date'); }} style={styles.iosPickerBtn}><Text style={styles.iosPickerBtnText}>{t('taskDetail.cancel')}</Text></TouchableOpacity>
+            <TouchableOpacity onPress={() => handleSetReminder(pickerDate)} style={styles.iosPickerBtn}><Text style={[styles.iosPickerBtnText, { color: '#4da6ff' }]}>{reminderStep === 'date' ? t('taskDetail.next') : t('taskDetail.done')}</Text></TouchableOpacity>
           </View>
         )}
 
@@ -560,7 +577,7 @@ export const TaskDetailScreen = ({ route, navigation }) => {
             <TouchableOpacity style={styles.menuOverlay} activeOpacity={1} onPress={() => setShowRepeatMenu(false)} />
             <Animated.View entering={SlideInDown.duration(250)} exiting={SlideOutDown.duration(200)} style={[styles.repeatSheet, { paddingBottom: Math.max(insets.bottom, 20) }]}>
               <View style={styles.sheetHandle} />
-              <Text style={styles.sheetTitle}>Repeat</Text>
+              <Text style={styles.sheetTitle}>{t('taskDetail.repeat')}</Text>
               {REPEAT_OPTIONS.map((opt) => (
                 <TouchableOpacity key={opt.value} style={styles.sheetOption} onPress={() => handleSetRepeat(opt.value)}>
                   <Repeat color="#fff" size={20} style={{ marginRight: 16 }} />
@@ -576,7 +593,7 @@ export const TaskDetailScreen = ({ route, navigation }) => {
   );
 };
 
-const styles = StyleSheet.create({
+const makeStyles = (ACCENT) => StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingBottom: 12 },
   headerBtn: { padding: 8 },
   headerTitle: { color: '#fff', fontSize: 17, fontWeight: '600' },
@@ -660,11 +677,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#A855F7',
+    backgroundColor: ACCENT,
     paddingVertical: 16,
     borderRadius: 12,
     marginBottom: 20,
-    shadowColor: '#A855F7',
+    shadowColor: ACCENT,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 8,

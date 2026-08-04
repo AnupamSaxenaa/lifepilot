@@ -35,7 +35,7 @@ export const LifetimeProgressRing = ({ completed = 0, total = 0, size = 40, stro
           cx={size / 2}
           cy={size / 2}
           r={radius}
-          stroke="#ef4444" // Red
+          stroke="#A1A1AA" // Red
           strokeWidth={strokeWidth}
           fill="transparent"
         />
@@ -45,7 +45,7 @@ export const LifetimeProgressRing = ({ completed = 0, total = 0, size = 40, stro
           cx={size / 2}
           cy={size / 2}
           r={radius}
-          stroke="#22c55e" // Green
+          stroke="#E5E7EB" // Green
           strokeWidth={strokeWidth}
           fill="transparent"
           strokeDasharray={circumference}

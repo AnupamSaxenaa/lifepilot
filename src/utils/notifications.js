@@ -53,7 +53,7 @@ export const requestNotificationPermissions = async () => {
         importance: AndroidImportance.HIGH,
         vibration: true,
         vibrationPattern: [0, 200, 100, 200],
-        lightColor: '#A78BFA',
+        lightColor: '#FFFFFF',
         sound: 'custom_alert'
       });
     }
@@ -153,7 +153,7 @@ export const scheduleInactivityReminder = async (bodyText, delayHours = 1) => {
           android: {
             channelId: 'inactivity-nudge-v2',
             smallIcon: 'notification_icon', // Matches the expo generated icon
-            color: '#A855F7',
+            color: '#FFFFFF',
             pressAction: { id: 'default' },
           },
         }, trigger)

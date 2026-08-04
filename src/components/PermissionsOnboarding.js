@@ -2,219 +2,222 @@ import notifee from '@notifee/react-native';
 import * as Calendar from 'expo-calendar';
 import * as ImagePicker from 'expo-image-picker';
 import { ExpoSpeechRecognitionModule } from 'expo-speech-recognition';
-import { Bell, Calendar as CalendarIcon, Check, Folder, Mic, X, Shield } from 'lucide-react-native';
-import React, { useEffect, useState } from 'react';
-import { Alert, Modal, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View, NativeModules, AppState } from 'react-native';
-const { AppBlocker } = NativeModules;
+import { Bell, Calendar as CalendarIcon, Check, Folder, Mic, Shield, X } from 'lucide-react-native';
+import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { Alert, AppState, Modal, NativeModules, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useTheme } from '../context/ThemeContext';
 import { Storage } from '../utils/storage';
+const { AppBlocker } = NativeModules;
 
-const PERMISSION_STEPS = [
-  {
+const getPermissionSteps = (t) => [
+  // Android's system photo picker does not require broad media-library access.
+  // Keep photo permission contextual on iOS and request it only when needed.
+  ...(Platform.OS === 'ios' ? [{
     id: 'storage',
-    title: 'Storage & Media',
-    description: 'Required to upload a custom avatar and save attachments.',
+    title: t('permissionsOnboarding.storageTitle'),
+    description: t('permissionsOnboarding.storageDescription'),
     icon: Folder,
-  },
+  }] : []),
   {
     id: 'notifications',
-    title: 'Notifications',
-    description: 'Never miss an alarm, reminder, or focus session update.',
+    title: t('permissionsOnboarding.notificationsTitle'),
+    description: t('permissionsOnboarding.notificationsDescription'),
     icon: Bell,
   },
   {
     id: 'calendar',
-    title: 'Device Calendar',
-    description: 'Sync your Google/Apple calendar events directly into LifePilot.',
+    title: t('permissionsOnboarding.calendarTitle'),
+    description: t('permissionsOnboarding.calendarDescription'),
     icon: CalendarIcon,
   },
   {
     id: 'microphone',
-    title: 'Microphone',
-    description: 'Required so you can talk to Aura instead of typing.',
+    title: t('permissionsOnboarding.microphoneTitle'),
+    description: t('permissionsOnboarding.microphoneDescription'),
     icon: Mic,
   },
   ...(Platform.OS === 'android' ? [{
     id: 'accessibility',
-    title: 'Accessibility Service',
-    description: 'Required for strict mode to detect and block distracting apps.',
+    title: t('permissionsOnboarding.accessibilityTitle'),
+    description: t('permissionsOnboarding.accessibilityDescription'),
     icon: Shield,
   }] : [])
 ];
 
+const getAccessibleAccent = (accent) => {
+  if (typeof accent !== 'string' || !/^#[0-9a-f]{6}$/i.test(accent)) return '#3F3F46';
+  const red = parseInt(accent.slice(1, 3), 16);
+  const green = parseInt(accent.slice(3, 5), 16);
+  const blue = parseInt(accent.slice(5, 7), 16);
+  const luminance = (0.299 * red + 0.587 * green + 0.114 * blue) / 255;
+  return luminance > 0.62 ? '#3F3F46' : accent;
+};
+
 export const PermissionsOnboarding = () => {
+  const { t } = useTranslation();
+  const themeAccent = useTheme().theme.accent;
+  const ACCENT = useMemo(() => getAccessibleAccent(themeAccent), [themeAccent]);
+  const styles = useMemo(() => makeStyles(ACCENT), [ACCENT]);
+  const PERMISSION_STEPS = useMemo(() => getPermissionSteps(t), [t]);
   const [isVisible, setIsVisible] = useState(false);
   const [currentStep, setCurrentStep] = useState(0);
-  const [grantedStatus, setGrantedStatus] = useState({}); // { storage: true, notifications: false, ... }
+  const [grantedStatus, setGrantedStatus] = useState({});
+  const [isRequesting, setIsRequesting] = useState(false);
 
   useEffect(() => {
     const checkFirstLaunch = async () => {
       const hasSeen = await Storage.get('has_seen_permissions_onboarding');
-      if (hasSeen !== 'true') {
-        setIsVisible(true);
-      }
+      if (hasSeen !== 'true') setIsVisible(true);
     };
-    checkFirstLaunch();
-  }, []);
-
-  useEffect(() => {
-    const subscription = AppState.addEventListener('change', async (nextAppState) => {
-      if (nextAppState === 'active' && isVisible) {
-        if (currentStep >= 0 && currentStep < PERMISSION_STEPS.length) {
-          const stepId = PERMISSION_STEPS[currentStep].id;
-          if (stepId === 'accessibility' && Platform.OS === 'android' && AppBlocker) {
-            const isEnabled = await AppBlocker.isAccessibilityServiceEnabled();
-            if (isEnabled && !grantedStatus[stepId]) {
-              setGrantedStatus(prev => ({ ...prev, [stepId]: true }));
-              if (currentStep < PERMISSION_STEPS.length - 1) {
-                setTimeout(() => setCurrentStep(prev => prev + 1), 300);
-              } else {
-                setTimeout(markCompleted, 600);
-              }
-            }
-          }
-        }
-      }
+    checkFirstLaunch().catch((error) => {
+      console.warn('[PermissionsOnboarding] First-launch check failed:', error?.message || error);
     });
-    return () => subscription.remove();
-  }, [isVisible, currentStep, grantedStatus]);
+  }, []);
 
   const markCompleted = async () => {
     await Storage.set('has_seen_permissions_onboarding', 'true');
     setIsVisible(false);
   };
 
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', async (nextAppState) => {
+      if (nextAppState !== 'active' || !isVisible) return;
+      if (currentStep < 0 || currentStep >= PERMISSION_STEPS.length) return;
+
+      const stepId = PERMISSION_STEPS[currentStep].id;
+      if (stepId !== 'accessibility' || Platform.OS !== 'android') return;
+      if (typeof AppBlocker?.isAccessibilityServiceEnabled !== 'function') return;
+
+      try {
+        const isEnabled = await AppBlocker.isAccessibilityServiceEnabled();
+        if (!isEnabled || grantedStatus[stepId]) return;
+
+        setGrantedStatus((previous) => ({ ...previous, [stepId]: true }));
+        if (currentStep < PERMISSION_STEPS.length - 1) {
+          setTimeout(() => setCurrentStep((previous) => previous + 1), 300);
+        } else {
+          setTimeout(() => { markCompleted().catch(() => {}); }, 600);
+        }
+      } catch (error) {
+        console.warn('[PermissionsOnboarding] Accessibility check failed:', error?.message || error);
+      }
+    });
+    return () => subscription.remove();
+  }, [isVisible, currentStep, grantedStatus, PERMISSION_STEPS]);
+
   const handleSkip = () => {
     Alert.alert(
-      "Skip Setup?",
-      "You can always manage your permissions later from Menu > Permissions Hub.",
+      t('permissionsOnboarding.skipSetupTitle'),
+      t('permissionsOnboarding.skipSetupMessage'),
       [
-        { text: "Cancel", style: "cancel" },
-        { 
-          text: "Skip", 
-          style: "destructive",
-          onPress: markCompleted 
+        { text: t('permissionsOnboarding.cancel'), style: 'cancel' },
+        {
+          text: t('permissionsOnboarding.skip'),
+          style: 'destructive',
+          onPress: () => { markCompleted().catch(() => {}); }
         }
       ]
     );
   };
 
+  const showPermissionSettingsPrompt = () => {
+    import('react-native').then(({ Alert: NativeAlert, Linking }) => {
+      NativeAlert.alert(
+        t('permissionsOnboarding.permissionRequiredTitle'),
+        t('permissionsOnboarding.permissionRequiredMessage'),
+        [
+          { text: t('permissionsOnboarding.cancel'), style: 'cancel' },
+          { text: t('permissionsOnboarding.openSettings'), onPress: () => Linking.openSettings() }
+        ]
+      );
+    }).catch(() => {});
+  };
+
   const requestPermission = async (stepId) => {
+    if (isRequesting) return;
+    setIsRequesting(true);
     let granted = false;
 
     try {
       if (Platform.OS === 'android') {
         const { PermissionsAndroid } = require('react-native');
-        const apiLevel = Platform.Version;
 
-        if (stepId === 'storage') {
-          const perm = apiLevel >= 33 
-            ? PermissionsAndroid.PERMISSIONS.READ_MEDIA_IMAGES 
-            : PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE;
-            
-          let status = await PermissionsAndroid.check(perm);
-          if (!status) {
-            const req = await PermissionsAndroid.request(perm);
-            status = req === PermissionsAndroid.RESULTS.GRANTED;
-          }
-          granted = status;
-        } 
-        else if (stepId === 'notifications') {
+        if (stepId === 'notifications') {
+          if (typeof notifee?.requestPermission !== 'function') throw new Error('Notifications module unavailable');
           const settings = await notifee.requestPermission();
-          granted = settings.authorizationStatus === 1; // AUTHORIZED
-        }
-        else if (stepId === 'calendar') {
-          const perm = PermissionsAndroid.PERMISSIONS.READ_CALENDAR;
-          let status = await PermissionsAndroid.check(perm);
-          if (!status) {
-            const req = await PermissionsAndroid.request(perm);
-            status = req === PermissionsAndroid.RESULTS.GRANTED;
+          granted = Number(settings?.authorizationStatus) >= 1;
+        } else if (stepId === 'calendar') {
+          const perms = [
+            PermissionsAndroid.PERMISSIONS.READ_CALENDAR,
+            PermissionsAndroid.PERMISSIONS.WRITE_CALENDAR,
+          ].filter(Boolean);
+          if (perms.length !== 2) throw new Error('Calendar permissions unavailable');
+          const results = await PermissionsAndroid.requestMultiple(perms);
+          granted = perms.every((permission) => results[permission] === PermissionsAndroid.RESULTS.GRANTED);
+        } else if (stepId === 'microphone') {
+          const permission = PermissionsAndroid.PERMISSIONS.RECORD_AUDIO;
+          if (!permission) throw new Error('Microphone permission unavailable');
+          const alreadyGranted = await PermissionsAndroid.check(permission);
+          const result = alreadyGranted
+            ? PermissionsAndroid.RESULTS.GRANTED
+            : await PermissionsAndroid.request(permission);
+          granted = result === PermissionsAndroid.RESULTS.GRANTED;
+        } else if (stepId === 'accessibility') {
+          if (
+            typeof AppBlocker?.isAccessibilityServiceEnabled !== 'function'
+            || typeof AppBlocker?.openAccessibilitySettings !== 'function'
+          ) {
+            throw new Error('Accessibility module unavailable');
           }
-          granted = status;
-        }
-        else if (stepId === 'microphone') {
-          const perm = PermissionsAndroid.PERMISSIONS.RECORD_AUDIO;
-          let status = await PermissionsAndroid.check(perm);
-          if (!status) {
-            const req = await PermissionsAndroid.request(perm);
-            status = req === PermissionsAndroid.RESULTS.GRANTED;
-          }
-          granted = status;
-        }
-        else if (stepId === 'accessibility') {
-          if (AppBlocker) {
-            let status = await AppBlocker.isAccessibilityServiceEnabled();
-            if (!status) {
-              AppBlocker.openAccessibilitySettings();
-              import('react-native').then(({ Alert }) => {
-                Alert.alert('Action Required', 'Please enable the Accessibility Service for LifePilot in Settings. We will automatically detect when you return.');
-              });
-              return;
-            }
-            granted = status;
+          granted = await AppBlocker.isAccessibilityServiceEnabled();
+          if (!granted) {
+            await AppBlocker.openAccessibilitySettings();
+            Alert.alert(
+              t('permissionsOnboarding.actionRequiredTitle'),
+              t('permissionsOnboarding.enableAccessibilityMessage')
+            );
+            return;
           }
         }
-      } else {
-        // iOS Fallback (Expo modules work perfectly on iOS)
-        if (stepId === 'storage') {
-          let perm = await ImagePicker.getMediaLibraryPermissionsAsync();
-          if (perm.status !== 'granted') {
-            perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-          }
-          granted = perm.status === 'granted';
-        } 
-        else if (stepId === 'notifications') {
-          const settings = await notifee.requestPermission();
-          granted = settings.authorizationStatus === 1; // AUTHORIZED
+      } else if (stepId === 'storage') {
+        let permission = await ImagePicker.getMediaLibraryPermissionsAsync();
+        if (permission.status !== 'granted') {
+          permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
         }
-        else if (stepId === 'calendar') {
-          let perm = await Calendar.getCalendarPermissionsAsync();
-          if (perm.status !== 'granted') {
-            perm = await Calendar.requestCalendarPermissionsAsync();
-          }
-          granted = perm.status === 'granted';
+        granted = permission.status === 'granted';
+      } else if (stepId === 'notifications') {
+        if (typeof notifee?.requestPermission !== 'function') throw new Error('Notifications module unavailable');
+        const settings = await notifee.requestPermission();
+        granted = Number(settings?.authorizationStatus) >= 1;
+      } else if (stepId === 'calendar') {
+        let permission = await Calendar.getCalendarPermissionsAsync();
+        if (permission.status !== 'granted') {
+          permission = await Calendar.requestCalendarPermissionsAsync();
         }
-        else if (stepId === 'microphone') {
-          const { granted: micGranted } = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
-          granted = micGranted;
-        }
+        granted = permission.status === 'granted';
+      } else if (stepId === 'microphone') {
+        const result = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+        granted = !!result?.granted;
       }
 
-      setGrantedStatus(prev => ({ ...prev, [stepId]: granted }));
-      
-      if (granted) {
-        // Auto-advance only if granted
-        if (currentStep < PERMISSION_STEPS.length - 1) {
-          setTimeout(() => setCurrentStep(prev => prev + 1), 300);
-        } else {
-          // Finished all steps
-          setTimeout(markCompleted, 600);
-        }
-      } else {
-        // Permission was instantly denied by OS (likely previously denied)
-        import('react-native').then(({ Alert, Linking }) => {
-          Alert.alert(
-            'Permission Required',
-            'Could not request permission directly. Please enable it in your device Settings to continue.',
-            [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Open Settings', onPress: () => Linking.openSettings() }
-            ]
-          );
-        });
+      setGrantedStatus((previous) => ({ ...previous, [stepId]: granted }));
+
+      if (!granted) {
+        showPermissionSettingsPrompt();
+        return;
       }
 
-    } catch (e) {
-      console.log('Error requesting permission:', e);
-      import('react-native').then(({ Alert, Linking }) => {
-        Alert.alert(
-          'Permission Required',
-          'Could not request permission directly. Please enable it in your device Settings to continue.',
-          [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Open Settings', onPress: () => Linking.openSettings() }
-          ]
-        );
-      });
+      if (currentStep < PERMISSION_STEPS.length - 1) {
+        setTimeout(() => setCurrentStep((previous) => previous + 1), 300);
+      } else {
+        setTimeout(() => { markCompleted().catch(() => {}); }, 600);
+      }
+    } catch (error) {
+      console.warn(`[PermissionsOnboarding] ${stepId} request failed:`, error?.message || error);
+      showPermissionSettingsPrompt();
+    } finally {
+      setIsRequesting(false);
     }
   };
 
@@ -227,14 +230,14 @@ export const PermissionsOnboarding = () => {
           
           <View style={styles.header}>
             <View style={{ width: 40 }} />
-            <Text style={styles.headerTitle}>Welcome Setup</Text>
+            <Text style={styles.headerTitle}>{t('permissionsOnboarding.welcomeSetupTitle')}</Text>
             <TouchableOpacity onPress={handleSkip} style={styles.closeBtn}>
               <X color="#A1A1AA" size={24} />
             </TouchableOpacity>
           </View>
 
           <Text style={styles.subtitle}>
-            Let's get LifePilot ready. We need a few permissions to make the magic happen.
+            {t('permissionsOnboarding.subtitle')}
           </Text>
 
           <ScrollView style={styles.timeline} showsVerticalScrollIndicator={false}>
@@ -254,7 +257,7 @@ export const PermissionsOnboarding = () => {
                   {/* Step Node */}
                   <View style={[styles.stepNode, isPast && styles.stepNodeCompleted, isCurrent && styles.stepNodeCurrent]}>
                     {isGranted ? (
-                      <Check color="#10B981" size={16} />
+                      <Check color="#34D399" size={16} />
                     ) : (
                       <Text style={[styles.stepNodeText, (isPast || isCurrent) && { color: '#FFF' }]}>{index + 1}</Text>
                     )}
@@ -272,8 +275,8 @@ export const PermissionsOnboarding = () => {
                     onPress={() => requestPermission(step.id)}
                   >
                     <View style={styles.cardHeader}>
-                      <View style={[styles.iconBox, isCurrent && { backgroundColor: 'rgba(168, 85, 247, 0.1)' }]}>
-                        <Icon color={isCurrent ? "#A855F7" : "#A1A1AA"} size={20} />
+                      <View style={[styles.iconBox, isCurrent && { backgroundColor: ACCENT + '1A' }]}>
+                        <Icon color={isCurrent ? ACCENT : "#A1A1AA"} size={20} />
                       </View>
                       <View style={{ flex: 1 }}>
                         <Text style={[styles.cardTitle, isCurrent && { color: '#FFF' }]}>{step.title}</Text>
@@ -283,7 +286,7 @@ export const PermissionsOnboarding = () => {
                     
                     {isCurrent && (
                       <View style={styles.grantBtn}>
-                        <Text style={styles.grantBtnText}>Grant Permission</Text>
+                        <Text style={styles.grantBtnText}>{t('permissionsOnboarding.grantPermission')}</Text>
                       </View>
                     )}
                   </TouchableOpacity>
@@ -299,7 +302,7 @@ export const PermissionsOnboarding = () => {
   );
 };
 
-const styles = StyleSheet.create({
+const makeStyles = (ACCENT) => StyleSheet.create({
   modalOverlay: {
     flex: 1,
     backgroundColor: Platform.OS === 'android' ? 'rgba(0,0,0,0.5)' : '#09090B',
@@ -341,7 +344,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#27272A',
     zIndex: 0,
   },
-  timelineLineActive: { backgroundColor: '#10B981' },
+  timelineLineActive: { backgroundColor: '#34D399' },
   stepNode: {
     width: 32,
     height: 32,
@@ -354,9 +357,11 @@ const styles = StyleSheet.create({
     borderWidth: 4,
     borderColor: '#18181B',
   },
-  stepNodeCurrent: { backgroundColor: '#A855F7' },
-  stepNodeCompleted: { backgroundColor: 'rgba(16, 185, 129, 0.2)' },
-  stepNodeText: { color: '#71717A', fontWeight: '700', fontSize: 12 },
+  stepNodeCurrent: { backgroundColor: ACCENT },
+  stepNodeCompleted: { backgroundColor: 'rgba(52, 211, 153, 0.18)' },
+  // Was #71717A on the #27272A node — 3.08:1 for a step number the user reads
+  // to know where they are. #A1A1AA gives 5.9:1.
+  stepNodeText: { color: '#A1A1AA', fontWeight: '700', fontSize: 12 },
   
   card: {
     flex: 1,
@@ -366,7 +371,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#27272A',
   },
-  cardActive: { borderColor: '#A855F7', backgroundColor: 'rgba(168, 85, 247, 0.05)' },
+  cardActive: { borderColor: ACCENT, backgroundColor: ACCENT + '0D' },
   cardDimmed: { opacity: 0.5 },
   cardHeader: { flexDirection: 'row' },
   iconBox: {
@@ -381,7 +386,7 @@ const styles = StyleSheet.create({
   cardTitle: { color: '#A1A1AA', fontSize: 16, fontWeight: '600', marginBottom: 4 },
   cardDesc: { color: '#71717A', fontSize: 13, lineHeight: 18 },
   grantBtn: {
-    backgroundColor: '#A855F7',
+    backgroundColor: ACCENT,
     marginTop: 16,
     paddingVertical: 10,
     borderRadius: 8,

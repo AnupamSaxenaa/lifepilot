@@ -5,23 +5,27 @@ import {
     Bell,
     Brain,
     Calendar,
+    GripVertical,
     Heart,
     History,
     Home,
     Inbox,
-    Key,
     LayoutGrid,
     List,
     LogOut,
+    MessageSquare,
     Plus,
     Settings,
     Star,
     X
 } from 'lucide-react-native';
-import { useEffect, useState } from 'react';
-import { Alert, Animated, Dimensions, Linking, Platform, StyleSheet, Switch, Text, TextInput, TouchableOpacity, TouchableWithoutFeedback, useColorScheme, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { Alert, Animated, Dimensions, Linking, Platform, StyleSheet, Text, TextInput, TouchableOpacity, TouchableWithoutFeedback, useColorScheme, View } from 'react-native';
+import { NestableDraggableFlatList, NestableScrollContainer, ScaleDecorator } from 'react-native-draggable-flatlist';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { addList, loadLists } from '../lib/dataManager';
+import { useTheme as useAppTheme } from '../context/ThemeContext';
+import { addList, loadLists, reorderLists } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
 import { COLORS } from '../theme/theme';
 import {
@@ -35,11 +39,72 @@ import { GamificationStatsModal } from './GamificationStatsModal';
 import { UpdatesModal } from './UpdatesModal';
 import { XPAvatarRing } from './XPAvatarRing';
 
-const { width, height } = Dimensions.get('window');
-const SIDEBAR_WIDTH = width * 0.75;
+const { width } = Dimensions.get('window');
+const SIDEBAR_WIDTH = width * 0.78;
+
+/**
+ * One row primitive for the whole sidebar. Every entry used to be a bespoke
+ * 20-line block with its own active colour and badge style, which is why the
+ * panel read as noisy. Active state is now a single language everywhere: a thin
+ * accent bar on the leading edge, brighter label, faint surface wash.
+ */
+const SidebarRow = ({
+  icon: Icon,
+  label,
+  theme,
+  onPress,
+  active = false,
+  count = 0,
+  showDot = false,
+  tint,
+  trailing = null,
+  labelStyle,
+  accessibilityLabel,
+}) => {
+  const labelColor = tint || (active ? theme.text : theme.textMuted);
+  return (
+    <TouchableOpacity
+      style={[styles.row, active && { backgroundColor: `${theme.text}0A` }]}
+      onPress={onPress}
+      activeOpacity={0.7}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel || label}
+      accessibilityState={{ selected: active }}
+    >
+      <View style={[styles.rowRail, active && { backgroundColor: tint || theme.accent }]} />
+      <Icon color={tint || (active ? theme.accent : theme.textMuted)} size={19} />
+      <Text
+        numberOfLines={1}
+        style={[styles.rowLabel, { color: labelColor }, active && styles.rowLabelActive, labelStyle]}
+      >
+        {label}
+      </Text>
+      {showDot ? <View style={styles.dot} /> : null}
+      {count > 0 ? (
+        <Text style={[styles.rowCount, { color: active ? theme.text : theme.textMuted }]}>{count}</Text>
+      ) : null}
+      {trailing}
+    </TouchableOpacity>
+  );
+};
+
+/** Identity of a list collection: ids, names, and order. Used to skip no-op
+ *  state updates that would otherwise re-render every draggable row. */
+const listsSignature = (lists) => (Array.isArray(lists)
+  ? lists.map((list) => `${list?.id}:${list?.name}`).join('|')
+  : '');
+
+/** Small tracked caption that replaces bare dividers as the grouping cue. */
+const SectionLabel = ({ children, theme }) => (
+  <Text style={[styles.sectionLabel, { color: theme.textMuted }]}>{children}</Text>
+);
 
 export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigation, currentRoute, gamestate: parentGamestate }) => {
+  const { t } = useTranslation();
   const colorScheme = useColorScheme();
+  // Forces a re-render whenever the equipped accent/theme changes — COLORS is
+  // mutated in place by ThemeContext, so this subscription is required.
+  useAppTheme().themeVersion;
   const theme = colorScheme === 'dark' ? COLORS.dark : COLORS.light;
   const insets = useSafeAreaInsets();
   
@@ -58,9 +123,13 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
   const [isCalendarLinked, setIsCalendarLinked] = useState(false);
   const [userId, setUserId] = useState(null);
   const [customLists, setCustomLists] = useState([]);
+  // True from drag start until the new order is persisted, so a background
+  // list refresh can never overwrite the arrangement mid-gesture.
+  const isDraggingListsRef = useRef(false);
   const [isAddingList, setIsAddingList] = useState(false);
   const [newListName, setNewListName] = useState('');
-  const [gamestate, setGamestate] = useState({ xp: 0, level: 1, streak: 0 });
+  // Locally fetched progress, used only until the parent supplies its own.
+  const [localGamestate, setLocalGamestate] = useState({ xp: 0, level: 1, streak: 0 });
   const [isStatsModalOpen, setIsStatsModalOpen] = useState(false);
   const [isGuideModalOpen, setIsGuideModalOpen] = useState(false);
   
@@ -70,11 +139,26 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
   const [isFetchingUpdate, setIsFetchingUpdate] = useState(false);
   const [hasUnreadUpdate, setHasUnreadUpdate] = useState(false);
 
-  useEffect(() => {
-    if (parentGamestate) {
-      setGamestate(parentGamestate);
-    }
-  }, [parentGamestate]);
+  // Derived rather than copied into state via an effect: the Dashboard already
+  // owns the authoritative value, so mirroring it caused a cascading re-render.
+  const gamestate = parentGamestate || localGamestate;
+
+  /**
+   * Commit a list array without making the sidebar flicker.
+   *   • A cached read that comes back empty is a cache miss, not "no lists" —
+   *     ignore it so reopening never blanks a populated sidebar for a frame.
+   *   • Identical id/name/order keeps the previous array reference, so the
+   *     draggable list doesn't re-render every cell on each open.
+   */
+  const applyLists = useCallback((incoming, fromCache) => {
+    if (!Array.isArray(incoming)) return;
+    if (isDraggingListsRef.current) return; // Never fight an active reorder.
+    setCustomLists((prev) => {
+      if (fromCache && incoming.length === 0 && prev.length > 0) return prev;
+      if (listsSignature(prev) === listsSignature(incoming)) return prev;
+      return incoming;
+    });
+  }, []);
 
   useEffect(() => {
     const fetchCounts = async () => {
@@ -86,7 +170,7 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
       setIsCalendarLinked(calState);
 
       const state = await Gamification.getState(session.user.id);
-      if (state) setGamestate(state);
+      if (state) setLocalGamestate(state);
 
       const cached = await Storage.get(`tasks_${session.user.id}`);
       if (cached) {
@@ -162,8 +246,10 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
         setListOverdueCounts(overdueCts);
       }
       
-      const fetchedLists = await loadLists(session.user.id, (fresh) => setCustomLists(fresh));
-      if (fetchedLists) setCustomLists(fetchedLists);
+      // Server response is authoritative; the cached one must never blank the
+      // sidebar while it's still warming up.
+      const fetchedLists = await loadLists(session.user.id, (fresh) => applyLists(fresh, false));
+      applyLists(fetchedLists, true);
 
       // Fetch Latest Update
       try {
@@ -233,7 +319,7 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
     console.log('[GlassSidebar] Calendar toggle tapped, current state:', isCalendarLinked);
     
     if (isCalendarLinked) {
-      Alert.alert('Calendar Synced', 'Your local calendars are already synced. You can disable this in your OS settings.');
+      Alert.alert(t('sidebar.calendarSyncedTitle'), t('sidebar.calendarSyncedMessage'));
     } else {
       console.log('[GlassSidebar] Requesting calendar permissions...');
       const granted = await requestCalendarPermissions();
@@ -241,15 +327,15 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
       
       if (granted) {
         setIsCalendarLinked(true);
-        Alert.alert('Connected', 'Your device calendars are now synced!');
+        Alert.alert(t('sidebar.connectedTitle'), t('sidebar.connectedMessage'));
       } else {
         // OS didn't show dialog — redirect to Settings
         Alert.alert(
-          'Permission Required',
-          'Please enable Calendar access for LifePilot in Settings.',
+          t('sidebar.permissionRequiredTitle'),
+          t('sidebar.permissionRequiredMessage'),
           [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Open Settings', onPress: () => Linking.openSettings() }
+            { text: t('sidebar.cancel'), style: 'cancel' },
+            { text: t('sidebar.openSettings'), onPress: () => Linking.openSettings() }
           ]
         );
       }
@@ -277,6 +363,13 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
     const seed = profile?.avatar_seed || profile?.username || 'fallback';
     return { uri: `https://api.dicebear.com/7.x/adventurer/png?seed=${seed}&backgroundColor=b6e3f4,c0aede,d1d4f9` };
   };
+
+  // Which list route is showing, resolved once instead of re-walking the
+  // navigation state inside every single row.
+  const activeListId = currentRoute === 'CustomList'
+    ? navigation.getState()?.routes?.find((r) => r.name === 'CustomList')?.params?.listId
+    : null;
+  const isInboxActive = activeListId === 'inbox';
 
   const handleOpenUpdates = async () => {
     setIsUpdatesModalOpen(true);
@@ -312,44 +405,58 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
         ) : null}
         
         <View style={[styles.content, { paddingTop: Math.max(insets.top, 24), paddingBottom: Math.max(insets.bottom, 24) }]}>
-          {/* Header */}
+          {/* ── Identity: avatar and name on one line so the panel starts with
+                content instead of a tall block of chrome. ── */}
           <View style={styles.header}>
-            <View style={styles.headerTopRow}>
-              <TouchableOpacity onPress={() => setIsStatsModalOpen(true)} activeOpacity={0.8} style={{ marginBottom: 14 }}>
-                <XPAvatarRing 
-                  avatarSource={getAvatarSource()} 
-                  xp={gamestate.xp} 
-                  level={gamestate.level} 
-                  size={64} 
-                  strokeWidth={3.5} 
-                />
-              </TouchableOpacity>
-              <View style={{ flexDirection: 'row', gap: 12, marginTop: 14 }}>
-                <TouchableOpacity onPress={handleOpenUpdates} style={[styles.closeBtn, { backgroundColor: theme.surface, borderColor: theme.border, overflow: 'visible' }]}>
-                  <Bell color={theme.text} size={20} />
-                  {hasUnreadUpdate && <View style={[styles.redDot, { position: 'absolute', top: -2, right: -2, marginRight: 0 }]} />}
-                </TouchableOpacity>
-                <TouchableOpacity onPress={onClose} style={[styles.closeBtn, { backgroundColor: theme.surface, borderColor: theme.border }]}>
-                  <X color={theme.text} size={20} />
-                </TouchableOpacity>
-              </View>
-            </View>
-            
+            <TouchableOpacity
+              onPress={() => setIsStatsModalOpen(true)}
+              activeOpacity={0.8}
+              accessibilityRole="button"
+              accessibilityLabel={t('sidebar.xpAndRewards')}
+            >
+              <XPAvatarRing
+                avatarSource={getAvatarSource()}
+                xp={gamestate.xp}
+                level={gamestate.level}
+                size={46}
+                strokeWidth={2.5}
+              />
+            </TouchableOpacity>
+
             <View style={styles.profileInfo}>
               <Text style={[styles.displayName, { color: theme.text }]} numberOfLines={1}>
-                {profile?.display_name || 'Loading...'}
+                {profile?.display_name || t('sidebar.loadingName')}
               </Text>
               <Text style={[styles.username, { color: theme.textMuted }]} numberOfLines={1}>
-                @{profile?.username || 'loading'}
+                @{profile?.username || t('sidebar.loadingUsername')}
               </Text>
             </View>
+
+            <TouchableOpacity
+              onPress={handleOpenUpdates}
+              style={styles.headerButton}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              accessibilityRole="button"
+              accessibilityLabel={t('sidebar.updatesLabel', { defaultValue: 'Updates' })}
+            >
+              <Bell color={theme.textMuted} size={19} />
+              {hasUnreadUpdate && <View style={styles.headerButtonDot} />}
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={onClose}
+              style={styles.headerButton}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              accessibilityRole="button"
+              accessibilityLabel={t('common.close', { defaultValue: 'Close' })}
+            >
+              <X color={theme.textMuted} size={19} />
+            </TouchableOpacity>
           </View>
 
-          <View style={[styles.divider, { backgroundColor: theme.border }]} />
-
           {/* Menu Items */}
-          <Animated.ScrollView 
-            style={[styles.menu, {
+          <Animated.View
+            style={{
+              flex: 1,
               opacity: menuItemsAnim,
               transform: [{
                 translateY: menuItemsAnim.interpolate({
@@ -357,415 +464,266 @@ export const GlassSidebar = ({ isOpen, onClose, profile, handleLogout, navigatio
                   outputRange: [20, 0]
                 })
               }]
-            }]} 
-            showsVerticalScrollIndicator={false}
-            keyboardShouldPersistTaps="always"
+            }}
           >
-            {/* Dashboard */}
-            <TouchableOpacity
-              style={[
-                styles.menuItem,
-                currentRoute === 'Dashboard' && { backgroundColor: theme.primary + '22' },
-              ]}
-              onPress={() => {
-                if (currentRoute !== 'Dashboard') {
-                  navigation.replace('Dashboard');
-                } else {
-                  onClose();
-                }
-              }}
+            <NestableScrollContainer
+              style={styles.menu}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="always"
             >
-              <Home
-                color={currentRoute === 'Dashboard' ? theme.primary : theme.textMuted}
-                size={24}
-                style={styles.menuIcon}
-              />
-              <Text style={[
-                styles.menuText,
-                { color: currentRoute === 'Dashboard' ? theme.primary : theme.textMuted },
-                currentRoute === 'Dashboard' && { fontWeight: '700' },
-              ]}>Dashboard</Text>
-            </TouchableOpacity>
+            <SectionLabel theme={theme}>
+              {t('sidebar.groupWorkspace', { defaultValue: 'Workspace' })}
+            </SectionLabel>
 
-            {/* Inbox */}
-            <TouchableOpacity
-              style={[
-                styles.menuItem,
-                currentRoute === 'CustomList' && navigation.getState()?.routes?.find(r => r.name === 'CustomList')?.params?.listId === 'inbox' && { backgroundColor: theme.primary + '22' },
-              ]}
+            <SidebarRow
+              icon={Home}
+              label={t('sidebar.dashboard')}
+              theme={theme}
+              active={currentRoute === 'Dashboard'}
               onPress={() => {
-                navigation.replace('CustomList', { listId: 'inbox', listName: 'Inbox' });
+                if (currentRoute !== 'Dashboard') navigation.replace('Dashboard');
+                else onClose();
               }}
-            >
-              <Inbox
-                color={currentRoute === 'CustomList' && navigation.getState()?.routes?.find(r => r.name === 'CustomList')?.params?.listId === 'inbox' ? theme.primary : theme.textMuted}
-                size={24}
-                style={styles.menuIcon}
-              />
-              <Text style={[
-                styles.menuText,
-                { color: currentRoute === 'CustomList' && navigation.getState()?.routes?.find(r => r.name === 'CustomList')?.params?.listId === 'inbox' ? theme.primary : theme.textMuted },
-                currentRoute === 'CustomList' && navigation.getState()?.routes?.find(r => r.name === 'CustomList')?.params?.listId === 'inbox' && { fontWeight: '700' },
-                { flex: 1 }
-              ]}>Inbox</Text>
-            </TouchableOpacity>
+            />
 
-            {/* Today */}
-            <TouchableOpacity
-              style={[
-                styles.menuItem,
-                currentRoute === 'Today' && { backgroundColor: theme.primary + '22' },
-              ]}
+            <SidebarRow
+              icon={Inbox}
+              label={t('sidebar.inbox')}
+              theme={theme}
+              active={isInboxActive}
               onPress={() => {
-                if (currentRoute !== 'Today') {
-                  navigation.replace('Today');
-                } else {
-                  onClose();
-                }
+                navigation.replace('CustomList', { listId: 'inbox', listName: t('sidebar.inbox') });
               }}
-            >
-              <LayoutGrid
-                color={currentRoute === 'Today' ? theme.primary : theme.textMuted}
-                size={24}
-                style={styles.menuIcon}
-              />
-              <Text style={[
-                styles.menuText,
-                { color: currentRoute === 'Today' ? theme.primary : theme.textMuted },
-                currentRoute === 'Today' && { fontWeight: '700' },
-                { flex: 1 }
-              ]}>Today</Text>
-              {overdueCount > 0 && (
-                <View style={[styles.redDot, { marginRight: 8 }]} />
-              )}
-              {todayCount > 0 && (
-                <View style={styles.badge}>
-                  <Text style={styles.badgeText}>{todayCount}</Text>
-                </View>
-              )}
-            </TouchableOpacity>
+            />
 
-            {/* Starred */}
-            <TouchableOpacity
-              style={[
-                styles.menuItem,
-                currentRoute === 'Starred' && { backgroundColor: theme.primary + '22' },
-              ]}
+            <SidebarRow
+              icon={LayoutGrid}
+              label={t('sidebar.today')}
+              theme={theme}
+              active={currentRoute === 'Today'}
+              count={todayCount}
+              showDot={overdueCount > 0}
               onPress={() => {
-                if (currentRoute !== 'Starred') {
-                  navigation.replace('Starred');
-                } else {
-                  onClose();
-                }
+                if (currentRoute !== 'Today') navigation.replace('Today');
+                else onClose();
               }}
-            >
-              <Star
-                color={currentRoute === 'Starred' ? theme.text : theme.textMuted}
-                size={24}
-                style={styles.menuIcon}
-              />
-              <Text style={[
-                styles.menuText,
-                { color: currentRoute === 'Starred' ? theme.text : theme.textMuted },
-                currentRoute === 'Starred' && { fontWeight: '700' },
-                { flex: 1 }
-              ]}>Starred</Text>
-              {starredOverdueCount > 0 && (
-                <View style={[styles.redDot, { marginRight: 8 }]} />
-              )}
-              {starredCount > 0 && (
-                <View style={[styles.badge, { backgroundColor: theme.text }]}>
-                  <Text style={[styles.badgeText, { color: theme.background }]}>{starredCount}</Text>
-                </View>
-              )}
-            </TouchableOpacity>
+            />
 
-            {/* Planned */}
-            <TouchableOpacity
-              style={[
-                styles.menuItem,
-                currentRoute === 'Planned' && { backgroundColor: theme.primary + '22' },
-              ]}
+            <SidebarRow
+              icon={Star}
+              label={t('sidebar.starred')}
+              theme={theme}
+              active={currentRoute === 'Starred'}
+              count={starredCount}
+              showDot={starredOverdueCount > 0}
               onPress={() => {
-                if (currentRoute !== 'Planned') {
-                  navigation.replace('Planned');
-                } else {
-                  onClose();
-                }
+                if (currentRoute !== 'Starred') navigation.replace('Starred');
+                else onClose();
               }}
-            >
-              <Calendar
-                color={currentRoute === 'Planned' ? theme.text : theme.textMuted}
-                size={24}
-                style={styles.menuIcon}
-              />
-              <Text style={[
-                styles.menuText,
-                { color: currentRoute === 'Planned' ? theme.text : theme.textMuted },
-                currentRoute === 'Planned' && { fontWeight: '700' },
-                { flex: 1 }
-              ]}>Planned</Text>
-              {plannedOverdueCount > 0 && (
-                <View style={[styles.redDot, { marginRight: 8 }]} />
-              )}
-              {plannedCount > 0 && (
-                <View style={[styles.badge, { backgroundColor: '#27272A' }]}>
-                  <Text style={[styles.badgeText, { color: '#ffffff' }]}>{plannedCount}</Text>
-                </View>
-              )}
-            </TouchableOpacity>
+            />
 
-            {/* Promises */}
-            <TouchableOpacity
-              style={[
-                styles.menuItem,
-                currentRoute === 'Promises' && { backgroundColor: theme.primary + '22' },
-              ]}
+            <SidebarRow
+              icon={Calendar}
+              label={t('sidebar.planned')}
+              theme={theme}
+              active={currentRoute === 'Planned'}
+              count={plannedCount}
+              showDot={plannedOverdueCount > 0}
               onPress={() => {
-                if (currentRoute !== 'Promises') {
-                  navigation.replace('Promises');
-                } else {
-                  onClose();
-                }
+                if (currentRoute !== 'Planned') navigation.replace('Planned');
+                else onClose();
               }}
-            >
-              <Heart
-                color={currentRoute === 'Promises' ? theme.text : theme.textMuted}
-                size={24}
-                style={styles.menuIcon}
-              />
-              <Text style={[
-                styles.menuText,
-                { color: currentRoute === 'Promises' ? theme.text : theme.textMuted },
-                currentRoute === 'Promises' && { fontWeight: '700' },
-                { flex: 1 }
-              ]}>Promises</Text>
-            </TouchableOpacity>
+            />
 
-            {/* Mindful Lock */}
-            <TouchableOpacity
-              style={[
-                styles.menuItem,
-                currentRoute === 'MindfulLock' && { backgroundColor: '#A855F7' + '22' },
-              ]}
+            <SidebarRow
+              icon={Heart}
+              label={t('sidebar.promises')}
+              theme={theme}
+              active={currentRoute === 'Promises'}
+              onPress={() => {
+                if (currentRoute !== 'Promises') navigation.replace('Promises');
+                else onClose();
+              }}
+            />
+
+            <SidebarRow
+              icon={Brain}
+              label={t('sidebar.mindfulLock')}
+              theme={theme}
+              active={currentRoute === 'MindfulLock'}
+              trailing={(
+                <View style={[styles.newDot, { backgroundColor: theme.accent }]} />
+              )}
               onPress={async () => {
-                if (currentRoute !== 'MindfulLock') {
-                  const { getProfile } = require('../utils/mindfulLock');
-                  const prof = userId ? await getProfile(userId) : null;
-                  if (prof?.onboardingComplete) {
-                    navigation.replace('MindfulLock', { userId });
-                  } else {
-                    navigation.replace('MindfulLockSetup', { userId });
-                  }
-                } else {
+                if (currentRoute === 'MindfulLock') {
                   onClose();
+                  return;
                 }
+                const { getProfile } = require('../utils/mindfulLock');
+                const prof = userId ? await getProfile(userId) : null;
+                if (prof?.onboardingComplete) navigation.replace('MindfulLock', { userId });
+                else navigation.replace('MindfulLockSetup', { userId });
               }}
-            >
-              <Brain
-                color={currentRoute === 'MindfulLock' ? '#A855F7' : theme.textMuted}
-                size={24}
-                style={styles.menuIcon}
-              />
-              <Text style={[
-                styles.menuText,
-                { color: currentRoute === 'MindfulLock' ? '#A855F7' : theme.textMuted },
-                currentRoute === 'MindfulLock' && { fontWeight: '700' },
-                { flex: 1 }
-              ]}>Mindful Lock</Text>
-              <View style={{
-                backgroundColor: '#A855F7',
-                borderRadius: 6,
-                paddingHorizontal: 6,
-                paddingVertical: 2,
-                marginRight: 4,
-              }}>
-                <Text style={{ color: '#fff', fontSize: 9, fontWeight: '800', letterSpacing: 0.5 }}>NEW</Text>
-              </View>
-            </TouchableOpacity>
+            />
 
-            <View style={[styles.divider, { backgroundColor: theme.border, marginVertical: 8 }]} />
+            <SectionLabel theme={theme}>
+              {t('sidebar.groupLists', { defaultValue: 'Lists' })}
+            </SectionLabel>
 
-            {/* Custom Lists */}
-            {customLists.map((list) => (
-              <TouchableOpacity
-                key={list.id}
-                style={[
-                  styles.menuItem,
-                  currentRoute === 'CustomList' && navigation.getState()?.routes?.find(r => r.name === 'CustomList')?.params?.listId === list.id && { backgroundColor: theme.primary + '22' },
-                ]}
-                onPress={() => {
-                  navigation.replace('CustomList', { listId: list.id, listName: list.name });
-                }}
-              >
-                <List color={theme.textMuted} size={24} style={styles.menuIcon} />
-                <Text style={[styles.menuText, { color: theme.textMuted, flex: 1 }]} numberOfLines={1}>
-                  {list.name}
-                </Text>
-                {(listOverdueCounts[list.id] || 0) > 0 && (
-                  <View style={[styles.redDot, { marginRight: 8 }]} />
-                )}
-                {(listCounts[list.id] || 0) > 0 && (
-                  <View style={[styles.badge, { backgroundColor: '#27272A' }]}>
-                    <Text style={[styles.badgeText, { color: '#ffffff' }]}>{listCounts[list.id]}</Text>
+            {/* Custom Lists — drag rows to keep a permanent sidebar order. */}
+            <NestableDraggableFlatList
+              data={customLists}
+              keyExtractor={(list) => String(list.id)}
+              activationDistance={12}
+              autoscrollThreshold={48}
+              onDragBegin={() => { isDraggingListsRef.current = true; }}
+              onDragEnd={({ data }) => {
+                // Paint the new order immediately, then persist. The drag flag
+                // stays up until persistence finishes so an in-flight refresh
+                // can't push the old order back underneath the user.
+                setCustomLists(data);
+                if (!userId) {
+                  isDraggingListsRef.current = false;
+                  return;
+                }
+                reorderLists(userId, data)
+                  .then((saved) => {
+                    // Adopt the indexed copy directly: applyLists would treat it
+                    // as unchanged, and the drag guard is still up here anyway.
+                    if (Array.isArray(saved) && saved.length > 0) setCustomLists(saved);
+                  })
+                  .catch(() => {})
+                  .finally(() => { isDraggingListsRef.current = false; });
+              }}
+              renderItem={({ item: list, drag, isActive }) => (
+                <ScaleDecorator>
+                  <View style={isActive ? styles.rowDragging : null}>
+                    <SidebarRow
+                      icon={List}
+                      label={list.name}
+                      theme={theme}
+                      active={activeListId === list.id}
+                      count={listCounts[list.id] || 0}
+                      showDot={(listOverdueCounts[list.id] || 0) > 0}
+                      onPress={() => {
+                        navigation.replace('CustomList', { listId: list.id, listName: list.name });
+                      }}
+                      trailing={(
+                        /* The grip is the ONLY drag activator. Row-level long
+                           press used to compete with it and with the nested
+                           scroll view, which is what produced the jitter. */
+                        <TouchableOpacity
+                          onPressIn={drag}
+                          disabled={isActive}
+                          style={styles.listDragHandle}
+                          hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
+                          accessibilityRole="button"
+                          accessibilityLabel={t('sidebar.reorderList', { defaultValue: 'Reorder list' })}
+                        >
+                          <GripVertical color={theme.textMuted} size={16} />
+                        </TouchableOpacity>
+                      )}
+                    />
                   </View>
-                )}
-              </TouchableOpacity>
-            ))}
+                </ScaleDecorator>
+              )}
+            />
 
             {isAddingList ? (
-              <View style={[styles.menuItem, { backgroundColor: theme.surface }]}>
-                <List color={theme.textMuted} size={24} style={styles.menuIcon} />
+              <View style={[styles.row, { backgroundColor: `${theme.text}0A` }]}>
+                <View style={styles.rowRail} />
+                <List color={theme.textMuted} size={19} />
                 <TextInput
-                  style={[styles.menuText, { color: theme.text, flex: 1, padding: 0 }]}
-                  placeholder="List Name"
+                  style={[styles.rowLabel, { color: theme.text, padding: 0 }]}
+                  placeholder={t('sidebar.listNamePlaceholder')}
                   placeholderTextColor={theme.textMuted}
                   autoFocus
                   value={newListName}
                   onChangeText={setNewListName}
                   onSubmitEditing={handleCreateList}
+                  returnKeyType="done"
                 />
               </View>
             ) : (
-              <TouchableOpacity style={styles.menuItem} onPress={() => setIsAddingList(true)}>
-                <Plus color={theme.textMuted} size={24} style={styles.menuIcon} />
-                <Text style={[styles.menuText, { color: theme.textMuted }]}>New List</Text>
-              </TouchableOpacity>
+              <SidebarRow
+                icon={Plus}
+                label={t('sidebar.newList')}
+                theme={theme}
+                onPress={() => setIsAddingList(true)}
+              />
             )}
 
-            <View style={[styles.divider, { backgroundColor: theme.border, marginVertical: 8 }]} />
+            <SectionLabel theme={theme}>
+              {t('sidebar.groupMore', { defaultValue: 'More' })}
+            </SectionLabel>
 
-            {/* History */}
-            <TouchableOpacity
-              style={[
-                styles.menuItem,
-                currentRoute === 'History' && { backgroundColor: theme.primary + '22' },
-              ]}
+            <SidebarRow
+              icon={History}
+              label={t('sidebar.history')}
+              theme={theme}
+              active={currentRoute === 'History'}
               onPress={() => {
                 onClose();
                 setTimeout(() => {
-                  if (currentRoute !== 'History') {
-                    navigation.replace('History');
-                  }
+                  if (currentRoute !== 'History') navigation.replace('History');
                 }, 0);
               }}
-            >
-              <History
-                color={currentRoute === 'History' ? theme.text : theme.textMuted}
-                size={24}
-                style={styles.menuIcon}
-              />
-              <Text style={[
-                styles.menuText,
-                { color: currentRoute === 'History' ? theme.text : theme.textMuted },
-                currentRoute === 'History' && { fontWeight: '700' },
-                { flex: 1 }
-              ]}>History</Text>
-            </TouchableOpacity>
+            />
 
-            {/* Calendar Sync Toggle */}
-            <View style={styles.menuSection}>
-              <Text style={styles.sectionTitle}>Device Sync</Text>
-              
-              <View style={styles.menuItem}>
-                <View style={styles.menuIconContainer}>
-                  <Calendar color={isCalendarLinked ? '#4da6ff' : theme.textMuted} size={24} style={styles.menuIcon} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.menuText, { color: isCalendarLinked ? theme.text : theme.textMuted }]}>Local Calendars</Text>
-                  {isCalendarLinked && <Text style={{ color: '#4da6ff', fontSize: 12, marginTop: 2 }}>Synced</Text>}
-                </View>
-                <Switch 
-                  value={isCalendarLinked} 
-                  onValueChange={handleToggleCalendar}
-                  trackColor={{ false: theme.border, true: '#4da6ff55' }}
-                  thumbColor={isCalendarLinked ? '#4da6ff' : theme.textMuted}
-                />
-              </View>
-            </View>
-
-            {/* Gamification Guide */}
-            <TouchableOpacity
-              style={styles.menuItem}
+            <SidebarRow
+              icon={Award}
+              label={t('sidebar.xpAndRewards')}
+              theme={theme}
               onPress={() => setIsGuideModalOpen(true)}
-            >
-              <Award
-                color="#A855F7"
-                size={24}
-                style={styles.menuIcon}
-              />
-              <Text style={[
-                styles.menuText,
-                { color: '#A855F7', fontWeight: '700' },
-                { flex: 1 }
-              ]}>XP & Rewards</Text>
-            </TouchableOpacity>
+            />
 
-            {/* Permissions */}
-            <TouchableOpacity
-              style={[
-                styles.menuItem,
-                currentRoute === 'Permissions' && { backgroundColor: theme.primary + '22' },
-              ]}
+            <SidebarRow
+              icon={MessageSquare}
+              label={t('sidebar.feedback')}
+              theme={theme}
+              active={currentRoute === 'Feedback'}
               onPress={() => {
                 onClose();
                 setTimeout(() => {
-                  if (currentRoute !== 'Permissions') {
-                    navigation.replace('Permissions');
-                  }
+                  if (currentRoute !== 'Feedback') navigation.replace('Feedback');
                 }, 0);
               }}
-            >
-              <Key
-                color={currentRoute === 'Permissions' ? theme.primary : theme.textMuted}
-                size={24}
-                style={styles.menuIcon}
-              />
-              <Text style={[
-                styles.menuText,
-                { color: currentRoute === 'Permissions' ? theme.primary : theme.textMuted },
-                currentRoute === 'Permissions' && { fontWeight: '700' },
-              ]}>Permissions Hub</Text>
-            </TouchableOpacity>
+            />
 
-            {/* Settings */}
-            <TouchableOpacity
-              style={[
-                styles.menuItem,
-                currentRoute === 'Settings' && { backgroundColor: theme.primary + '22' },
-              ]}
+            <SidebarRow
+              icon={Settings}
+              label={t('sidebar.settings')}
+              theme={theme}
+              active={currentRoute === 'Settings'}
               onPress={() => {
                 onClose();
                 setTimeout(() => {
-                  if (currentRoute !== 'Settings') {
-                    navigation.replace('Settings');
-                  }
+                  if (currentRoute !== 'Settings') navigation.replace('Settings');
                 }, 0);
               }}
-            >
-              <Settings
-                color={currentRoute === 'Settings' ? theme.primary : theme.textMuted}
-                size={24}
-                style={styles.menuIcon}
-              />
-              <Text style={[
-                styles.menuText,
-                { color: currentRoute === 'Settings' ? theme.primary : theme.textMuted },
-                currentRoute === 'Settings' && { fontWeight: '700' },
-              ]}>Settings</Text>
-            </TouchableOpacity>
-          </Animated.ScrollView>
+            />
 
-          {/* Footer */}
+            <View style={styles.menuTailSpace} />
+            </NestableScrollContainer>
+          </Animated.View>
+
+          {/* ── Footer: sign out, then one condensed credit line ── */}
           <View style={[styles.footer, { borderTopColor: theme.border }]}>
-            <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
-              <LogOut color="#EF4444" size={24} style={styles.menuIcon} />
-              <Text style={[styles.menuText, { color: "#EF4444", fontWeight: '600' }]}>Log Out</Text>
-            </TouchableOpacity>
-            
-            <View style={{ alignItems: 'center', marginTop: 16 }}>
-              <Text style={{ fontSize: 11, color: theme.textMuted, opacity: 0.6, fontWeight: '600', letterSpacing: 0.5 }}>
-                JASPER UPDATE V{Constants.expoConfig?.version || Constants.manifest?.version || '1.0.2'}
+            <SidebarRow
+              icon={LogOut}
+              label={t('sidebar.logOut')}
+              theme={theme}
+              tint="#FB7185"
+              onPress={handleLogout}
+            />
+
+            <View style={styles.brandRow}>
+              <Text style={styles.brandName}>
+                <Text style={{ color: theme.textMuted }}>double</Text>
+                <Text style={{ color: theme.accent }}>three</Text>
+              </Text>
+              <Text style={[styles.brandMeta, { color: theme.textMuted }]}>
+                {t('sidebar.versionLabel', { version: Constants.expoConfig?.version || Constants.manifest?.version || '1.0.0' })}
               </Text>
             </View>
           </View>
@@ -812,120 +770,120 @@ const styles = StyleSheet.create({
   content: {
     flex: 1,
   },
+
+  // ── Identity ──
   header: {
-    paddingHorizontal: 20,
-    marginBottom: 20,
-    position: 'relative',
-  },
-  headerTopRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    width: '100%',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 18,
+    paddingBottom: 18,
   },
-  avatar: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    borderWidth: 2.5,
-    backgroundColor: '#1F2937',
-    marginBottom: 14,
-  },
-  profileInfo: {
-    paddingRight: 40,
-  },
+  profileInfo: { flex: 1 },
   displayName: {
-    fontSize: 22,
-    fontWeight: '700',
-    marginBottom: 3,
-    letterSpacing: 0.3,
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: '400',
+    letterSpacing: -0.2,
   },
   username: {
-    fontSize: 15,
-    fontWeight: '500',
+    fontSize: 12,
+    fontWeight: '400',
+    marginTop: 1,
+  },
+  headerButton: {
+    width: 30,
+    height: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerButtonDot: {
+    position: 'absolute',
+    top: 3,
+    right: 3,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#FB7185',
+  },
+
+  divider: {
+    height: StyleSheet.hairlineWidth,
+    width: '100%',
+    marginBottom: 12,
     opacity: 0.7,
   },
-  closeBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  divider: {
-    height: 1,
-    width: '100%',
-    marginBottom: 14,
-    opacity: 0.6,
-  },
+
+  // ── Menu ──
   menu: {
     flex: 1,
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
   },
-  menuItem: {
+  menuTailSpace: { height: 12 },
+  sectionLabel: {
+    fontSize: 10,
+    fontWeight: '600',
+    letterSpacing: 1.3,
+    textTransform: 'uppercase',
+    paddingHorizontal: 14,
+    marginTop: 20,
+    marginBottom: 8,
+  },
+
+  // One row shape for navigation, lists, and sign out.
+  row: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 14,
-    paddingHorizontal: 14,
+    minHeight: 44,
+    paddingRight: 12,
     borderRadius: 10,
-    marginBottom: 4,
+    gap: 13,
   },
-  menuIcon: {
-    marginRight: 16,
+  // Leading accent bar: the only active-state marker, so nothing needs a
+  // heavy filled chip to read as selected.
+  rowRail: {
+    width: 2,
+    height: 18,
+    borderRadius: 1,
+    marginLeft: 2,
+    backgroundColor: 'transparent',
   },
-  menuText: {
-    fontSize: 16,
-    fontWeight: '500',
+  rowLabel: {
+    flex: 1,
+    fontSize: 14.5,
+    fontWeight: '400',
+    letterSpacing: -0.1,
   },
-  badge: {
-    backgroundColor: '#333',
-    paddingHorizontal: 9,
-    paddingVertical: 3,
-    borderRadius: 14,
-    minWidth: 24,
+  rowLabelActive: { fontWeight: '500' },
+  rowCount: { fontSize: 12, fontWeight: '400' },
+  rowDragging: {
+    borderRadius: 10,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  listDragHandle: {
+    width: 26,
+    height: 30,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  badgeText: {
-    color: '#fff',
-    fontSize: 11,
-    fontWeight: '700',
+  dot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#FB7185',
   },
-  redDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#EF4444',
+  newDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
   },
+
+  // ── Footer ──
+  brandRow: { alignItems: 'center', marginTop: 14 },
+  brandName: { fontSize: 12, fontWeight: '500', letterSpacing: 0.2 },
+  brandMeta: { fontSize: 9.5, fontWeight: '400', letterSpacing: 0.4, marginTop: 3 },
   footer: {
     padding: 20,
     borderTopWidth: 1,
-  },
-  logoutButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 12,
-  },
-  sectionTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#888',
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-  },
-  menuSection: {
-    marginTop: 8,
-    marginBottom: 12,
-  },
-  menuIconContainer: {
-    marginRight: 16,
   },
 });

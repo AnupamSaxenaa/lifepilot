@@ -1,29 +1,28 @@
-import React, { useState } from 'react';
-import { StyleSheet, Text, View, SafeAreaView, useColorScheme, TouchableOpacity, Alert } from 'react-native';
-import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
-import { BackgroundWrapper } from '../components/BackgroundWrapper';
-import { GlassCard } from '../components/GlassCard';
-import { GlassInput } from '../components/GlassInput';
-import { GlassButton } from '../components/GlassButton';
-import { COLORS } from '../theme/theme';
-import { Lock, ArrowLeft, KeyRound } from 'lucide-react-native';
-import { supabase } from '../lib/supabase';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { KeyRound, LockKeyhole } from 'lucide-react-native';
+import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { Alert, StyleSheet, View } from 'react-native';
+import {
+    AuthBackButton,
+    AuthButton,
+    AuthCard,
+    AuthField,
+    AuthHero,
+    AuthScreen,
+} from '../components/auth/AuthKit';
 import { PasswordStrengthIndicator } from '../components/PasswordStrengthIndicator';
+import { supabase } from '../lib/supabase';
 
 export const ResetPasswordScreen = ({ route, navigation }) => {
+  const { t } = useTranslation();
   const email = route.params?.email || '';
   const [token, setToken] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [loading, setLoading] = useState(false);
-  
-  const colorScheme = useColorScheme();
-  const theme = colorScheme === 'dark' ? COLORS.dark : COLORS.light;
-  const insets = useSafeAreaInsets();
 
   const handleResetPassword = async () => {
     if (!token || !newPassword) {
-      Alert.alert('Error', 'Please fill in all fields');
+      Alert.alert(t('common.error'), t('resetPassword.errorMissingFields'));
       return;
     }
 
@@ -31,7 +30,7 @@ export const ResetPasswordScreen = ({ route, navigation }) => {
       setLoading(true);
       
       // Step 1: Verify the 8-digit OTP
-      const { data: sessionData, error: verifyError } = await supabase.auth.verifyOtp({
+      const { error: verifyError } = await supabase.auth.verifyOtp({
         email,
         token,
         type: 'recovery',
@@ -47,11 +46,11 @@ export const ResetPasswordScreen = ({ route, navigation }) => {
       if (updateError) throw updateError;
 
       Alert.alert(
-        'Success!', 
-        'Your password has been securely reset.',
+        t('resetPassword.successTitle'), 
+        t('resetPassword.successMessage'),
         [
           { 
-            text: 'Go to Dashboard', 
+            text: t('resetPassword.goToDashboard'), 
             onPress: () => navigation.reset({
               index: 0,
               routes: [{ name: 'Dashboard' }],
@@ -61,108 +60,58 @@ export const ResetPasswordScreen = ({ route, navigation }) => {
       );
       
     } catch (err) {
-      Alert.alert('Error', err.message);
+      Alert.alert(t('common.error'), err.message);
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <BackgroundWrapper>
-      <KeyboardAwareScrollView 
-        style={styles.container}
-        contentContainerStyle={styles.scrollContent}
-        enableOnAndroid={true}
-        enableAutomaticScroll={true}
-        keyboardShouldPersistTaps="handled"
-        extraScrollHeight={20}
-      >
-        <SafeAreaView style={styles.safeArea}>
-          <TouchableOpacity 
-            style={[styles.backButton, { top: Math.max(insets.top, 20) }]} 
-            onPress={() => navigation.goBack()}
-          >
-            <ArrowLeft color={theme.text} size={28} />
-          </TouchableOpacity>
-
-          <View style={styles.headerContainer}>
-            <Text style={[styles.title, { color: theme.text }]}>New Password</Text>
-            <Text style={[styles.subtitle, { color: theme.textMuted }]}>
-              Enter the 8-digit code sent to {email} and pick a secure new password.
-            </Text>
-          </View>
-
-          <View style={styles.formContainer}>
-            <GlassCard>
-              <GlassInput
-                placeholder="8-Digit Code"
-                value={token}
-                onChangeText={setToken}
-                icon={KeyRound}
-                keyboardType="number-pad"
-              />
-
-              <GlassInput
-                placeholder="New Password"
-                value={newPassword}
-                onChangeText={setNewPassword}
-                icon={Lock}
-                secureTextEntry
-              />
-
-              <PasswordStrengthIndicator password={newPassword} />
-
-              <GlassButton 
-                title={loading ? "Updating..." : "Reset Password"} 
-                onPress={handleResetPassword} 
-                style={{ marginTop: 24 }}
-                disabled={loading}
-              />
-            </GlassCard>
-          </View>
-        </SafeAreaView>
-      </KeyboardAwareScrollView>
-    </BackgroundWrapper>
+    <AuthScreen centered contentStyle={styles.screenContent}>
+      <AuthBackButton onPress={() => navigation.goBack()} />
+      <View style={styles.shell}>
+        <AuthHero
+          icon={KeyRound}
+          title={t('resetPassword.title')}
+          subtitle={t('resetPassword.subtitle', { email })}
+        />
+        <AuthCard>
+          <AuthField
+            index={0}
+            icon={KeyRound}
+            label={t('resetPassword.codePlaceholder')}
+            placeholder={t('resetPassword.codePlaceholder')}
+            value={token}
+            onChangeText={setToken}
+            keyboardType="number-pad"
+            maxLength={8}
+          />
+          <AuthField
+            index={1}
+            icon={LockKeyhole}
+            label={t('resetPassword.newPasswordPlaceholder')}
+            placeholder={t('resetPassword.newPasswordPlaceholder')}
+            value={newPassword}
+            onChangeText={setNewPassword}
+            secureTextEntry
+            autoComplete="new-password"
+          />
+          <PasswordStrengthIndicator password={newPassword} />
+          <AuthButton
+            title={loading ? t('resetPassword.updating') : t('resetPassword.resetButton')}
+            onPress={handleResetPassword}
+            loading={loading}
+            disabled={loading}
+            style={styles.submitButton}
+          />
+        </AuthCard>
+      </View>
+    </AuthScreen>
   );
 };
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  scrollContent: {
-    flexGrow: 1,
-  },
-  safeArea: {
-    flex: 1,
-  },
-  backButton: {
-    position: 'absolute',
-    left: 24,
-    zIndex: 10,
-    padding: 8,
-  },
-  headerContainer: {
-    alignItems: 'center',
-    marginTop: 100,
-    marginBottom: 40,
-    paddingHorizontal: 24,
-  },
-  title: {
-    fontFamily: 'PlaywriteGBJ_400Regular',
-    fontSize: 32,
-    marginBottom: 12,
-    textAlign: 'center',
-  },
-  subtitle: {
-    fontSize: 16,
-    textAlign: 'center',
-    lineHeight: 24,
-    paddingHorizontal: 16,
-  },
-  formContainer: {
-    paddingHorizontal: 24,
-    width: '100%',
-    paddingBottom: 40,
-  },
+  screenContent: { paddingTop: 0 },
+  shell: { width: '100%', maxWidth: 520, alignSelf: 'center' },
+  submitButton: { marginTop: 8 },
 });

@@ -1,8 +1,36 @@
-import { Storage } from './storage';
-import { syncToSupabase } from '../lib/syncQueue';
 import { supabase } from '../lib/supabase';
+import { syncToSupabase } from '../lib/syncQueue';
+import { Storage } from './storage';
+import { XpEvents } from './xpEvents';
 
 export const Gamification = {
+  // Single source of truth for how much XP a task is worth, by priority.
+  // Used by every task screen so completion and un-completion always agree.
+  xpForTask(task) {
+    const p = task?.priority;
+    if (p === 3) return 50;
+    if (p === 2) return 40;
+    if (p === 0) return 5;
+    return 10; // priority 1 / undefined = basic task
+  },
+
+  // XP for completing a single step (subtask). Kept small on purpose: a step
+  // is a fraction of a task, so it rewards momentum without inflating levels.
+  // Symmetric: +2 on complete, −2 on uncheck.
+  xpForSubtask() {
+    return 2;
+  },
+
+  // XP for successfully dismissing an alarm (a "good wake"). A snooze-free
+  // dismissal is worth more than one that required snoozing, to reward
+  // consistency without punishing snoozing beyond the loss of the bonus.
+  // Never negative — waking up at all, even with snoozes, is still a win.
+  xpForAlarm({ snoozeCount = 0 } = {}) {
+    const base = 15;
+    const noSnoozeBonus = snoozeCount === 0 ? 10 : 0;
+    return base + noSnoozeBonus;
+  },
+
   getLevelFromXP(xp) {
     let level = 1;
     // Required XP for (level + 1) is 50 * level * (level + 3)
@@ -79,7 +107,10 @@ export const Gamification = {
   async checkStreak(userId) {
     const state = await this.getState(userId);
     if (!state) return;
-    
+
+    // Streak protection must never lower the level the user had when this check
+    // started. Only XP earned above this level's cumulative floor is spendable.
+    const levelAtStart = Math.max(Number(state.level) || 1, this.getLevelFromXP(state.xp || 0));
     const today = new Date().toDateString();
     const lastActive = state.lastActiveDate;
 
@@ -91,13 +122,13 @@ export const Gamification = {
       const yesterday = new Date();
       yesterday.setDate(yesterday.getDate() - 1);
       const yesterdayStr = yesterday.toDateString();
-      
+
       if (lastActive === yesterdayStr) {
         // NEW STREAK LOGIC: Increment streak just by opening the app on a new day!
         state.streak += 1;
         state.lastActiveDate = today;
         console.log(`[Gamification] Streak increased to ${state.streak} just by opening the app!`);
-        
+
         // Milestone Bonus
         if ([7, 14, 30, 60, 100].includes(state.streak)) {
           state.xp += 500;
@@ -110,21 +141,32 @@ export const Gamification = {
         // Reset times to midnight for accurate day diff
         lastDate.setHours(0,0,0,0);
         currentDate.setHours(0,0,0,0);
-        
+
         const daysMissed = Math.floor((currentDate - lastDate) / (1000 * 60 * 60 * 24)) - 1;
-        
-        if (daysMissed > 0 && state.streak > 0) {
-          const freezeCost = 500 * daysMissed;
-          if (state.xp >= freezeCost) {
-            // STREAK FREEZE ACTIVATED!
-            state.xp -= freezeCost;
-            console.log(`[Gamification] Streak Freeze activated for ${daysMissed} days. Cost: ${freezeCost} XP.`);
-            
-            // Resume streak from today!
+
+        // Protection is opt-in. A missing setting is disabled, so XP is never
+        // spent until the user explicitly enables Auto Streak Freeze.
+        const freezeSetting = await Storage.get(`streak_freeze_enabled_${userId}`);
+        const freezeEnabled = freezeSetting === true || freezeSetting === 'true';
+
+        if (daysMissed > 0 && state.streak > 0 && freezeEnabled) {
+          const requestedCost = 500 * daysMissed;
+          const levelFloor = this.getRequiredXPForLevel(levelAtStart);
+          const spendableXP = Math.max(0, state.xp - levelFloor);
+
+          if (spendableXP > 0) {
+            // Spend at most the XP earned inside the current level. Example: if
+            // only 30 XP was earned after reaching this level, protection costs
+            // 30 XP—not 500—and can never remove the level or its stone.
+            const actualCost = Math.min(requestedCost, spendableXP);
+            state.xp = Math.max(levelFloor, state.xp - actualCost);
+            console.log(`[Gamification] Streak Freeze activated for ${daysMissed} day(s). Cost: ${actualCost}/${requestedCost} XP; level floor preserved.`);
+
+            // Resume streak from today.
             state.streak += 1;
             state.lastActiveDate = today;
           } else {
-            state.streak = 1; // Not enough XP, streak broken. Start at 1 for today.
+            state.streak = 1; // No current-level XP is available to fund protection.
             state.lastActiveDate = today;
           }
         } else {
@@ -143,7 +185,7 @@ export const Gamification = {
     }
 
     state.tasksCompletedToday = 0; // Reset daily count
-    state.level = this.getLevelFromXP(state.xp); // Always recalculate level from current XP
+    state.level = Math.max(levelAtStart, this.getLevelFromXP(state.xp));
     await this.saveState(userId, state);
     return state;
   },
@@ -164,6 +206,9 @@ export const Gamification = {
     } else if (amount < 0 && state.tasksCompletedToday > 0) {
       state.tasksCompletedToday -= 1;
     }
+
+    // Surface a small "+X XP / −X XP" popup app-wide (single wiring point).
+    XpEvents.emit(amount);
 
     await this.saveState(userId, state);
     return state;

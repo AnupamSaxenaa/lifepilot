@@ -1,7 +1,7 @@
-import React, { useEffect, useRef } from 'react';
-import { View, StyleSheet, Animated, Easing } from 'react-native';
-import { Flame } from 'lucide-react-native';
 import { Image } from 'expo-image';
+import { Flame } from 'lucide-react-native';
+import { useEffect, useRef } from 'react';
+import { Animated, Easing, StyleSheet, View } from 'react-native';
 
 export const AnimatedFlame = ({ streak = 0, size = 26 }) => {
   const isBurning = streak > 0;
@@ -76,7 +76,7 @@ export const AnimatedFlame = ({ streak = 0, size = 26 }) => {
       <Animated.View style={{ 
         transform: [{ scale: scaleOuter }], 
         opacity: opacityOuter,
-        shadowColor: '#EF4444',
+        shadowColor: '#FB923C',
         shadowOffset: { width: 0, height: 0 },
         shadowOpacity: 0.6,
         shadowRadius: 10,

@@ -83,6 +83,124 @@ const withNativeFiles = (config) => {
       
       fs.mkdirSync(srcDir, { recursive: true });
 
+      // -- USAGE UTILS --
+      const usageUtilsContent = `package ${packageName}
+
+import android.content.SharedPreferences
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+/**
+ * Shared helpers for tracking per-app, per-day usage time in the
+ * AppBlockerPrefs SharedPreferences store. The date-scoped key means
+ * usage automatically "resets" at midnight without any cron job.
+ */
+object AppBlockerUsageUtils {
+
+    private fun todayDateString(): String {
+        val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+        return sdf.format(Date())
+    }
+
+    fun usageKey(packageName: String): String {
+        return "usage_" + packageName + "_" + todayDateString()
+    }
+
+    fun getTodayUsageMs(prefs: SharedPreferences, packageName: String): Long {
+        return prefs.getLong(usageKey(packageName), 0L)
+    }
+
+    fun addTodayUsage(prefs: SharedPreferences, packageName: String, ms: Long) {
+        if (ms <= 0) return
+        val key = usageKey(packageName)
+        val current = prefs.getLong(key, 0L)
+        prefs.edit().putLong(key, current + ms).apply()
+    }
+
+    /**
+     * Parses a rule entry for a package from the blockedApps JSON.
+     * Supports both the new object format:
+     *   { "unblockUntil": 0, "dailyBudgetMinutes": 60, "lockMode": "allowance" }
+     * and the legacy plain-number format (unblockUntil only, no budget)
+     * for backward compatibility with stale prefs from an older JS build.
+     */
+    fun parseRule(root: org.json.JSONObject, packageName: String): org.json.JSONObject {
+        val raw = root.opt(packageName)
+        return when (raw) {
+            is org.json.JSONObject -> raw
+            is Number -> org.json.JSONObject().apply {
+                put("unblockUntil", raw.toLong())
+                put("dailyBudgetMinutes", 0)
+            }
+            else -> org.json.JSONObject()
+        }
+    }
+
+    fun getEffectiveMode(prefs: SharedPreferences): String {
+        val raw = prefs.getString("scheduleConfig", null) ?: return "cbt"
+        try {
+            val root = org.json.JSONObject(raw)
+            val baseMode = root.optString("baseMode", "cbt")
+            val schedules = root.optJSONArray("schedules") ?: return baseMode
+
+            val cal = java.util.Calendar.getInstance()
+            val day = cal.get(java.util.Calendar.DAY_OF_WEEK) - 1
+            val nowMinutes = cal.get(java.util.Calendar.HOUR_OF_DAY) * 60 + cal.get(java.util.Calendar.MINUTE)
+
+            var sawActiveStrict = false
+            var sawActiveAny = false
+
+            for (i in 0 until schedules.length()) {
+                val s = schedules.optJSONObject(i) ?: continue
+                if (!s.optBoolean("enabled", true)) continue
+
+                val days = s.optJSONArray("days")
+                if (days != null && days.length() > 0) {
+                    var dayMatches = false
+                    for (j in 0 until days.length()) {
+                        if (days.optInt(j, -1) == day) { dayMatches = true; break }
+                    }
+                    if (!dayMatches) continue
+                }
+
+                val start = s.optString("start", "")
+                val end = s.optString("end", "")
+                if (start.isEmpty() || end.isEmpty()) continue
+
+                val startParts = start.split(":")
+                val endParts = end.split(":")
+                if (startParts.size != 2 || endParts.size != 2) continue
+
+                val startMinutes = (startParts[0].toIntOrNull() ?: continue) * 60 + (startParts[1].toIntOrNull() ?: continue)
+                val endMinutes = (endParts[0].toIntOrNull() ?: continue) * 60 + (endParts[1].toIntOrNull() ?: continue)
+                if (startMinutes == endMinutes) continue
+
+                val isActive = if (startMinutes < endMinutes) {
+                    nowMinutes >= startMinutes && nowMinutes < endMinutes
+                } else {
+                    nowMinutes >= startMinutes || nowMinutes < endMinutes
+                }
+
+                if (isActive) {
+                    sawActiveAny = true
+                    if (s.optString("mode", "cbt") == "strict") sawActiveStrict = true
+                }
+            }
+
+            return when {
+                sawActiveStrict -> "strict"
+                sawActiveAny -> "cbt"
+                else -> baseMode
+            }
+        } catch (e: Exception) {
+            return "cbt"
+        }
+    }
+}
+`;
+      fs.writeFileSync(path.join(srcDir, 'AppBlockerUsageUtils.kt'), usageUtilsContent);
+
       // -- SERVICE --
       const serviceContent = `package ${packageName}
 
@@ -91,6 +209,10 @@ import android.view.accessibility.AccessibilityEvent
 import android.content.Intent
 import android.content.Context
 import android.content.SharedPreferences
+import android.net.Uri
+
+// Ignore usage jumps bigger than this (e.g. after phone sleep/service restart)
+private const val MAX_SESSION_MS = 3 * 60 * 60 * 1000L // 3 hours
 
 class AppBlockerAccessibilityService : AccessibilityService() {
 
@@ -98,23 +220,87 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         if (event == null || event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
 
         val packageName = event.packageName?.toString() ?: return
-        
-        // Don't block ourselves
+
+        // Don't track/block ourselves
         if (packageName == applicationContext.packageName) return
 
         val prefs: SharedPreferences = applicationContext.getSharedPreferences("AppBlockerPrefs", Context.MODE_PRIVATE)
-        val blockedAppsString = prefs.getString("blockedApps", "") ?: ""
-        val blockedApps = blockedAppsString.split(",").filter { it.isNotEmpty() }
 
-        if (blockedApps.contains(packageName)) {
-            // App is blocked! Relaunch LifePilot
-            val launchIntent = packageManager.getLaunchIntentForPackage(applicationContext.packageName)
-            if (launchIntent != null) {
-                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                // Add an extra so React Native knows we intercepted a launch
-                launchIntent.putExtra("blocked_app", packageName)
-                startActivity(launchIntent)
+        // ── 1. Credit elapsed time to whichever tracked app was previously in the foreground ──
+        val now = System.currentTimeMillis()
+        val lastPkg = prefs.getString("lastForegroundPackage", null)
+        val lastTs = prefs.getLong("lastForegroundTimestamp", 0L)
+
+        if (lastPkg != null && lastTs > 0 && lastPkg != packageName) {
+            val elapsed = now - lastTs
+            if (elapsed > 0 && elapsed < MAX_SESSION_MS) {
+                AppBlockerUsageUtils.addTodayUsage(prefs, lastPkg, elapsed)
             }
+        }
+
+        // Update foreground tracker for next time, regardless of whether this package is blocked
+        prefs.edit()
+            .putString("lastForegroundPackage", packageName)
+            .putLong("lastForegroundTimestamp", now)
+            .apply()
+
+        // ── 2. Decide whether THIS app should be blocked right now ──
+        val blockedAppsString = prefs.getString("blockedApps", "{}") ?: "{}"
+
+        try {
+            val jsonObj = org.json.JSONObject(blockedAppsString)
+            if (!jsonObj.has(packageName)) return
+
+            val rule = AppBlockerUsageUtils.parseRule(jsonObj, packageName)
+            val unblockUntil = rule.optLong("unblockUntil", 0L)
+            val perAppLockMode = rule.optString("lockMode", "allowance")
+            val dailyBudgetMinutes = rule.optInt("dailyBudgetMinutes", 0)
+
+            // Temporary "grant N minutes" override always wins, for any lock mode
+            if (now < unblockUntil) return
+
+            val effectiveGlobalMode = AppBlockerUsageUtils.getEffectiveMode(prefs)
+            val lockMode = if (effectiveGlobalMode == "strict") "hard" else perAppLockMode
+
+            val shouldBlock = when (lockMode) {
+                "hard" -> true // Hard lock mode: always block, no allowance
+                else -> {
+                    // Allowance mode: only block once today's usage meets/exceeds the budget.
+                    // A budget of 0 or less means "no allowance configured" -> always block,
+                    // matching the previous (pre-fix) behavior for those apps.
+                    if (dailyBudgetMinutes <= 0) {
+                        true
+                    } else {
+                        val usedMs = AppBlockerUsageUtils.getTodayUsageMs(prefs, packageName)
+                        val budgetMs = dailyBudgetMinutes * 60_000L
+                        usedMs >= budgetMs
+                    }
+                }
+            }
+
+            if (!shouldBlock) return
+
+            // App is blocked! Relaunch LifePilot straight to the block screen.
+            // Use an ACTION_VIEW deep link so React Navigation routes to the
+            // BlockedApp screen. (Intent extras are NOT read by RN Linking.)
+            val blockUri = Uri.parse("lifepilot://blocked?app=" + Uri.encode(packageName))
+            val deepLinkIntent = Intent(Intent.ACTION_VIEW, blockUri)
+            deepLinkIntent.setPackage(applicationContext.packageName)
+            deepLinkIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            deepLinkIntent.putExtra("blocked_app", packageName)
+            try {
+                startActivity(deepLinkIntent)
+            } catch (e: Exception) {
+                // Fallback to a plain launch if the deep link fails to resolve
+                val launchIntent = packageManager.getLaunchIntentForPackage(applicationContext.packageName)
+                if (launchIntent != null) {
+                    launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    launchIntent.putExtra("blocked_app", packageName)
+                    startActivity(launchIntent)
+                }
+            }
+        } catch (e: Exception) {
+            // Ignore parse errors silently in background
         }
     }
 
@@ -174,6 +360,59 @@ class AppBlockerModule(reactContext: ReactApplicationContext) : ReactContextBase
     fun updateBlockedApps(appsStr: String) {
         val prefs = reactApplicationContext.getSharedPreferences("AppBlockerPrefs", Context.MODE_PRIVATE)
         prefs.edit().putString("blockedApps", appsStr).apply()
+    }
+
+    @ReactMethod
+    fun updateSchedules(schedulesJson: String) {
+        val prefs = reactApplicationContext.getSharedPreferences("AppBlockerPrefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("scheduleConfig", schedulesJson).apply()
+    }
+
+    @ReactMethod
+    fun getUsageToday(packageName: String, promise: Promise) {
+        try {
+            val prefs = reactApplicationContext.getSharedPreferences("AppBlockerPrefs", Context.MODE_PRIVATE)
+            promise.resolve(AppBlockerUsageUtils.getTodayUsageMs(prefs, packageName).toDouble())
+        } catch (e: Exception) {
+            promise.resolve(0.0)
+        }
+    }
+
+    @ReactMethod
+    fun getInstalledApps(promise: Promise) {
+        try {
+            val pm = reactApplicationContext.packageManager
+            val packages = pm.getInstalledApplications(android.content.pm.PackageManager.GET_META_DATA)
+            val jsonArray = org.json.JSONArray()
+            for (packageInfo in packages) {
+                if (reactApplicationContext.packageName != packageInfo.packageName) {
+                    val jsonObj = org.json.JSONObject()
+                    jsonObj.put("packageName", packageInfo.packageName)
+                    jsonObj.put("name", packageInfo.loadLabel(pm).toString())
+                    
+                    try {
+                        val iconDrawable = packageInfo.loadIcon(pm)
+                        val w = if (iconDrawable.intrinsicWidth > 0) iconDrawable.intrinsicWidth else 1
+                        val h = if (iconDrawable.intrinsicHeight > 0) iconDrawable.intrinsicHeight else 1
+                        val bitmap = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+                        val canvas = android.graphics.Canvas(bitmap)
+                        iconDrawable.setBounds(0, 0, canvas.width, canvas.height)
+                        iconDrawable.draw(canvas)
+                        val stream = java.io.ByteArrayOutputStream()
+                        bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, stream)
+                        val base64 = android.util.Base64.encodeToString(stream.toByteArray(), android.util.Base64.NO_WRAP)
+                        jsonObj.put("icon", base64)
+                    } catch (e: Exception) {
+                        jsonObj.put("icon", "")
+                    }
+                    
+                    jsonArray.put(jsonObj)
+                }
+            }
+            promise.resolve(jsonArray.toString())
+        } catch (e: Exception) {
+            promise.reject("Error", e.message)
+        }
     }
 }
 `;

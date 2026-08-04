@@ -91,7 +91,7 @@ export async function StatsWidget(props) {
               text={`${gamestate.streak || 0}`}
               style={{
                 fontSize: 28,
-                color: '#A855F7',
+                color: '#FFFFFF',
                 fontWeight: 'bold',
               }}
             />

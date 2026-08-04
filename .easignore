@@ -30,7 +30,8 @@ yarn-error.*
 .DS_Store
 *.pem
 
-# local env files
+# local env files (EAS production variables are configured remotely)
+.env
 .env*.local
 
 # typescript
@@ -43,4 +44,4 @@ example
 /android
 *.apk
 
-# .env intentionally omitted here so EAS build can use it!
+# .env is excluded above; production builds use the EAS environment.

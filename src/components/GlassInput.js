@@ -1,10 +1,12 @@
-import React, { useState, useRef } from 'react';
-import { StyleSheet, TextInput, useColorScheme, View, TouchableOpacity, Animated } from 'react-native';
-import { COLORS } from '../theme/theme';
 import { Eye, EyeOff } from 'lucide-react-native';
+import { useState } from 'react';
+import { Animated, StyleSheet, TextInput, TouchableOpacity, useColorScheme, View } from 'react-native';
+import { useTheme as useAppTheme } from '../context/ThemeContext';
+import { COLORS } from '../theme/theme';
 
 export const GlassInput = ({ style, secureTextEntry, ...props }) => {
   const colorScheme = useColorScheme();
+  useAppTheme().themeVersion;
   const theme = colorScheme === 'dark' ? COLORS.dark : COLORS.light;
   const [isSecure, setIsSecure] = useState(secureTextEntry);
   const [scaleValue] = useState(() => new Animated.Value(1));

@@ -1,13 +1,15 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, Modal, TouchableOpacity, Vibration, Dimensions } from 'react-native';
+import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { Dimensions, Modal, StyleSheet, Text, TouchableOpacity, Vibration, View } from 'react-native';
 
-import { Bell, X } from 'lucide-react-native';
-import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withSequence, withTiming, Easing } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
+import { Bell, X } from 'lucide-react-native';
+import Animated, { Easing, useAnimatedStyle, useSharedValue, withRepeat, withSequence, withTiming } from 'react-native-reanimated';
 
 const { width, height } = Dimensions.get('window');
 
 export const AlarmOverlay = ({ visible, alarmData, onDismiss }) => {
+  const { t } = useTranslation();
   const [sound, setSound] = useState(null);
   const pulseAnim = useSharedValue(1);
 
@@ -58,19 +60,19 @@ export const AlarmOverlay = ({ visible, alarmData, onDismiss }) => {
         <View style={styles.content}>
           <Animated.View style={[styles.bellContainer, pulseStyle]}>
             <LinearGradient
-              colors={['rgba(167, 139, 250, 0.4)', 'rgba(167, 139, 250, 0.1)']}
+              colors={['rgba(255, 255, 255, 0.4)', 'rgba(255, 255, 255, 0.1)']}
               style={styles.bellGlow}
             >
-              <Bell color="#A78BFA" size={64} />
+              <Bell color="#FFFFFF" size={64} />
             </LinearGradient>
           </Animated.View>
 
-          <Text style={styles.title}>{alarmData?.title || 'Alarm'}</Text>
+          <Text style={styles.title}>{alarmData?.title || t('alarmOverlay.defaultTitle')}</Text>
           <Text style={styles.time}>{new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
 
           <TouchableOpacity style={styles.dismissBtn} onPress={handleDismiss} activeOpacity={0.8}>
             <X color="#111" size={24} />
-            <Text style={styles.dismissText}>Dismiss Alarm</Text>
+            <Text style={styles.dismissText}>{t('alarmOverlay.dismissButton')}</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -101,7 +103,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(167, 139, 250, 0.5)',
+    borderColor: 'rgba(255, 255, 255, 0.5)',
   },
   title: {
     color: '#FFF',
@@ -111,7 +113,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   time: {
-    color: '#A78BFA',
+    color: '#FFFFFF',
     fontSize: 64,
     fontWeight: '800',
     marginBottom: 60,
@@ -119,7 +121,7 @@ const styles = StyleSheet.create({
   dismissBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#A78BFA',
+    backgroundColor: '#FFFFFF',
     paddingVertical: 18,
     paddingHorizontal: 40,
     borderRadius: 30,

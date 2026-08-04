@@ -1,15 +1,17 @@
-import React, { useEffect } from 'react';
-import { View, Image, StyleSheet } from 'react-native';
+import { useEffect } from 'react';
+import { Image, StyleSheet, View } from 'react-native';
+import Animated, { Easing, useAnimatedProps, useSharedValue, withTiming } from 'react-native-reanimated';
 import Svg, { Circle } from 'react-native-svg';
-import Animated, { useSharedValue, useAnimatedProps, withTiming, Easing } from 'react-native-reanimated';
+import { useTheme } from '../context/ThemeContext';
 import { Gamification } from '../utils/gamification';
 
 const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
 export const XPAvatarRing = ({ xp = 0, level = 1, avatarSource, size = 64, strokeWidth = 3 }) => {
+  const accent = useTheme().theme.accent;
   const radius = (size - strokeWidth) / 2;
   const circumference = radius * 2 * Math.PI;
-  
+
   // Progress within the current level (0 to 100)
   const xpInCurrentLevel = xp % 100;
   const progress = useSharedValue(0);
@@ -72,7 +74,7 @@ export const XPAvatarRing = ({ xp = 0, level = 1, avatarSource, size = 64, strok
           cx={size / 2}
           cy={size / 2}
           r={radius}
-          stroke="#A855F7" // Purple (theme.primary)
+          stroke={accent}
           strokeWidth={strokeWidth}
           fill="transparent"
           strokeDasharray={circumference}

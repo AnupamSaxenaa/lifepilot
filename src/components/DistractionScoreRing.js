@@ -3,25 +3,28 @@
 // Distraction Score (0-100) with color-coded fill.
 // ─────────────────────────────────────────────────────────
 
-import React, { useEffect } from 'react';
-import { View, Text, StyleSheet } from 'react-native';
-import Svg, { Circle } from 'react-native-svg';
+import { useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
+import { StyleSheet, Text, View } from 'react-native';
 import Animated, {
-  useSharedValue,
-  useAnimatedProps,
-  withTiming,
-  Easing,
+    Easing,
+    useAnimatedProps,
+    useSharedValue,
+    withTiming,
 } from 'react-native-reanimated';
+import Svg, { Circle } from 'react-native-svg';
 
 const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
 const getScoreColor = (score) => {
-  if (score <= 40) return '#EF4444';   // Red
-  if (score <= 70) return '#F59E0B';   // Amber
-  return '#22C55E';                     // Green
+  if (score <= 40) return '#FB7185';   // danger
+  if (score <= 70) return '#FBBF24';   // warning
+  return '#34D399';                    // healthy
 };
 
-export const DistractionScoreRing = ({ score = 0, size = 180, strokeWidth = 10, label = 'Distraction Score' }) => {
+export const DistractionScoreRing = ({ score = 0, size = 180, strokeWidth = 10, label }) => {
+  const { t } = useTranslation();
+  const displayLabel = label ?? t('distractionScore.defaultLabel');
   const animatedScore = useSharedValue(0);
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
@@ -78,7 +81,7 @@ export const DistractionScoreRing = ({ score = 0, size = 180, strokeWidth = 10, 
       {/* Center text */}
       <View style={styles.centerContent}>
         <Text style={[styles.scoreText, { color }]}>{score}</Text>
-        <Text style={styles.labelText}>{label}</Text>
+        <Text style={styles.labelText}>{displayLabel}</Text>
       </View>
     </View>
   );

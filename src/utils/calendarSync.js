@@ -1,8 +1,10 @@
 import * as Calendar from 'expo-calendar';
 
 /**
- * Check if calendar permissions are granted
- * Note: In Expo SDK 56, we should use requestCalendarPermissionsAsync for both checking and requesting
+ * Check if calendar permissions are granted.
+ * Note: expo-calendar's new (non-deprecated) API requires BOTH READ_CALENDAR
+ * and WRITE_CALENDAR to be granted on Android for this to report "granted" —
+ * make sure any request flow asks for both, or this will never resolve true.
  */
 export const isCalendarConnected = async () => {
   try {
@@ -16,9 +18,8 @@ export const isCalendarConnected = async () => {
 };
 
 /**
- * Request calendar permissions from user
- * This is the same as isCalendarConnected because requestCalendarPermissionsAsync
- * handles both checking and requesting
+ * Request calendar permissions from the user (both READ and WRITE — required
+ * for expo-calendar's status check to ever report "granted" on Android).
  */
 export const requestCalendarPermissions = async () => {
   try {

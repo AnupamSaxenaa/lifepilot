@@ -99,7 +99,7 @@ const styles = StyleSheet.create({
     height: MATRIX_SIZE,
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: '#A78BFA',
+    shadowColor: '#FFFFFF',
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.4,
     shadowRadius: 20,
@@ -109,7 +109,7 @@ const styles = StyleSheet.create({
     height: MATRIX_SIZE,
     borderRadius: MATRIX_SIZE / 2, // Perfect circle crop
     overflow: 'hidden', // Masks the square grid into a circle!
-    backgroundColor: 'rgba(167, 139, 250, 0.05)', // Slight background tint for depth
+    backgroundColor: 'rgba(255, 255, 255, 0.05)', // Slight background tint for depth
   },
   grid: {
     width: MATRIX_SIZE,
@@ -121,6 +121,6 @@ const styles = StyleSheet.create({
     width: DOT_SIZE,
     height: DOT_SIZE,
     borderRadius: 1, 
-    backgroundColor: '#A78BFA',
+    backgroundColor: '#FFFFFF',
   }
 });

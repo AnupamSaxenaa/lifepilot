@@ -3,11 +3,28 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
+      "credentialsSource": "local",
       "android": {
         "buildType": "apk"
       },
       "env": {
         "APP_VARIANT": "development"
+      }
+    },
+    "tester": {
+      "environment": "production",
+      "distribution": "internal",
+      "credentialsSource": "local",
+      "android": {
+        "buildType": "apk"
+      },
+      "channel": "development",
+      "env": {
+        "APP_VARIANT": "development",
+        "EXPO_PUBLIC_GROQ_API_KEY": "DISABLED",
+        "EXPO_PUBLIC_GEMINI_API_KEY": "DISABLED",
+        "EXPO_PUBLIC_MISTRAL_API_KEY": "DISABLED",
+        "EXPO_PUBLIC_COHERE_API_KEY": "DISABLED"
       }
     },
     "preview": {
@@ -16,7 +33,11 @@
       },
       "channel": "preview",
       "env": {
-        "APP_VARIANT": "preview"
+        "APP_VARIANT": "preview",
+        "EXPO_PUBLIC_GROQ_API_KEY": "DISABLED",
+        "EXPO_PUBLIC_GEMINI_API_KEY": "DISABLED",
+        "EXPO_PUBLIC_MISTRAL_API_KEY": "DISABLED",
+        "EXPO_PUBLIC_COHERE_API_KEY": "DISABLED"
       }
     },
     "production": {
@@ -25,7 +46,47 @@
       },
       "channel": "production",
       "env": {
-        "APP_VARIANT": "production"
+        "APP_VARIANT": "production",
+        "EXPO_PUBLIC_GROQ_API_KEY": "DISABLED",
+        "EXPO_PUBLIC_GEMINI_API_KEY": "DISABLED",
+        "EXPO_PUBLIC_MISTRAL_API_KEY": "DISABLED",
+        "EXPO_PUBLIC_COHERE_API_KEY": "DISABLED"
+      }
+    },
+    "production-apk": {
+      "environment": "production",
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "channel": "production",
+      "env": {
+        "APP_VARIANT": "store",
+        "EXPO_PUBLIC_ALARMS_ENABLED": "false",
+        "EXPO_PUBLIC_PLAYSTORE_MODE": "false",
+        "EXPO_PUBLIC_REQUIRE_AI_PROXY": "true",
+        "EXPO_PUBLIC_GROQ_API_KEY": "DISABLED",
+        "EXPO_PUBLIC_GEMINI_API_KEY": "DISABLED",
+        "EXPO_PUBLIC_MISTRAL_API_KEY": "DISABLED",
+        "EXPO_PUBLIC_COHERE_API_KEY": "DISABLED"
+      }
+    },
+    "play-production": {
+      "environment": "production",
+      "distribution": "store",
+      "android": {
+        "buildType": "app-bundle"
+      },
+      "channel": "production",
+      "env": {
+        "APP_VARIANT": "store",
+        "EXPO_PUBLIC_ALARMS_ENABLED": "false",
+        "EXPO_PUBLIC_PLAYSTORE_MODE": "false",
+        "EXPO_PUBLIC_REQUIRE_AI_PROXY": "true",
+        "EXPO_PUBLIC_GROQ_API_KEY": "DISABLED",
+        "EXPO_PUBLIC_GEMINI_API_KEY": "DISABLED",
+        "EXPO_PUBLIC_MISTRAL_API_KEY": "DISABLED",
+        "EXPO_PUBLIC_COHERE_API_KEY": "DISABLED"
       }
     }
   }

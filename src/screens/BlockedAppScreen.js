@@ -1,13 +1,15 @@
-import React, { useEffect, useState, useRef } from 'react';
-import { View, Text, TouchableOpacity, BackHandler, Animated, Easing, StyleSheet, Dimensions, Platform, Image } from 'react-native';
-import { useRoute, useNavigation } from '@react-navigation/native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import { BrainCircuit } from 'lucide-react-native';
-import { getApps, grantTempAllowance, getProfile, addLogEntry } from '../utils/mindfulLock';
+import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { BackHandler, Dimensions, Image, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useTheme } from '../context/ThemeContext';
 import { generateAggressiveBlockMessage, generateMindfulIntervention } from '../lib/AIEngine';
 import { loadTasks } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
 import { Gamification } from '../utils/gamification';
+import { addLogEntry, getApps, getProfile, grantTempAllowance } from '../utils/mindfulLock';
 
 const { width } = Dimensions.get('window');
 
@@ -25,8 +27,11 @@ const getTasksByDate = async (userId, targetDate) => {
 };
 
 export function BlockedAppScreen() {
+  const { t } = useTranslation();
   const route = useRoute();
   const navigation = useNavigation();
+  const ACCENT = useTheme().theme.accent;
+  const styles = useMemo(() => makeStyles(ACCENT), [ACCENT]);
   const [appId, setAppId] = useState(null);
   const [appName, setAppName] = useState('');
   const [message, setMessage] = useState('');
@@ -52,7 +57,7 @@ export function BlockedAppScreen() {
     const initBlockScreen = async () => {
       if (!blockedPkg) {
         // Fallback if opened without context
-        setMessage("You shouldn't be here. Get back to work.");
+        setMessage(t('blockedApp.noContextMessage'));
         setLoading(false);
         return;
       }
@@ -82,11 +87,11 @@ export function BlockedAppScreen() {
           setMessage(aiMessage);
         } else {
           const aiMessageObj = await generateMindfulIntervention(name, '', 'gentle', null, null);
-          setMessage(aiMessageObj?.message || `Take a deep breath. Do you really need to use ${name} right now?`);
+          setMessage(aiMessageObj?.message || t('blockedApp.coachFallbackMessage', { name }));
           setCanUnlock(true); // Don't enforce 10s wait in coach mode
         }
       } else {
-        setMessage(`WTF are you doing opening ${name}? Close it right now and get back to work.`);
+        setMessage(t('blockedApp.noUserIdMessage', { name }));
       }
       
       setAppName(name);
@@ -130,6 +135,10 @@ export function BlockedAppScreen() {
       await addLogEntry(userId, { appId, appName, action: 'granted', duration: mins });
     }
     
+    // Clear the block screen from the nav stack so reopening LifePilot lands on
+    // the dashboard instead of resuming on this block screen.
+    navigation.reset({ index: 0, routes: [{ name: 'Dashboard' }] });
+
     // Exit lifepilot completely so it returns to the previously opened app (e.g. YouTube)
     if (Platform.OS === 'android') {
       BackHandler.exitApp();
@@ -146,6 +155,10 @@ export function BlockedAppScreen() {
       await Gamification.addXP(userId, 15);
       await addLogEntry(userId, { appId, appName: appName || 'App', action: 'closed' });
     }
+
+    // Clear the block screen from the nav stack so reopening LifePilot lands on
+    // the dashboard instead of resuming on this block screen.
+    navigation.reset({ index: 0, routes: [{ name: 'Dashboard' }] });
 
     // They are closing it, redirect them to the Android Home Screen
     if (Platform.OS === 'android') {
@@ -177,7 +190,7 @@ export function BlockedAppScreen() {
         
         <View style={styles.messageContainer}>
           <Text style={styles.typewriterText}>
-            {loading ? 'Analyzing your behavior...' : displayedText}
+            {loading ? t('blockedApp.analyzingBehavior') : displayedText}
             {!canUnlock && <Text style={styles.cursor}>|</Text>}
           </Text>
         </View>
@@ -185,48 +198,58 @@ export function BlockedAppScreen() {
         {canUnlock && (
           <View style={styles.actionContainer}>
             <TouchableOpacity style={styles.closeBtn} onPress={handleCloseApp}>
-              <Text style={styles.closeBtnText}>I{"'"}m closing {appName || 'it'}. Thanks.</Text>
+              <Text style={styles.closeBtnText}>{t('blockedApp.closingAppButton', { appName: appName || t('blockedApp.fallbackAppName') })}</Text>
             </TouchableOpacity>
 
-            <TouchableOpacity 
-              style={styles.temptedBtn} 
-              onPress={() => {
-                navigation.navigate('MindfulLock', { 
-                  triggerInterventionForApp: blockedPkg, 
-                  appName: appName 
-                });
-              }}
-              activeOpacity={0.8}
-            >
-              <BrainCircuit color="#A855F7" size={20} style={{ marginRight: 8 }} />
-              <Text style={styles.temptedBtnText}>I'm Tempted (Talk to Coach)</Text>
-            </TouchableOpacity>
+            {/* Override options are only available in Coach mode.
+                In Strict/Hard block mode there is NO way to override. */}
+            {!isStrict ? (
+              <>
+                <TouchableOpacity 
+                  style={styles.temptedBtn} 
+                  onPress={() => {
+                    navigation.navigate('MindfulLock', { 
+                      triggerInterventionForApp: blockedPkg, 
+                      appName: appName 
+                    });
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <BrainCircuit color={ACCENT} size={20} style={{ marginRight: 8 }} />
+                  <Text style={styles.temptedBtnText}>{t('blockedApp.temptedButton')}</Text>
+                </TouchableOpacity>
 
-            <Text style={styles.orText}>Or override quickly:</Text>
+                <Text style={styles.orText}>{t('blockedApp.orOverrideText')}</Text>
 
-            <View style={styles.grantRow}>
-              <TouchableOpacity 
-                style={[styles.grantBtn, grantCountdown > 0 && { opacity: 0.5 }]} 
-                onPress={() => handleGrantAllowance(2)}
-                disabled={grantCountdown > 0}
-              >
-                <Text style={styles.grantBtnText}>{grantCountdown > 0 ? `Wait ${grantCountdown}s` : '2 Min'}</Text>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={[styles.grantBtn, grantCountdown > 0 && { opacity: 0.5 }]} 
-                onPress={() => handleGrantAllowance(5)}
-                disabled={grantCountdown > 0}
-              >
-                <Text style={styles.grantBtnText}>{grantCountdown > 0 ? `Wait ${grantCountdown}s` : '5 Min'}</Text>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={[styles.grantBtn, grantCountdown > 0 && { opacity: 0.5 }]} 
-                onPress={() => handleGrantAllowance(10)}
-                disabled={grantCountdown > 0}
-              >
-                <Text style={styles.grantBtnText}>{grantCountdown > 0 ? `Wait ${grantCountdown}s` : '10 Min'}</Text>
-              </TouchableOpacity>
-            </View>
+                <View style={styles.grantRow}>
+                  <TouchableOpacity 
+                    style={[styles.grantBtn, grantCountdown > 0 && { opacity: 0.5 }]} 
+                    onPress={() => handleGrantAllowance(2)}
+                    disabled={grantCountdown > 0}
+                  >
+                    <Text style={styles.grantBtnText}>{grantCountdown > 0 ? t('blockedApp.waitSeconds', { count: grantCountdown }) : t('blockedApp.min2Button')}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity 
+                    style={[styles.grantBtn, grantCountdown > 0 && { opacity: 0.5 }]} 
+                    onPress={() => handleGrantAllowance(5)}
+                    disabled={grantCountdown > 0}
+                  >
+                    <Text style={styles.grantBtnText}>{grantCountdown > 0 ? t('blockedApp.waitSeconds', { count: grantCountdown }) : t('blockedApp.min5Button')}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity 
+                    style={[styles.grantBtn, grantCountdown > 0 && { opacity: 0.5 }]} 
+                    onPress={() => handleGrantAllowance(10)}
+                    disabled={grantCountdown > 0}
+                  >
+                    <Text style={styles.grantBtnText}>{grantCountdown > 0 ? t('blockedApp.waitSeconds', { count: grantCountdown }) : t('blockedApp.min10Button')}</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            ) : (
+              <Text style={styles.strictNote}>
+                {t('blockedApp.strictNoteText')}
+              </Text>
+            )}
           </View>
         )}
       </View>
@@ -234,7 +257,7 @@ export function BlockedAppScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (ACCENT) => StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#000000',
@@ -255,7 +278,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 3,
-    borderColor: '#a855f7', // Purple ring around it
+    borderColor: ACCENT, // ring around it
   },
   gifImage: {
     width: '100%',
@@ -265,11 +288,11 @@ const styles = StyleSheet.create({
   messageContainer: {
     width: '100%',
     minHeight: 120, // Shrunk from 180
-    backgroundColor: 'rgba(168, 85, 247, 0.05)',
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
     borderRadius: 24,
     padding: 20, // Shrunk from 24
     borderWidth: 1,
-    borderColor: 'rgba(168, 85, 247, 0.2)',
+    borderColor: 'rgba(255, 255, 255, 0.2)',
     marginBottom: 24, // Shrunk from 32
   },
   typewriterText: {
@@ -279,7 +302,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   cursor: {
-    color: '#a855f7', // Purple
+    color: ACCENT,
     fontWeight: 'bold',
   },
   actionContainer: {
@@ -287,7 +310,7 @@ const styles = StyleSheet.create({
     gap: 16,
   },
   closeBtn: {
-    backgroundColor: '#a855f7', // Purple
+    backgroundColor: ACCENT,
     paddingVertical: 18,
     borderRadius: 12,
     alignItems: 'center',
@@ -300,17 +323,17 @@ const styles = StyleSheet.create({
   },
   temptedBtn: {
     flexDirection: 'row',
-    backgroundColor: 'rgba(168, 85, 247, 0.1)',
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
     paddingVertical: 16,
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
     width: '100%',
     borderWidth: 1,
-    borderColor: 'rgba(168, 85, 247, 0.3)',
+    borderColor: 'rgba(255, 255, 255, 0.3)',
   },
   temptedBtnText: {
-    color: '#A855F7',
+    color: ACCENT,
     fontSize: 16,
     fontWeight: '700',
   },
@@ -319,6 +342,14 @@ const styles = StyleSheet.create({
     fontSize: 13,
     textAlign: 'center',
     marginVertical: 4,
+  },
+  strictNote: {
+    color: '#52525b',
+    fontSize: 13,
+    textAlign: 'center',
+    fontStyle: 'italic',
+    marginTop: 4,
+    lineHeight: 19,
   },
   grantRow: {
     flexDirection: 'row',

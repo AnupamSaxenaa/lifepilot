@@ -3,30 +3,138 @@
 // and the adaptive tapering system.
 // ────────────────────────────────────────────────────────
 
-import { Storage } from './storage';
-import { syncToSupabase } from '../lib/syncQueue';
 import { NativeModules, Platform } from 'react-native';
+import { syncToSupabase } from '../lib/syncQueue';
+import { Storage } from './storage';
 
 const { AppBlocker } = NativeModules;
+
+/**
+ * Determine the effective blocking mode right now, given the user's global
+ * `blockingMode` and any schedule rules. A schedule that's currently "active"
+ * (matches today's day-of-week and current time window) overrides the base
+ * mode. If no schedule is active, falls back to the base `blockingMode`.
+ *
+ * Schedule shape (profile.schedules[]):
+ *   { id, days: [0-6] (0=Sun), start: 'HH:MM', end: 'HH:MM', mode: 'cbt'|'strict', enabled: true }
+ */
+export const getEffectiveBlockingMode = (profile, now = new Date()) => {
+  const schedules = Array.isArray(profile?.schedules) ? profile.schedules : [];
+  const activeSchedules = schedules.filter(s => s.enabled !== false && isScheduleActive(s, now));
+
+  if (activeSchedules.length > 0) {
+    // If ANY active schedule says strict, be strict (safety-first: strict wins ties).
+    const hasStrict = activeSchedules.some(s => s.mode === 'strict');
+    return hasStrict ? 'strict' : 'cbt';
+  }
+
+  return profile?.blockingMode || 'cbt';
+};
+
+/**
+ * Whether a single schedule rule is active at the given moment.
+ * Handles overnight windows where start > end (e.g. 22:00 -> 07:00).
+ */
+export const isScheduleActive = (schedule, now = new Date()) => {
+  if (!schedule || !schedule.start || !schedule.end) return false;
+  const day = now.getDay(); // 0=Sun..6=Sat
+  if (Array.isArray(schedule.days) && schedule.days.length > 0 && !schedule.days.includes(day)) {
+    return false;
+  }
+
+  const [startH, startM] = schedule.start.split(':').map(Number);
+  const [endH, endM] = schedule.end.split(':').map(Number);
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  const startMinutes = startH * 60 + startM;
+  const endMinutes = endH * 60 + endM;
+
+  if (startMinutes === endMinutes) return false; // zero-length window, ignore
+
+  if (startMinutes < endMinutes) {
+    // Same-day window, e.g. 09:00 -> 17:00
+    return nowMinutes >= startMinutes && nowMinutes < endMinutes;
+  }
+  // Overnight window, e.g. 22:00 -> 07:00
+  return nowMinutes >= startMinutes || nowMinutes < endMinutes;
+};
 
 export const syncAppBlocker = async (userId) => {
   if (Platform.OS !== 'android' || !AppBlocker) return;
   
   const apps = await getApps(userId);
   const profile = await getProfile(userId);
-  
-  const today = new Date().toDateString();
-  const rules = apps.map(a => {
-    let budget = a.dailyBudgetMinutes || 0;
-    if (a.tempAllowanceDate === today && a.tempAllowanceMinutes) {
-      budget += a.tempAllowanceMinutes;
-    }
-    return {
-      packageName: a.packageName || a.name.toLowerCase(),
-      allowanceMinutes: budget
+
+  // Per-app rules carry EACH app's own configured lock mode. We do NOT bake
+  // in "strict" here — the native side re-evaluates schedules live (on every
+  // app-switch event) and forces hard-block itself when a schedule or the
+  // manual toggle says strict. This avoids staleness: JS only syncs when the
+  // app opens, but schedules must flip even while LifePilot is closed.
+  const rules = {};
+  apps.forEach(a => {
+    const pkg = a.packageName || a.name.toLowerCase();
+    rules[pkg] = {
+      unblockUntil: a.unblockUntil && a.unblockUntil > Date.now() ? a.unblockUntil : 0,
+      lockMode: a.lockMode || 'allowance',
+      dailyBudgetMinutes: a.dailyBudgetMinutes || 0,
     };
   });
+  
   AppBlocker.updateBlockedApps(JSON.stringify(rules));
+
+  // Push the base mode + schedules so the native accessibility service can
+  // compute the CURRENT effective mode itself, live, on every app switch —
+  // with no dependency on the JS layer having run recently.
+  if (AppBlocker.updateSchedules) {
+    AppBlocker.updateSchedules(JSON.stringify({
+      baseMode: profile?.blockingMode || 'cbt',
+      schedules: Array.isArray(profile?.schedules) ? profile.schedules : [],
+    }));
+  }
+};
+
+// ═══════════════════════════════════════════════════════
+// SCHEDULES — Context-aware auto-switching of blocking mode
+// ═══════════════════════════════════════════════════════
+
+export const getSchedules = async (userId) => {
+  const profile = await getProfile(userId);
+  return Array.isArray(profile?.schedules) ? profile.schedules : [];
+};
+
+export const addSchedule = async (userId, { days, start, end, mode = 'strict', label = '' }) => {
+  const profile = await getProfile(userId);
+  const schedules = Array.isArray(profile.schedules) ? profile.schedules : [];
+  const newSchedule = {
+    id: generateUUID(),
+    days,   // e.g. [1,2,3,4,5] for Mon-Fri
+    start,  // 'HH:MM'
+    end,    // 'HH:MM'
+    mode,   // 'strict' | 'cbt'
+    label,
+    enabled: true,
+  };
+  const updated = [...schedules, newSchedule];
+  await saveProfile(userId, { schedules: updated });
+  await syncAppBlocker(userId);
+  return updated;
+};
+
+export const updateSchedule = async (userId, scheduleId, updates) => {
+  const profile = await getProfile(userId);
+  const schedules = Array.isArray(profile.schedules) ? profile.schedules : [];
+  const updated = schedules.map(s => s.id === scheduleId ? { ...s, ...updates } : s);
+  await saveProfile(userId, { schedules: updated });
+  await syncAppBlocker(userId);
+  return updated;
+};
+
+export const removeSchedule = async (userId, scheduleId) => {
+  const profile = await getProfile(userId);
+  const schedules = Array.isArray(profile.schedules) ? profile.schedules : [];
+  const updated = schedules.filter(s => s.id !== scheduleId);
+  await saveProfile(userId, { schedules: updated });
+  await syncAppBlocker(userId);
+  return updated;
 };
 
 export const getInstalledApps = async () => {
@@ -77,19 +185,135 @@ export const getProfile = async (userId) => {
   return { ...DEFAULT_PROFILE, ...(data || {}) };
 };
 
+// Maps the local (camelCase) profile shape to the mindful_profiles table columns.
+const profileToRow = (userId, profile) => ({
+  user_id: userId,
+  goal: profile.goal ?? '',
+  coach_persona: profile.coachPersona ?? 'gentle',
+  blocking_mode: profile.blockingMode ?? 'cbt',
+  streak: profile.streak ?? 0,
+  best_streak: profile.bestStreak ?? 0,
+  total_time_saved: profile.totalTimeSaved ?? 0,
+  distraction_score: profile.distractionScore ?? 50,
+  danger_windows: profile.dangerWindows ?? [],
+  last_reflection: profile.lastReflection ?? null,
+  last_streak_date: profile.lastStreakDate ?? null,
+  onboarding_complete: profile.onboardingComplete ?? false,
+  schedules: profile.schedules ?? [],
+});
+
+const rowToProfile = (row) => ({
+  goal: row.goal ?? '',
+  coachPersona: row.coach_persona ?? 'gentle',
+  blockingMode: row.blocking_mode ?? 'cbt',
+  streak: row.streak ?? 0,
+  bestStreak: row.best_streak ?? 0,
+  totalTimeSaved: row.total_time_saved ?? 0,
+  distractionScore: row.distraction_score ?? 50,
+  dangerWindows: row.danger_windows ?? [],
+  lastReflection: row.last_reflection ?? null,
+  lastStreakDate: row.last_streak_date ?? null,
+  onboardingComplete: row.onboarding_complete ?? false,
+  schedules: row.schedules ?? [],
+});
+
 export const saveProfile = async (userId, updates) => {
   const current = await getProfile(userId);
   const merged = { ...current, ...updates };
+  // 1. Update local cache FIRST (optimistic, offline-safe — matches app-wide pattern)
   await Storage.set(KEYS.profile(userId), merged);
-  if (updates.blockingMode !== undefined) {
+
+  // 2. Queue the cloud sync. syncToSupabase persists to the offline queue
+  // BEFORE attempting the network call, so this survives app kills/offline
+  // and auto-retries on reconnect — no data is lost either way.
+  syncToSupabase('mindful_profiles', 'upsert', profileToRow(userId, merged), { column: 'user_id' });
+
+  if (updates.blockingMode !== undefined || updates.schedules !== undefined) {
     await syncAppBlocker(userId);
   }
   return merged;
 };
 
+/**
+ * One-time cloud hydration for Mindful Lock data. Call this after login /
+ * on app init (mirrors dataManager's performInitialSync). If the local
+ * cache is empty (fresh install, cleared data, or new device) but a cloud
+ * profile/app-list exists, pull it down so nothing is lost. If local data
+ * already exists, we leave it alone — local writes always push to the
+ * cloud via saveProfile/addApp/etc, so the cloud stays a live backup.
+ */
+export const hydrateMindfulLockFromCloud = async (userId) => {
+  if (!userId) return;
+  try {
+    const { supabase } = require('../lib/supabase');
+
+    const localProfile = await Storage.get(KEYS.profile(userId));
+    if (!localProfile) {
+      const { data: profileRow } = await supabase
+        .from('mindful_profiles')
+        .select('*')
+        .eq('user_id', userId)
+        .maybeSingle();
+      if (profileRow) {
+        await Storage.set(KEYS.profile(userId), { ...DEFAULT_PROFILE, ...rowToProfile(profileRow) });
+      }
+    }
+
+    const localApps = await Storage.get(KEYS.apps(userId));
+    if (!localApps || localApps.length === 0) {
+      const { data: appRows } = await supabase
+        .from('mindful_apps')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: true });
+      if (appRows && appRows.length > 0) {
+        const apps = appRows.map(rowToApp);
+        await Storage.set(KEYS.apps(userId), apps);
+        await syncAppBlocker(userId);
+      }
+    }
+  } catch (e) {
+    console.log('[MindfulLock] Cloud hydration skipped/failed:', e.message);
+  }
+};
+
 // ═══════════════════════════════════════════════════════
 // APPS CRUD
 // ═══════════════════════════════════════════════════════
+
+// Maps a local app object to the mindful_apps table row shape.
+const appToRow = (userId, app) => ({
+  id: app.id,
+  user_id: userId,
+  name: app.name,
+  package_name: app.packageName || '',
+  icon: app.icon || '📱',
+  bundle: app.bundle ?? null,
+  lock_mode: app.lockMode || 'allowance',
+  daily_budget_minutes: app.dailyBudgetMinutes ?? 60,
+  schedule: app.schedule ?? null,
+  taper_config: app.taperConfig ?? null,
+  temp_allowance_minutes: app.tempAllowanceMinutes ?? 0,
+  temp_allowance_date: app.tempAllowanceDate ?? null,
+  unblock_until: app.unblockUntil ?? 0,
+});
+
+const rowToApp = (row) => ({
+  id: row.id,
+  name: row.name,
+  packageName: row.package_name || '',
+  icon: row.icon || '📱',
+  bundle: row.bundle,
+  lockMode: row.lock_mode || 'allowance',
+  dailyBudgetMinutes: row.daily_budget_minutes ?? 60,
+  schedule: row.schedule,
+  taperConfig: row.taper_config,
+  tempAllowanceMinutes: row.temp_allowance_minutes ?? 0,
+  tempAllowanceDate: row.temp_allowance_date,
+  unblockUntil: row.unblock_until ?? 0,
+  usageToday: 0, // usage is native/device-local by design, never cloud-synced
+  createdAt: row.created_at,
+});
 
 export const getApps = async (userId) => {
   return (await Storage.get(KEYS.apps(userId))) || [];
@@ -113,6 +337,7 @@ export const addApp = async (userId, { name, packageName = '', icon = '📱', bu
   apps.push(newApp);
   await Storage.set(KEYS.apps(userId), apps);
   await syncAppBlocker(userId);
+  syncToSupabase('mindful_apps', 'insert', appToRow(userId, newApp));
   return newApp;
 };
 
@@ -123,6 +348,7 @@ export const updateApp = async (userId, appId, updates) => {
   apps[idx] = { ...apps[idx], ...updates };
   await Storage.set(KEYS.apps(userId), apps);
   await syncAppBlocker(userId);
+  syncToSupabase('mindful_apps', 'update', appToRow(userId, apps[idx]), { column: 'id', value: appId });
   return apps[idx];
 };
 
@@ -131,6 +357,7 @@ export const removeApp = async (userId, appId) => {
   const filtered = apps.filter(a => a.id !== appId);
   await Storage.set(KEYS.apps(userId), filtered);
   await syncAppBlocker(userId);
+  syncToSupabase('mindful_apps', 'delete', {}, { column: 'id', value: appId });
 };
 
 export const logUsage = async (userId, appId, minutes) => {
@@ -156,8 +383,10 @@ export const grantTempAllowance = async (userId, appId, minutes) => {
   if (idx !== -1) {
     apps[idx].tempAllowanceMinutes = (apps[idx].tempAllowanceMinutes || 0) + minutes;
     apps[idx].tempAllowanceDate = new Date().toDateString();
+    apps[idx].unblockUntil = Date.now() + minutes * 60 * 1000;
     await Storage.set(KEYS.apps(userId), apps);
     await syncAppBlocker(userId);
+    syncToSupabase('mindful_apps', 'update', appToRow(userId, apps[idx]), { column: 'id', value: appId });
   }
 };
 

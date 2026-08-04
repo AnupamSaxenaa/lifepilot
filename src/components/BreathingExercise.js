@@ -4,29 +4,31 @@
 // breathing cycle before allowing an override.
 // ─────────────────────────────────────────────────────────
 
-import React, { useEffect, useState, useRef } from 'react';
-import { View, Text, StyleSheet, Dimensions } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { Dimensions, StyleSheet, Text, View } from 'react-native';
 import Animated, {
-  useSharedValue,
-  useAnimatedStyle,
-  withTiming,
-  Easing,
+    Easing,
+    useAnimatedStyle,
+    useSharedValue,
+    withTiming,
 } from 'react-native-reanimated';
 
 const { width } = Dimensions.get('window');
 const CIRCLE_SIZE = width * 0.5;
 
 const PHASES = [
-  { label: 'Breathe in...', duration: 4000, scale: 1.0 },
-  { label: 'Hold...', duration: 4000, scale: 1.0 },
-  { label: 'Breathe out...', duration: 4000, scale: 0.5 },
-  { label: 'Rest...', duration: 4000, scale: 0.5 },
+  { labelKey: 'breathingExercise.breatheIn', duration: 4000, scale: 1.0 },
+  { labelKey: 'breathingExercise.hold', duration: 4000, scale: 1.0 },
+  { labelKey: 'breathingExercise.breatheOut', duration: 4000, scale: 0.5 },
+  { labelKey: 'breathingExercise.rest', duration: 4000, scale: 0.5 },
 ];
 
 export const BreathingExercise = ({ onComplete, duration = 20, visible = true }) => {
+  const { t } = useTranslation();
   const scale = useSharedValue(0.5);
   const opacity = useSharedValue(0.6);
-  const [phaseLabel, setPhaseLabel] = useState('Get ready...');
+  const [phaseLabelKey, setPhaseLabelKey] = useState('breathingExercise.getReady');
   const [secondsLeft, setSecondsLeft] = useState(duration);
   const timerRef = useRef(null);
   const phaseTimerRef = useRef(null);
@@ -53,7 +55,7 @@ export const BreathingExercise = ({ onComplete, duration = 20, visible = true })
       if (elapsed >= duration * 1000 || !visible) return;
 
       const phase = PHASES[index % PHASES.length];
-      setPhaseLabel(phase.label);
+      setPhaseLabelKey(phase.labelKey);
 
       scale.value = withTiming(phase.scale, {
         duration: phase.duration,
@@ -89,13 +91,13 @@ export const BreathingExercise = ({ onComplete, duration = 20, visible = true })
       <View style={styles.circleContainer}>
         <Animated.View style={[styles.outerGlow, circleStyle]} />
         <Animated.View style={[styles.circle, circleStyle]}>
-          <Text style={styles.phaseText}>{phaseLabel}</Text>
+          <Text style={styles.phaseText}>{t(phaseLabelKey)}</Text>
         </Animated.View>
       </View>
 
-      <Text style={styles.timerText}>{secondsLeft}s</Text>
+      <Text style={styles.timerText}>{t('breathingExercise.secondsRemaining', { count: secondsLeft })}</Text>
       <Text style={styles.subtitleText}>
-        Just breathe. If you still want to after this, go ahead.
+        {t('breathingExercise.subtitle')}
       </Text>
     </View>
   );

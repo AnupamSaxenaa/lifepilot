@@ -1,11 +1,13 @@
 import { BlurView } from 'expo-blur';
 import { ShieldCheck, X } from 'lucide-react-native';
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { Modal, ScrollView, StyleSheet, Text, TouchableOpacity, TouchableWithoutFeedback, useColorScheme, View } from 'react-native';
+import { useTheme as useAppTheme } from '../context/ThemeContext';
 import { COLORS } from '../theme/theme';
 
 export const TermsModal = ({ isVisible, onClose, onAccept }) => {
   const colorScheme = useColorScheme();
+  useAppTheme().themeVersion;
   const theme = colorScheme === 'dark' ? COLORS.dark : COLORS.light;
   const [hasScrolledToBottom, setHasScrolledToBottom] = useState(false);
 
@@ -47,7 +49,7 @@ export const TermsModal = ({ isVisible, onClose, onAccept }) => {
           <View style={[styles.header, { borderBottomColor: theme.border }]}>
             <View style={styles.headerTitleRow}>
               <View style={styles.iconBox}>
-                <ShieldCheck color="#10B981" size={24} />
+                <ShieldCheck color="#34D399" size={24} />
               </View>
               <Text style={[styles.title, { color: theme.text }]}>Terms & Conditions</Text>
             </View>
@@ -149,7 +151,7 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 16,
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    backgroundColor: 'rgba(229, 231, 235, 0.15)',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -192,14 +194,14 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   primaryBtn: {
-    backgroundColor: '#10B981',
+    backgroundColor: '#34D399',
     width: '100%',
     paddingVertical: 16,
     borderRadius: 16,
     alignItems: 'center',
   },
   primaryBtnText: {
-    color: '#FFF',
+    color: '#000',
     fontSize: 16,
     fontWeight: '700',
     letterSpacing: 0.5,

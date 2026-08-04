@@ -16,7 +16,7 @@ export async function QuickAddWidget(props) {
         backgroundColor: '#000000',
         borderRadius: 12,
         borderWidth: 2,
-        borderColor: '#A855F7',
+        borderColor: '#FFFFFF',
         padding: 16,
         justifyContent: 'center',
         alignItems: 'center',
@@ -27,7 +27,7 @@ export async function QuickAddWidget(props) {
         text="+"
         style={{
           fontSize: 56,
-          color: '#A855F7',
+          color: '#FFFFFF',
           fontWeight: 'bold',
           lineHeight: 56,
         }}
@@ -38,7 +38,7 @@ export async function QuickAddWidget(props) {
         text="ADD TASK"
         style={{
           fontSize: 11,
-          color: '#A855F7',
+          color: '#FFFFFF',
           fontWeight: 'bold',
           letterSpacing: 1.2,
           marginTop: 12,

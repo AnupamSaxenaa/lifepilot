@@ -13,22 +13,22 @@ export const PRIORITY_LEVELS = {
 export const PRIORITY_CONFIG = {
   [PRIORITY_LEVELS.URGENT]: {
     label: 'Urgent',
-    color: '#EF4444',
+    color: '#FB7185',
     sortWeight: 3,
   },
   [PRIORITY_LEVELS.HIGH]: {
     label: 'High',
-    color: '#F59E0B',
+    color: '#FBBF24',
     sortWeight: 2,
   },
   [PRIORITY_LEVELS.NORMAL]: {
     label: 'Normal',
-    color: '#6B7280',
+    color: '#60A5FA',
     sortWeight: 1,
   },
   [PRIORITY_LEVELS.LOW]: {
     label: 'Low',
-    color: '#10B981',
+    color: '#34D399',
     sortWeight: 0,
   },
 };

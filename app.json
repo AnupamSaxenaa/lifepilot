@@ -2,7 +2,7 @@
   "expo": {
     "name": "LifePilot",
     "slug": "lifepilot",
-    "version": "1.0.8",
+    "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": [
@@ -14,7 +14,7 @@
     "ios": {
       "icon": "./assets/expo.icon",
       "bundleIdentifier": "com.anupam.lp",
-      "buildNumber": "9",
+      "buildNumber": "10",
       "infoPlist": {
         "NSSpeechRecognitionUsageDescription": "Allow $(PRODUCT_NAME) to securely transcribe your voice commands using native speech recognition.",
         "NSMicrophoneUsageDescription": "Allow $(PRODUCT_NAME) to access your microphone so you can speak to the AI assistant.",
@@ -23,7 +23,7 @@
     },
     "android": {
       "package": "com.anupam.lp",
-      "versionCode": 9,
+      "versionCode": 11,
       "permissions": [
         "RECORD_AUDIO",
         "android.permission.READ_CALENDAR",
@@ -39,7 +39,8 @@
         "android.permission.USE_FULL_SCREEN_INTENT",
         "android.permission.VIBRATE",
         "android.permission.WAKE_LOCK",
-        "android.permission.REQUEST_INSTALL_PACKAGES"
+        "android.permission.REQUEST_INSTALL_PACKAGES",
+        "android.permission.QUERY_ALL_PACKAGES"
       ],
       "adaptiveIcon": {
         "backgroundColor": "#000000",
@@ -66,6 +67,7 @@
       ],
       "expo-font",
       "expo-web-browser",
+      "expo-localization",
       "@react-native-community/datetimepicker",
       [
         "expo-notifications",
@@ -76,6 +78,25 @@
         }
       ],
       "expo-secure-store",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "LifePilot uses your approximate location to show weather on your alarm and morning focus screens."
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "LifePilot uses the camera for QR code, barcode, and photo dismiss challenges you set up on your alarms."
+        }
+      ],
+      [
+        "react-native-nfc-manager",
+        {
+          "nfcPermission": "LifePilot uses NFC to let you dismiss alarms by tapping a registered NFC tag.",
+          "selectIdentifiers": []
+        }
+      ],
       [
         "expo-build-properties",
         {
@@ -89,6 +110,7 @@
       "./plugins/withNotifeeRepo",
       "./plugins/withWidgetExported",
       "./plugins/withAppBlocker",
+      "./plugins/withAppIconVariants",
       "expo-speech-recognition",
       "expo-image",
       [
@@ -100,15 +122,31 @@
               "label": "Today Tasks",
               "minWidth": "110dp",
               "minHeight": "110dp",
+              "targetCellWidth": 4,
+              "targetCellHeight": 3,
+              "maxResizeWidth": "640dp",
+              "maxResizeHeight": "640dp",
               "resizeMode": "horizontal|vertical",
               "description": "View today's tasks from LifePilot",
+              "updatePeriodMillis": 3600000
+            },
+            {
+              "name": "PlannerWidget",
+              "label": "Today's Plan",
+              "minWidth": "110dp",
+              "minHeight": "110dp",
+              "targetCellWidth": 4,
+              "targetCellHeight": 3,
+              "maxResizeWidth": "640dp",
+              "maxResizeHeight": "640dp",
+              "resizeMode": "horizontal|vertical",
+              "description": "Your Aura schedule for today, tickable from the home screen",
               "updatePeriodMillis": 3600000
             }
           ]
         }
       ]
     ],
-    "jsEngine": "hermes",
     "experiments": {
       "reactCompiler": false
     },

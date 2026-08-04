@@ -8,21 +8,12 @@
  */
 
 export const AI_CONFIG = {
-  // Production recommendation: set this to a secure backend/edge-function URL
-  // and keep provider API keys off the mobile client.
+  // AI providers are proxy-only. Provider secrets belong in Supabase Function
+  // secrets and are never referenced by Metro, even when local .env is sourced.
   AI_PROXY_URL: process.env.EXPO_PUBLIC_AI_PROXY_URL || '',
-
-  // Primary Engine (Generous free tier, highly intelligent)
-  GEMINI_API_KEY: process.env.EXPO_PUBLIC_GEMINI_API_KEY,
-  
-  // Fallback 1 (Completely free, blazing fast Llama-3-70B)
-  GROQ_API_KEY: process.env.EXPO_PUBLIC_GROQ_API_KEY,
-  
-  // Fallback 2 (Generous free tier)
-  MISTRAL_API_KEY: process.env.EXPO_PUBLIC_MISTRAL_API_KEY,
-  
-  // Fallback 3 (Generous free tier)
-  COHERE_API_KEY: process.env.EXPO_PUBLIC_COHERE_API_KEY,
+  REQUIRE_AI_PROXY:
+    process.env.EXPO_PUBLIC_REQUIRE_AI_PROXY === 'true'
+    || process.env.EXPO_PUBLIC_REQUIRE_AI_PROXY === '1',
 };
 
 /**
