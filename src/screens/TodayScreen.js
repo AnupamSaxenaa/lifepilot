@@ -1,7 +1,8 @@
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
-import { ArrowUp, Bell, Calendar, Check, CheckCircle2, ChevronDown, ChevronRight, Circle, FileText, GripVertical, ListChecks, Menu, MoreVertical, Plus, Repeat, Star, Trash2, Wand2, X, Zap } from 'lucide-react-native';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowUp, Bell, Calendar, Check, CheckCircle2, ChevronDown, ChevronRight, Circle, FileText, Flag, GripVertical, ListChecks, Menu, MoreVertical, Plus, Repeat, Star, Trash2, Wand2, X, Zap } from 'lucide-react-native';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { BackHandler, Keyboard, KeyboardAvoidingView, Modal, Platform, ScrollView, Share, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { NestableDraggableFlatList, NestableScrollContainer, ScaleDecorator } from 'react-native-draggable-flatlist';
 import Animated, { Easing, FadeIn, FadeOut, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
@@ -9,13 +10,18 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AIAuraOverlay } from '../components/AIAuraOverlay';
 import { BackgroundWrapper } from '../components/BackgroundWrapper';
 import { GlassSidebar } from '../components/GlassSidebar';
+import { LevelUpModal } from '../components/LevelUpModal';
 import { ScribbleStrike } from '../components/ScribbleStrike';
-import { cacheTasks, addTask as dmAddTask, deleteTask as dmDeleteTask, loadProfile, loadTasks, reorderTasks, toggleTaskImportance } from '../lib/dataManager';
+import { getPriorityColor, PRIORITY_CONFIG, shouldShowFlag } from '../config/priorityConfig';
+import { useTheme as useAppTheme } from '../context/ThemeContext';
+import { useWidgetTaskSync } from '../hooks/useWidgetTaskSync';
+import { cacheTasks, addTask as dmAddTask, deleteTask as dmDeleteTask, getCurrentUserId, getCurrentUserIdSync, getTasksSync, loadProfile, loadTasks, reorderTasks, toggleTaskImportance } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
 import { syncToSupabase } from '../lib/syncQueue';
 import { COLORS } from '../theme/theme';
 import { Gamification } from '../utils/gamification';
 import { cancelTaskReminder, scheduleTaskReminder } from '../utils/notifications';
+import { savePlanForToday } from '../utils/planStore';
 import { Storage } from '../utils/storage';
 
 // ─── Helpers ────────────────────────────────────────────
@@ -59,13 +65,155 @@ const SkeletonTask = () => {
   );
 };
 
-export const TodayScreen = ({ navigation }) => {
+// Extracted + memoized so dragging/toggling one row doesn't force React to
+// rebuild every other row's JSX tree from scratch on each render — only rows
+// whose own props actually changed (task data, completing state) re-render.
+const TodayTaskRow = memo(function TodayTaskRow({ task, theme, accent, isCompleting, drag, isActive, onPress, onToggle, onFocus, onToggleImportant, onDelete }) {
+  const hasSubtasks = task.subtasks && task.subtasks.length > 0;
+  const hasNotes = task.notes && task.notes.trim().length > 0;
+  const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes || true;
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const isOverdue = task.due_date && new Date(task.due_date) < todayStart && !task.is_completed;
+  const completedSubs = hasSubtasks ? task.subtasks.filter(s => s.is_completed).length : 0;
+  const totalSubs = hasSubtasks ? task.subtasks.length : 0;
+
+  return (
+    <ScaleDecorator>
+      <TouchableOpacity
+        activeOpacity={0.75}
+        onPress={onPress}
+        onLongPress={drag}
+        disabled={isActive}
+        style={[
+          styles.taskCard,
+          // Equipped theme's surface color repaints the card — falls back to
+          // the original hardcoded gray when no theme is equipped.
+          theme?.surface && { backgroundColor: theme.surface },
+          task.is_important && styles.taskCardImportant,
+          task.is_completed && styles.taskCardCompleted,
+          isActive && { backgroundColor: 'rgba(255,255,255,0.08)', elevation: 12 }
+        ]}>
+
+        {/* Left: drag handle + checkbox */}
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          {!task.is_completed && !isCompleting && (
+            <TouchableOpacity onPressIn={drag} style={{ padding: 4, marginRight: 2 }}>
+              <GripVertical color="#444" size={20} />
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity
+            onPress={onToggle}
+            disabled={isCompleting}
+            style={[
+              styles.checkbox,
+              (task.is_completed || isCompleting) && { marginLeft: 28 }
+            ]}
+          >
+            {(task.is_completed || isCompleting) ? (
+              <CheckCircle2 color="#34D399" size={24} />
+            ) : (
+              <Circle color={theme.text} size={24} />
+            )}
+          </TouchableOpacity>
+        </View>
+
+        {/* Center: title + meta */}
+        <View style={styles.taskContent}>
+          <ScribbleStrike isCompleted={task.is_completed || isCompleting} shouldAnimate={isCompleting} color={theme.textMuted}>
+            <Text
+              style={[
+                styles.taskTitle,
+                { color: isCompleting ? '#666' : (task.is_completed ? '#666' : '#fff') },
+                (task.is_completed || isCompleting) && styles.taskCompleted,
+              ]}
+            >
+              {task.title}
+            </Text>
+          </ScribbleStrike>
+
+          {hasMeta && (
+            <View style={styles.taskMetaRow}>
+              {shouldShowFlag(task.priority) && (
+                <View style={styles.metaPill}>
+                  <Flag color={getPriorityColor(task.priority)} size={11} fill={getPriorityColor(task.priority)} />
+                </View>
+              )}
+              {task.due_date && (
+                <View style={styles.metaPill}>
+                  <Calendar color={isOverdue ? '#FB7185' : '#888'} size={11} />
+                  <Text style={[styles.metaLabel, isOverdue && { color: '#FB7185' }]}>
+                    {formatDate(task.due_date)}
+                  </Text>
+                </View>
+              )}
+              {task.reminder_time && (
+                <View style={styles.metaPill}>
+                  <Bell color="#888" size={11} />
+                  <Text style={styles.metaLabel}>
+                    {formatDateTime(task.reminder_time)}
+                  </Text>
+                </View>
+              )}
+              {task.repeat_rule && (
+                <View style={styles.metaPill}>
+                  <Repeat color="#888" size={11} />
+                  <Text style={styles.metaLabel}>
+                    {task.repeat_rule}
+                  </Text>
+                </View>
+              )}
+              {hasSubtasks && (
+                <View style={styles.metaPill}>
+                  <ListChecks color="#888" size={11} />
+                  <Text style={styles.metaLabel}>
+                    {completedSubs}/{totalSubs}
+                  </Text>
+                </View>
+              )}
+              {hasNotes && (
+                <View style={[styles.metaPill, { paddingHorizontal: 6 }]}>
+                  <FileText color="#888" size={11} />
+                </View>
+              )}
+            </View>
+          )}
+        </View>
+
+        {/* Right: star + delete */}
+        <View style={styles.taskActions}>
+          {!task.is_completed && (
+            <TouchableOpacity onPress={onFocus} style={styles.iconButtonSmall}>
+              <Zap color={accent} size={18} fill={accent + '33'} />
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity onPress={onToggleImportant} style={styles.iconButtonSmall}>
+            <Star
+              color={task.is_important ? '#FFFFFF' : '#444'}
+              fill={task.is_important ? '#FFFFFF' : 'transparent'}
+              size={18}
+            />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={onDelete} style={styles.iconButtonSmall}>
+            <Trash2 color="#444" size={18} />
+          </TouchableOpacity>
+        </View>
+      </TouchableOpacity>
+    </ScaleDecorator>
+  );
+});
+
+export const TodayScreen = ({ navigation, route }) => {
+  const { t } = useTranslation();
+  // Subscribing to themeVersion forces a re-render whenever the equipped
+  // accent/theme changes — COLORS.dark is mutated in place by ThemeContext.
+  useAppTheme().themeVersion;
   // Force dark theme only
   const theme = COLORS.dark;
   const insets = useSafeAreaInsets();
 
   // ─── Core State ───────────────────────────────────────
-  const [tasks, setTasks] = useState([]);
+  const [tasks, setTasks] = useState(() => getTasksSync(getCurrentUserIdSync()) || []);
   const latestTasksRef = useRef(tasks);
   useEffect(() => {
     latestTasksRef.current = tasks;
@@ -77,10 +225,21 @@ export const TodayScreen = ({ navigation }) => {
   const [profile, setProfile] = useState(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+
+  // Widget → app sync: reflect widget task toggles the moment we return to the
+  // foreground (or near-instantly while foregrounded).
+  useWidgetTaskSync(userId, (freshTasks) => {
+    setTasks(Array.isArray(freshTasks) ? freshTasks : []);
+  });
   const [showAura, setShowAura] = useState(false);
   const [generatedPlan, setGeneratedPlan] = useState(null);
-  const [isAddingTask, setIsAddingTask] = useState(false);
+  // NEW_TASK is a mount-time navigation action. Derive the first frame from it
+  // instead of rendering closed and opening from an effect one frame later.
+  const [isAddingTask, setIsAddingTask] = useState(
+    () => route?.params?.action === 'NEW_TASK',
+  );
   const [activeToolbarMenu, setActiveToolbarMenu] = useState(null);
+  const [levelUpData, setLevelUpData] = useState(null);
   const [showCompleted, setShowCompleted] = useState(true);
   const [completingTaskIds, setCompletingTaskIds] = useState([]);
 
@@ -88,9 +247,11 @@ export const TodayScreen = ({ navigation }) => {
   const [pendingDueDate, setPendingDueDate] = useState(null);
   const [pendingReminder, setPendingReminder] = useState(null);
   const [pendingRepeatRule, setPendingRepeatRule] = useState(null);
+  const [pendingPriority, setPendingPriority] = useState(1);
 
   // ─── Keyboard state for Android fallback ──────────────
   const [androidKeyboardHeight, setAndroidKeyboardHeight] = useState(0);
+  const completingTimeouts = useRef({});
 
   // ─── Native Picker State ──────────────────────────────
   const [showDatePicker, setShowDatePicker] = useState(false);
@@ -111,25 +272,27 @@ export const TodayScreen = ({ navigation }) => {
   const todayDate = new Date().toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long' });
 
   // ─── Init & Fetch ─────────────────────────────────────
-  const [isCacheLoaded, setIsCacheLoaded] = useState(false);
+  // Seeded from the synchronous warm cache: a returning navigation has real
+  // rows on the first frame, so the skeletons no longer flash before content.
+  const [isCacheLoaded, setIsCacheLoaded] = useState(() => !!getTasksSync(getCurrentUserIdSync()));
   
   useEffect(() => {
     const init = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
-      setUserId(session.user.id);
+      const resolvedUserId = await getCurrentUserId();
+      if (!resolvedUserId) return;
+      setUserId(resolvedUserId);
 
       // Load Profile, Sort Preference, Tasks, and Saved Plan concurrently
       const [cachedProfile, cachedSort, cachedTasks, cachedPlan, cachedPlanDate] = await Promise.all([
-        loadProfile(session.user.id, (fresh) => setProfile(fresh)),
+        loadProfile(resolvedUserId, (fresh) => setProfile(fresh)),
         Storage.get('sortBy_today'),
-        loadTasks(session.user.id, (fresh) => {
-          setTasks(fresh);
+        loadTasks(resolvedUserId, (fresh) => {
+          setTasks(Array.isArray(fresh) ? fresh : []);
           setLoading(false);
           setIsCacheLoaded(true);
         }),
-        Storage.get(`generated_plan_${session.user.id}`),
-        Storage.get(`generated_plan_date_${session.user.id}`)
+        Storage.get(`generated_plan_${resolvedUserId}`),
+        Storage.get(`generated_plan_date_${resolvedUserId}`)
       ]);
 
       if (cachedProfile) setProfile(cachedProfile);
@@ -141,17 +304,24 @@ export const TodayScreen = ({ navigation }) => {
       if (cachedPlan && cachedPlanDate === todayString) {
         setGeneratedPlan(cachedPlan);
       } else if (cachedPlan) {
-        Storage.remove(`generated_plan_${session.user.id}`);
-        Storage.remove(`generated_plan_date_${session.user.id}`);
+        Storage.remove(`generated_plan_${resolvedUserId}`);
+        Storage.remove(`generated_plan_date_${resolvedUserId}`);
       }
       
-      if (cachedTasks) {
+      if (Array.isArray(cachedTasks)) {
         setTasks(cachedTasks);
         setLoading(false);
         setIsCacheLoaded(true);
       }
     };
     init();
+
+    // Check for deep link actions
+    if (route?.params?.action === 'NEW_TASK') {
+      // Local state was initialized from this mount-time action above. The
+      // effect only consumes the external navigation parameter once.
+      navigation.setParams({ action: null });
+    }
 
     const kShow = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', (e) => {
       if (Platform.OS === 'android') setAndroidKeyboardHeight(e.endCoordinates.height);
@@ -208,7 +378,7 @@ export const TodayScreen = ({ navigation }) => {
       if (!userId) return;
       const refreshFromCache = async () => {
         const cached = await Storage.get(`tasks_${userId}`);
-        if (cached) setTasks(cached);
+        if (Array.isArray(cached)) setTasks(cached);
       };
       refreshFromCache();
     }, [userId])
@@ -217,7 +387,7 @@ export const TodayScreen = ({ navigation }) => {
   const fetchTasks = async (uid) => {
     // Refresh from Supabase via dataManager
     await loadTasks(uid, (fresh) => {
-      setTasks(fresh);
+      setTasks(Array.isArray(fresh) ? fresh : []);
       setLoading(false);
     });
   };
@@ -254,7 +424,12 @@ export const TodayScreen = ({ navigation }) => {
       const s = [...arr];
       switch (sortBy) {
         case 'importance':
-          s.sort((a, b) => (b.is_important ? 1 : 0) - (a.is_important ? 1 : 0));
+          s.sort((a, b) => {
+            const pa = a.priority ?? 1;
+            const pb = b.priority ?? 1;
+            if (pb !== pa) return pb - pa;
+            return (b.is_important ? 1 : 0) - (a.is_important ? 1 : 0);
+          });
           break;
         case 'due_date':
           s.sort((a, b) => {
@@ -288,7 +463,12 @@ export const TodayScreen = ({ navigation }) => {
       const s = [...arr];
       switch (sortBy) {
         case 'importance':
-          s.sort((a, b) => (b.is_important ? 1 : 0) - (a.is_important ? 1 : 0));
+          s.sort((a, b) => {
+            const pa = a.priority ?? 1;
+            const pb = b.priority ?? 1;
+            if (pb !== pa) return pb - pa;
+            return (b.is_important ? 1 : 0) - (a.is_important ? 1 : 0);
+          });
           break;
         case 'due_date':
           s.sort((a, b) => {
@@ -318,8 +498,9 @@ export const TodayScreen = ({ navigation }) => {
   // ⚡ PERFORMANCE: Memoize completed tasks filter
   const completedTodayTasks = useMemo(() => {
     return tasks.filter(t => {
-      if (!isTaskForToday(t) && new Date(t.completed_at).toDateString() !== todayStr) return false;
       if (!t.is_completed) return false;
+      // Only show tasks that actually belong to Today's list
+      if (!isTaskForToday(t)) return false;
       const completedDate = t.completed_at ? new Date(t.completed_at).toDateString() : null;
       return completedDate === todayStr;
     });
@@ -347,17 +528,17 @@ export const TodayScreen = ({ navigation }) => {
   const handlePrintList = async () => {
     setIsMenuOpen(false);
     const today = new Date().toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-    const lines = getSortedTasks.map(t => {
-      const status = t.is_completed ? '✅' : (t.is_important ? '⭐' : '⬜');
-      let line = `${status} ${t.title}`;
-      if (t.due_date)      line += `\n   📅 Due: ${formatDate(t.due_date)}`;
-      if (t.reminder_time) line += `\n   🔔 Remind: ${formatDateTime(t.reminder_time)}`;
-      if (t.repeat_rule)   line += `\n   🔁 Repeat: ${t.repeat_rule}`;
+    const lines = getSortedTasks.map(taskItem => {
+      const status = taskItem.is_completed ? '✅' : (taskItem.is_important ? '⭐' : '⬜');
+      let line = `${status} ${taskItem.title}`;
+      if (taskItem.due_date)      line += `\n   📅 ${t('today.shareDuePrefix', { date: formatDate(taskItem.due_date) })}`;
+      if (taskItem.reminder_time) line += `\n   🔔 ${t('today.shareRemindPrefix', { datetime: formatDateTime(taskItem.reminder_time) })}`;
+      if (taskItem.repeat_rule)   line += `\n   🔁 ${t('today.shareRepeatPrefix', { rule: taskItem.repeat_rule })}`;
       return line;
     });
-    const message = `📋 TODAY — ${today}\n${'─'.repeat(32)}\n\n${lines.join('\n\n')}`;
+    const message = `📋 ${t('today.shareHeader', { date: today })}\n${'─'.repeat(32)}\n\n${lines.join('\n\n')}`;
     try {
-      await Share.share({ message, title: `Today's Tasks — ${today}` });
+      await Share.share({ message, title: t('today.shareTitle', { date: today }) });
     } catch (e) {
       console.log('Share error', e);
     }
@@ -365,9 +546,9 @@ export const TodayScreen = ({ navigation }) => {
 
   const SORT_LABELS = {
     created_at: null,
-    importance: 'By importance',
-    due_date: 'By due date',
-    alphabetical: 'A–Z',
+    importance: t('today.sortByImportance'),
+    due_date: t('today.sortByDueDate'),
+    alphabetical: t('today.sortAlphabetical'),
   };
 
   // ─── CRUD ─────────────────────────────────────────────
@@ -379,6 +560,7 @@ export const TodayScreen = ({ navigation }) => {
       due_date: pendingDueDate ? pendingDueDate.toISOString() : null,
       reminder_time: pendingReminder ? pendingReminder.toISOString() : null,
       repeat_rule: pendingRepeatRule,
+      priority: pendingPriority,
       added_to_today: true,
     };
 
@@ -396,6 +578,7 @@ export const TodayScreen = ({ navigation }) => {
     setPendingDueDate(null);
     setPendingReminder(null);
     setPendingRepeatRule(null);
+    setPendingPriority(1);
     setActiveToolbarMenu(null);
     setIsAddingTask(false);
 
@@ -409,23 +592,26 @@ export const TodayScreen = ({ navigation }) => {
       // 1. Mark as "completing" so scribble animation triggers
       setCompletingTaskIds(prev => [...prev, id]);
 
-      // 2. IMPORTANT: Capture current tasks NOW to avoid race condition
-      //    Don't use latestTasksRef.current inside setTimeout - it may be stale
-      const taskSnapshot = [...latestTasksRef.current];
-
       // 3. After scribble animation finishes (~800ms), actually move to completed
-      setTimeout(() => {
+      completingTimeouts.current[id] = setTimeout(async () => {
         if (userId) {
           const completedAt = new Date().toISOString();
           
-          // Use the snapshot we captured earlier, not latestTasksRef.current
-          const updated = taskSnapshot.map(t =>
-            t.id === id ? { ...t, is_completed: true, completed_at: completedAt } : t
+          // Use absolute freshest tasks from Storage, not a stale snapshot
+          const freshTasks = await Storage.get(`tasks_${userId}`) || [];
+          const task = freshTasks.find(t => t.id === id);
+          const xpAmount = Gamification.xpForTask(task);
+
+          // Persist the EXACT XP granted on the task so un-completing later
+          // deducts the same amount even if the priority changed in between.
+          const updated = freshTasks.map(t =>
+            t.id === id ? { ...t, is_completed: true, completed_at: completedAt, xp_awarded: xpAmount } : t
           );
 
           // Update local state and clear animation state together
           setTasks(updated);
           setCompletingTaskIds(prev => prev.filter(tid => tid !== id));
+          delete completingTimeouts.current[id];
 
           // Run cache and sync tasks in the background asynchronously
           cacheTasks(userId, updated);
@@ -434,19 +620,39 @@ export const TodayScreen = ({ navigation }) => {
             { column: 'id', value: id }
           );
 
-          const task = taskSnapshot.find(t => t.id === id);
           if (task?.reminder_time) cancelTaskReminder(id);
-          Gamification.addXP(userId, 10);
+
+          const oldState = await Gamification.checkStreak(userId);
+          const prevLevel = oldState?.level || 1;
+          
+          const newState = await Gamification.addXP(userId, xpAmount);
+          
+          if (newState && newState.level > prevLevel) {
+            setLevelUpData({ oldLevel: prevLevel, newLevel: newState.level });
+          }
 
 
         }
       }, 800);
     } else {
       // Un-completing: instant (no animation delay needed)
+      let shouldSubtractXP = true;
+      if (completingTimeouts.current[id]) {
+        clearTimeout(completingTimeouts.current[id]);
+        delete completingTimeouts.current[id];
+        shouldSubtractXP = false; // We cancelled the completion before XP was awarded
+      }
+      setCompletingTaskIds(prev => prev.filter(tid => tid !== id));
+
       if (userId) {
-        const currentTasks = latestTasksRef.current;
-        const updated = currentTasks.map(t =>
-          t.id === id ? { ...t, is_completed: false, completed_at: null } : t
+        const freshTasks = await Storage.get(`tasks_${userId}`) || [];
+        const task = freshTasks.find(t => t.id === id);
+        // Deduct EXACTLY what was granted at completion (falls back to the
+        // priority value for tasks completed before this field existed).
+        const xpAmount = (task && task.xp_awarded != null) ? task.xp_awarded : Gamification.xpForTask(task);
+
+        const updated = freshTasks.map(t =>
+          t.id === id ? { ...t, is_completed: false, completed_at: null, xp_awarded: null } : t
         );
         
         // Update local state instantly
@@ -459,11 +665,11 @@ export const TodayScreen = ({ navigation }) => {
           { column: 'id', value: id }
         );
 
-        const task = currentTasks.find(t => t.id === id);
         if (task?.reminder_time) scheduleTaskReminder(id, task.title, task.reminder_time);
-        Gamification.addXP(userId, -10);
 
-
+        if (shouldSubtractXP) {
+          await Gamification.addXP(userId, -xpAmount);
+        }
       }
     }
   };
@@ -577,10 +783,10 @@ export const TodayScreen = ({ navigation }) => {
             {isMenuOpen && (
               <View style={[styles.dropdown, { backgroundColor: '#2A2A2A', borderColor: '#444' }]}>
                 {[
-                  { key: 'importance', label: 'Sort by importance' },
-                  { key: 'due_date',   label: 'Sort by due date' },
-                  { key: 'alphabetical', label: 'Sort alphabetically' },
-                  { key: 'created_at', label: 'Sort by creation date' },
+                  { key: 'importance', label: t('today.menuSortByImportance') },
+                  { key: 'due_date',   label: t('today.menuSortByDueDate') },
+                  { key: 'alphabetical', label: t('today.menuSortAlphabetically') },
+                  { key: 'created_at', label: t('today.menuSortByCreationDate') },
                 ].map(item => (
                   <TouchableOpacity
                     key={item.key}
@@ -595,13 +801,13 @@ export const TodayScreen = ({ navigation }) => {
                 ))}
                 <View style={[styles.divider, { backgroundColor: '#444' }]} />
                 <TouchableOpacity style={styles.dropdownItem} onPress={handlePrintList}>
-                  <Text style={[styles.dropdownText, { color: '#fff' }]}>Share / Print list</Text>
+                  <Text style={[styles.dropdownText, { color: '#fff' }]}>{t('today.shareOrPrintList')}</Text>
                 </TouchableOpacity>
                 {completedTodayTasks.length > 0 && (
                   <>
                     <View style={[styles.divider, { backgroundColor: '#444' }]} />
                     <TouchableOpacity style={styles.dropdownItem} onPress={handleClearCompleted}>
-                      <Text style={[styles.dropdownText, { color: '#ff4b4b' }]}>Clear completed</Text>
+                      <Text style={[styles.dropdownText, { color: '#ff4b4b' }]}>{t('today.clearCompleted')}</Text>
                     </TouchableOpacity>
                   </>
                 )}
@@ -614,12 +820,12 @@ export const TodayScreen = ({ navigation }) => {
         {/* Title + active sort badge */}
         <View style={styles.titleContainer}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-            <Text style={[styles.title, { color: '#fff' }]}>TODAY</Text>
+            <Text style={[styles.title, { color: '#fff' }]}>{t('today.title')}</Text>
             <TouchableOpacity onPress={() => setShowAura(true)} activeOpacity={0.7}>
               {generatedPlan ? (
-                <Calendar color="#A78BFA" size={24} />
+                <Calendar color="#FFFFFF" size={24} />
               ) : (
-                <Wand2 color="#A78BFA" size={24} />
+                <Wand2 color="#FFFFFF" size={24} />
               )}
             </TouchableOpacity>
           </View>
@@ -637,7 +843,7 @@ export const TodayScreen = ({ navigation }) => {
         </View>
 
         <KeyboardAvoidingView 
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined} 
+          behavior={Platform.OS === 'ios' ? 'padding' : 'padding'} 
           style={styles.container}
         >
 
@@ -653,13 +859,13 @@ export const TodayScreen = ({ navigation }) => {
             <NestableScrollContainer style={{ flex: 1 }}>
               {sortedTasks.length === 0 && completedTodayTasks.length === 0 ? (
                 <View style={styles.emptyState}>
-                  <Text style={[styles.emptyText, { color: theme.textMuted }]}>No tasks yet. Tap + to add one.</Text>
+                  <Text style={[styles.emptyText, { color: theme.textMuted }]}>{t('today.emptyTasksMessage')}</Text>
                 </View>
               ) : null}
 
               {sortedTasks.length === 0 && completedTodayTasks.length > 0 ? (
                 <View style={[styles.emptyState, { flex: 0, paddingVertical: 40 }]}>
-                  <Text style={[styles.emptyText, { color: theme.textMuted }]}>All caught up for today!</Text>
+                  <Text style={[styles.emptyText, { color: theme.textMuted }]}>{t('today.allCaughtUp')}</Text>
                 </View>
               ) : null}
 
@@ -670,8 +876,8 @@ export const TodayScreen = ({ navigation }) => {
                 showsVerticalScrollIndicator={false}
                 contentContainerStyle={styles.scroll}
                 keyboardShouldPersistTaps="handled"
-                onContainerLayout={() => {}}
-                removeClippedSubviews={true}
+                activationDistance={8}
+                autoscrollThreshold={60}
                 maxToRenderPerBatch={10}
                 updateCellsBatchingPeriod={50}
                 initialNumToRender={10}
@@ -694,136 +900,21 @@ export const TodayScreen = ({ navigation }) => {
                     reorderTasks(userId, mergedTasks, changedTasks);
                   });
                 }}
-                renderItem={({ item: task, drag, isActive }) => {
-                  const hasSubtasks = task.subtasks && task.subtasks.length > 0;
-                  const hasNotes = task.notes && task.notes.trim().length > 0;
-                  const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes;
-                  const todayStart = new Date();
-                  todayStart.setHours(0, 0, 0, 0);
-                  const isOverdue = task.due_date && new Date(task.due_date) < todayStart && !task.is_completed;
-                  const completedSubs = hasSubtasks ? task.subtasks.filter(s => s.is_completed).length : 0;
-                  const totalSubs = hasSubtasks ? task.subtasks.length : 0;
-                  return (
-                    <ScaleDecorator>
-                      <TouchableOpacity
-                        activeOpacity={0.75}
-                        onPress={() => navigation.navigate('TaskDetail', { task, userId })}
-                        onLongPress={drag}
-                        disabled={isActive}
-                        style={[
-                          styles.taskCard,
-                          task.is_important && styles.taskCardImportant,
-                          task.is_completed && styles.taskCardCompleted,
-                          isActive && { backgroundColor: 'rgba(255,255,255,0.08)', elevation: 12 }
-                        ]}>
-                        
-                        <View style={[
-                          styles.cardIndicator,
-                          task.is_important && { backgroundColor: '#FFFFFF' }
-                        ]} />
-
-                        {/* Left: drag handle + checkbox */}
-                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                          {!task.is_completed && !completingTaskIds.includes(task.id) && (
-                            <TouchableOpacity onPressIn={drag} style={{ padding: 4, marginRight: 2 }}>
-                              <GripVertical color="#444" size={20} />
-                            </TouchableOpacity>
-                          )}
-                          <TouchableOpacity 
-                            onPress={() => toggleTask(task.id, task.is_completed)} 
-                            disabled={completingTaskIds.includes(task.id)} 
-                            style={[
-                              styles.checkbox, 
-                              (task.is_completed || completingTaskIds.includes(task.id)) && { marginLeft: 28 }
-                            ]}
-                          >
-                            {(task.is_completed || completingTaskIds.includes(task.id)) ? (
-                              <CheckCircle2 color="#10B981" size={24} />
-                            ) : (
-                              <Circle color={theme.text} size={24} />
-                            )}
-                          </TouchableOpacity>
-                        </View>
-
-                        {/* Center: title + meta */}
-                        <View style={styles.taskContent}>
-                          <ScribbleStrike isCompleted={task.is_completed || completingTaskIds.includes(task.id)} shouldAnimate={completingTaskIds.includes(task.id)} color={theme.textMuted}>
-                            <Text
-                              style={[
-                                styles.taskTitle,
-                                { color: completingTaskIds.includes(task.id) ? '#666' : (task.is_completed ? '#666' : '#fff') },
-                                (task.is_completed || completingTaskIds.includes(task.id)) && styles.taskCompleted,
-                              ]}
-                            >
-                              {task.title}
-                            </Text>
-                          </ScribbleStrike>
-
-                          {hasMeta && (
-                            <View style={styles.taskMetaRow}>
-                              {task.due_date && (
-                                <View style={styles.metaPill}>
-                                  <Calendar color={isOverdue ? '#EF4444' : '#888'} size={11} />
-                                  <Text style={[styles.metaLabel, isOverdue && { color: '#EF4444' }]}>
-                                    {formatDate(task.due_date)}
-                                  </Text>
-                                </View>
-                              )}
-                              {task.reminder_time && (
-                                <View style={styles.metaPill}>
-                                  <Bell color="#888" size={11} />
-                                  <Text style={styles.metaLabel}>
-                                    {formatDateTime(task.reminder_time)}
-                                  </Text>
-                                </View>
-                              )}
-                              {task.repeat_rule && (
-                                <View style={styles.metaPill}>
-                                  <Repeat color="#888" size={11} />
-                                  <Text style={styles.metaLabel}>
-                                    {task.repeat_rule}
-                                  </Text>
-                                </View>
-                              )}
-                              {hasSubtasks && (
-                                <View style={styles.metaPill}>
-                                  <ListChecks color="#888" size={11} />
-                                  <Text style={styles.metaLabel}>
-                                    {completedSubs}/{totalSubs}
-                                  </Text>
-                                </View>
-                              )}
-                              {hasNotes && (
-                                <View style={[styles.metaPill, { paddingHorizontal: 6 }]}>
-                                  <FileText color="#888" size={11} />
-                                </View>
-                              )}
-                            </View>
-                          )}
-                        </View>
-
-                        {/* Right: star + delete */}
-                        <View style={styles.taskActions}>
-                          {!task.is_completed && (
-                            <TouchableOpacity onPress={() => navigation.navigate('FocusMode', { task })} style={styles.iconButtonSmall}>
-                              <Zap color="#A855F7" size={18} fill="rgba(168, 85, 247, 0.2)" />
-                            </TouchableOpacity>
-                          )}
-                          <TouchableOpacity onPress={() => toggleImportant(task.id, task.is_important)} style={styles.iconButtonSmall}>
-                            <Star
-                              color={task.is_important ? '#FFFFFF' : '#444'}
-                              fill={task.is_important ? '#FFFFFF' : 'transparent'}
-                              size={18}
-                            />
-                          </TouchableOpacity>
-                          <TouchableOpacity onPress={() => deleteTaskHandler(task.id)} style={styles.iconButtonSmall}>
-                            <Trash2 color="#444" size={18} />
-                          </TouchableOpacity>
-                        </View>
-                      </TouchableOpacity>
-                    </ScaleDecorator>
-                  );
-                }}
+                renderItem={({ item: task, drag, isActive }) => (
+                  <TodayTaskRow
+                    task={task}
+                    theme={theme}
+                    accent={theme.accent}
+                    isCompleting={completingTaskIds.includes(task.id)}
+                    drag={drag}
+                    isActive={isActive}
+                    onPress={() => navigation.navigate('TaskDetail', { task, userId })}
+                    onToggle={() => toggleTask(task.id, task.is_completed || completingTaskIds.includes(task.id))}
+                    onFocus={() => navigation.navigate('FocusMode', { task })}
+                    onToggleImportant={() => toggleImportant(task.id, task.is_important)}
+                    onDelete={() => deleteTaskHandler(task.id)}
+                  />
+                )}
               />
               )}
 
@@ -839,14 +930,14 @@ export const TodayScreen = ({ navigation }) => {
                       ? <ChevronDown color="#888" size={18} />
                       : <ChevronRight color="#888" size={18} />}
                     <Text style={styles.completedHeaderText}>
-                      Completed ({completedTodayTasks.length})
+                      {t('today.completedCount', { count: completedTodayTasks.length })}
                     </Text>
                   </TouchableOpacity>
 
                   {showCompleted && completedTodayTasks.map(task => {
                     const hasSubtasks = task.subtasks && task.subtasks.length > 0;
                     const hasNotes = task.notes && task.notes.trim().length > 0;
-                    const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes;
+                    const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes || true;
                     const completedSubs = hasSubtasks ? task.subtasks.filter(s => s.is_completed).length : 0;
                     const totalSubs = hasSubtasks ? task.subtasks.length : 0;
 
@@ -854,10 +945,10 @@ export const TodayScreen = ({ navigation }) => {
                       ? (() => {
                           const diff = Date.now() - new Date(task.completed_at).getTime();
                           const mins = Math.floor(diff / 60000);
-                          if (mins < 1) return 'Just now';
-                          if (mins < 60) return `${mins}m ago`;
+                          if (mins < 1) return t('today.completedJustNow');
+                          if (mins < 60) return t('today.completedMinutesAgo', { mins });
                           const hrs = Math.floor(mins / 60);
-                          return `${hrs}h ago`;
+                          return t('today.completedHoursAgo', { hrs });
                         })()
                       : null;
 
@@ -871,10 +962,10 @@ export const TodayScreen = ({ navigation }) => {
                           {/* Removed green indicator bar */}
 
                           <TouchableOpacity
-                            onPress={() => toggleTask(task.id, task.is_completed)}
+                            onPress={() => toggleTask(task.id, task.is_completed || completingTaskIds.includes(task.id))}
                             style={[styles.checkbox, { marginLeft: 28 }]}
                           >
-                            <CheckCircle2 color="#10B981" size={24} />
+                            <CheckCircle2 color="#34D399" size={24} />
                           </TouchableOpacity>
 
                           <View style={styles.taskContent}>
@@ -888,8 +979,8 @@ export const TodayScreen = ({ navigation }) => {
                               <View style={styles.taskMetaRow}>
                                 {completedAgo && (
                                   <View style={styles.metaPill}>
-                                    <Check color="#10B981" size={11} />
-                                    <Text style={[styles.metaLabel, { color: '#10B981' }]}>{completedAgo}</Text>
+                                    <Check color="#34D399" size={11} />
+                                    <Text style={[styles.metaLabel, { color: '#34D399' }]}>{completedAgo}</Text>
                                   </View>
                                 )}
                                 {hasSubtasks && (
@@ -926,8 +1017,7 @@ export const TodayScreen = ({ navigation }) => {
           {/* ─── Bottom Input Area ────────────────────── */}
           {isAddingTask ? (
             <View style={[styles.bottomInputWrapper, {
-              paddingBottom: Platform.OS === 'android' && androidKeyboardHeight > 0 ? 32 : Math.max(insets.bottom, 16),
-              marginBottom: Platform.OS === 'android' && androidKeyboardHeight > 0 ? androidKeyboardHeight : 0,
+              paddingBottom: Math.max(insets.bottom, 16),
             }]}>
 
               {/* Due Date Pop-up */}
@@ -935,20 +1025,20 @@ export const TodayScreen = ({ navigation }) => {
                 <Animated.View entering={FadeIn.duration(200)} exiting={FadeOut.duration(150)} style={[styles.toolbarMenu, { bottom: 85, left: 16 }]}>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingDueDate(getToday()); setActiveToolbarMenu(null); }}>
                     <Calendar color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Today ({getDayName(new Date())})</Text>
+                    <Text style={styles.toolbarMenuText}>{t('today.dueDateToday', { day: getDayName(new Date()) })}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingDueDate(getTomorrow()); setActiveToolbarMenu(null); }}>
                     <Calendar color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Tomorrow ({getDayName(getTomorrow())})</Text>
+                    <Text style={styles.toolbarMenuText}>{t('today.dueDateTomorrow', { day: getDayName(getTomorrow()) })}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingDueDate(getNextMonday()); setActiveToolbarMenu(null); }}>
                     <Calendar color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Next week (Mon)</Text>
+                    <Text style={styles.toolbarMenuText}>{t('today.dueDateNextWeek')}</Text>
                   </TouchableOpacity>
                   <View style={[styles.divider, { backgroundColor: '#444' }]} />
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setActiveToolbarMenu(null); setShowDatePicker(true); }}>
                     <Calendar color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Pick a date</Text>
+                    <Text style={styles.toolbarMenuText}>{t('today.pickADate')}</Text>
                   </TouchableOpacity>
                 </Animated.View>
               )}
@@ -958,20 +1048,20 @@ export const TodayScreen = ({ navigation }) => {
                 <Animated.View entering={FadeIn.duration(200)} exiting={FadeOut.duration(150)} style={[styles.toolbarMenu, { bottom: 85, left: 60 }]}>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingReminder(getReminderLaterToday()); setActiveToolbarMenu(null); }}>
                     <Bell color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Later today ({getReminderLaterToday().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })})</Text>
+                    <Text style={styles.toolbarMenuText}>{t('today.reminderLaterToday', { time: getReminderLaterToday().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) })}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingReminder(getReminderTomorrow()); setActiveToolbarMenu(null); }}>
                     <Bell color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Tomorrow ({getDayName(getTomorrow())} 09:00)</Text>
+                    <Text style={styles.toolbarMenuText}>{t('today.reminderTomorrow', { day: getDayName(getTomorrow()) })}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingReminder(getReminderNextWeek()); setActiveToolbarMenu(null); }}>
                     <Bell color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Next week (Mon 09:00)</Text>
+                    <Text style={styles.toolbarMenuText}>{t('today.reminderNextWeek')}</Text>
                   </TouchableOpacity>
                   <View style={[styles.divider, { backgroundColor: '#444' }]} />
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setActiveToolbarMenu(null); setReminderPickerDate(new Date()); setShowReminderDatePicker(true); }}>
                     <Bell color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Pick a date & time</Text>
+                    <Text style={styles.toolbarMenuText}>{t('today.pickDateTime')}</Text>
                   </TouchableOpacity>
                 </Animated.View>
               )}
@@ -981,29 +1071,41 @@ export const TodayScreen = ({ navigation }) => {
                 <Animated.View entering={FadeIn.duration(200)} exiting={FadeOut.duration(150)} style={[styles.toolbarMenu, { bottom: 85, right: 16 }]}>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingRepeatRule('daily'); setActiveToolbarMenu(null); }}>
                     <Repeat color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Daily</Text>
+                    <Text style={styles.toolbarMenuText}>{t('today.repeatDaily')}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingRepeatRule('weekdays'); setActiveToolbarMenu(null); }}>
                     <Repeat color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Weekdays</Text>
+                    <Text style={styles.toolbarMenuText}>{t('today.repeatWeekdays')}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingRepeatRule('weekly'); setActiveToolbarMenu(null); }}>
                     <Repeat color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Weekly</Text>
+                    <Text style={styles.toolbarMenuText}>{t('today.repeatWeekly')}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingRepeatRule('monthly'); setActiveToolbarMenu(null); }}>
                     <Repeat color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Monthly</Text>
+                    <Text style={styles.toolbarMenuText}>{t('today.repeatMonthly')}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingRepeatRule('yearly'); setActiveToolbarMenu(null); }}>
                     <Repeat color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Yearly</Text>
+                    <Text style={styles.toolbarMenuText}>{t('today.repeatYearly')}</Text>
                   </TouchableOpacity>
                   <View style={[styles.divider, { backgroundColor: '#444' }]} />
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setActiveToolbarMenu(null); setShowCustomRepeatModal(true); }}>
                     <Repeat color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Customised</Text>
+                    <Text style={styles.toolbarMenuText}>{t('today.repeatCustomised')}</Text>
                   </TouchableOpacity>
+                </Animated.View>
+              )}
+
+              {activeToolbarMenu === 'priority' && (
+                <Animated.View entering={FadeIn.duration(200)} exiting={FadeOut.duration(150)} style={[styles.toolbarMenu, { bottom: 85, right: 16 }]}>
+                  {Object.entries(PRIORITY_CONFIG).reverse().map(([value, config]) => (
+                    <TouchableOpacity key={value} style={styles.toolbarMenuItem} onPress={() => { setPendingPriority(Number(value)); setActiveToolbarMenu(null); }}>
+                      <Flag color={config.color} size={20} fill={Number(value) !== 1 ? config.color : 'transparent'} style={styles.toolbarMenuIcon} />
+                      <Text style={styles.toolbarMenuText}>{config.label}</Text>
+                      {pendingPriority === Number(value) && <Text style={{ color: '#fff', marginLeft: 'auto' }}>✓</Text>}
+                    </TouchableOpacity>
+                  ))}
                 </Animated.View>
               )}
 
@@ -1017,7 +1119,7 @@ export const TodayScreen = ({ navigation }) => {
                 </TouchableOpacity>
                 <TextInput
                   style={[styles.bottomInput, { color: '#fff' }]}
-                  placeholder="Add a task"
+                  placeholder={t('today.addTaskPlaceholder')}
                   placeholderTextColor="#666"
                   value={newTaskTitle}
                   onChangeText={setNewTaskTitle}
@@ -1033,15 +1135,19 @@ export const TodayScreen = ({ navigation }) => {
               <View style={styles.toolbarRow}>
                 <TouchableOpacity style={[styles.toolbarButton, pendingDueDate && styles.toolbarButtonActive]} onPress={() => setActiveToolbarMenu(activeToolbarMenu === 'date' ? null : 'date')}>
                   <Calendar color={pendingDueDate ? '#fff' : '#888'} size={18} />
-                  <Text style={[styles.toolbarText, pendingDueDate && { color: '#fff' }]}>Due date</Text>
+                  <Text style={[styles.toolbarText, pendingDueDate && { color: '#fff' }]}>{t('today.toolbarDueDate')}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={[styles.toolbarButton, pendingReminder && styles.toolbarButtonActive]} onPress={() => setActiveToolbarMenu(activeToolbarMenu === 'reminder' ? null : 'reminder')}>
                   <Bell color={pendingReminder ? '#fff' : '#888'} size={18} />
-                  <Text style={[styles.toolbarText, pendingReminder && { color: '#fff' }]}>Remind me</Text>
+                  <Text style={[styles.toolbarText, pendingReminder && { color: '#fff' }]}>{t('today.toolbarRemindMe')}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={[styles.toolbarButton, pendingRepeatRule && styles.toolbarButtonActive]} onPress={() => setActiveToolbarMenu(activeToolbarMenu === 'repeat' ? null : 'repeat')}>
                   <Repeat color={pendingRepeatRule ? '#fff' : '#888'} size={18} />
-                  <Text style={[styles.toolbarText, pendingRepeatRule && { color: '#fff' }]}>Repeat</Text>
+                  <Text style={[styles.toolbarText, pendingRepeatRule && { color: '#fff' }]}>{t('today.toolbarRepeat')}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.toolbarButton, pendingPriority !== 1 && styles.toolbarButtonActive]} onPress={() => setActiveToolbarMenu(activeToolbarMenu === 'priority' ? null : 'priority')}>
+                  <Flag color={pendingPriority !== 1 ? getPriorityColor(pendingPriority) : '#888'} size={18} fill={pendingPriority !== 1 ? getPriorityColor(pendingPriority) : 'transparent'} />
+                  <Text style={[styles.toolbarText, pendingPriority !== 1 && { color: '#fff' }]}>{t('today.toolbarPriority')}</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -1063,7 +1169,7 @@ export const TodayScreen = ({ navigation }) => {
             <View style={styles.pickerModalOverlay}>
               <View style={styles.pickerModalContent}>
                 <View style={styles.pickerHeader}>
-                  <Text style={styles.pickerTitle}>Pick a due date</Text>
+                  <Text style={styles.pickerTitle}>{t('today.pickDueDateTitle')}</Text>
                   <TouchableOpacity onPress={() => setShowDatePicker(false)}>
                     <X color="#fff" size={24} />
                   </TouchableOpacity>
@@ -1079,7 +1185,7 @@ export const TodayScreen = ({ navigation }) => {
                 />
                 {Platform.OS === 'ios' && (
                   <TouchableOpacity style={styles.pickerDoneBtn} onPress={() => { setPendingDueDate(pendingDueDate || new Date()); setShowDatePicker(false); }}>
-                    <Text style={styles.pickerDoneText}>Done</Text>
+                    <Text style={styles.pickerDoneText}>{t('today.doneButton')}</Text>
                   </TouchableOpacity>
                 )}
               </View>
@@ -1093,7 +1199,7 @@ export const TodayScreen = ({ navigation }) => {
             <View style={styles.pickerModalOverlay}>
               <View style={styles.pickerModalContent}>
                 <View style={styles.pickerHeader}>
-                  <Text style={styles.pickerTitle}>Pick date & time</Text>
+                  <Text style={styles.pickerTitle}>{t('today.pickDateTimeTitle')}</Text>
                   <TouchableOpacity onPress={() => setShowReminderDatePicker(false)}>
                     <X color="#fff" size={24} />
                   </TouchableOpacity>
@@ -1112,7 +1218,7 @@ export const TodayScreen = ({ navigation }) => {
                 />
                 {Platform.OS === 'ios' && (
                   <TouchableOpacity style={styles.pickerDoneBtn} onPress={() => { setPendingReminder(reminderPickerDate); setShowReminderDatePicker(false); }}>
-                    <Text style={styles.pickerDoneText}>Done</Text>
+                    <Text style={styles.pickerDoneText}>{t('today.doneButton')}</Text>
                   </TouchableOpacity>
                 )}
               </View>
@@ -1135,14 +1241,14 @@ export const TodayScreen = ({ navigation }) => {
           <View style={styles.pickerModalOverlay}>
             <View style={styles.customRepeatModal}>
               <View style={styles.pickerHeader}>
-                <Text style={styles.pickerTitle}>Custom repeat</Text>
+                <Text style={styles.pickerTitle}>{t('today.customRepeatTitle')}</Text>
                 <TouchableOpacity onPress={() => setShowCustomRepeatModal(false)}>
                   <X color="#fff" size={24} />
                 </TouchableOpacity>
               </View>
 
               {/* Repeat every ___ [unit] */}
-              <Text style={styles.customLabel}>Repeat every</Text>
+              <Text style={styles.customLabel}>{t('today.repeatEveryLabel')}</Text>
               <View style={styles.customRow}>
                 <TextInput
                   style={styles.customNumberInput}
@@ -1167,7 +1273,7 @@ export const TodayScreen = ({ navigation }) => {
               {/* Day selector (only for weeks) */}
               {customRepeatUnit === 'weeks' && (
                 <>
-                  <Text style={[styles.customLabel, { marginTop: 20 }]}>On these days</Text>
+                  <Text style={[styles.customLabel, { marginTop: 20 }]}>{t('today.onTheseDaysLabel')}</Text>
                   <View style={styles.dayRow}>
                     {DAY_LABELS.map(day => (
                       <TouchableOpacity
@@ -1183,7 +1289,7 @@ export const TodayScreen = ({ navigation }) => {
               )}
 
               <TouchableOpacity style={[styles.pickerDoneBtn, { marginTop: 24 }]} onPress={saveCustomRepeat}>
-                <Text style={styles.pickerDoneText}>Save</Text>
+                <Text style={styles.pickerDoneText}>{t('common.save')}</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -1209,12 +1315,15 @@ export const TodayScreen = ({ navigation }) => {
         savedPlan={generatedPlan}
         onPlanGenerated={(plan) => {
           setGeneratedPlan(plan);
-          if (userId) {
-            Storage.set(`generated_plan_${userId}`, plan);
-            Storage.set(`generated_plan_date_${userId}`, new Date().toDateString());
-          }
+          savePlanForToday(userId, plan);
         }}
         onToggleTask={toggleTask}
+      />
+      <LevelUpModal
+        isVisible={!!levelUpData}
+        oldLevel={levelUpData?.oldLevel || 1}
+        newLevel={levelUpData?.newLevel || 2}
+        onClose={() => setLevelUpData(null)}
       />
     </BackgroundWrapper>
   );

@@ -2,23 +2,99 @@ import notifee from '@notifee/react-native';
 import * as Calendar from 'expo-calendar';
 import * as IntentLauncher from 'expo-intent-launcher';
 import { ExpoSpeechRecognitionModule } from 'expo-speech-recognition';
-import { ArrowLeft, Bell, Calendar as CalendarIcon, CheckCircle2, Mic, Settings, XCircle } from 'lucide-react-native';
-import { useEffect, useState } from 'react';
-import { Alert, AppState, Linking, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ArrowLeft, Bell, Calendar as CalendarIcon, CheckCircle2, Mic, Settings, Shield, XCircle } from 'lucide-react-native';
+import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { Alert, AppState, Linking, NativeModules, PermissionsAndroid, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+const { AppBlocker } = NativeModules;
+
+const INITIAL_PERMISSIONS = Object.freeze({
+  notifications: false,
+  calendar: false,
+  microphone: false,
+  fullScreenIntent: true,
+  accessibility: false,
+});
+
+/**
+ * Read the operating-system permission snapshot without touching React state.
+ * Keeping this external synchronization separate lets both mount and button
+ * handlers reuse it, while late native responses can be ignored after unmount.
+ */
+const readPermissionSnapshot = async () => {
+  // 1. Notifications
+  const notifSettings = await notifee.getNotificationSettings();
+  const hasNotifications = notifSettings.authorizationStatus === 1;
+  console.log('[Permissions] Notifications:', hasNotifications, notifSettings);
+
+  // 2. Calendar
+  let hasCalendar = false;
+  try {
+    const { status } = await Calendar.getCalendarPermissions();
+    hasCalendar = status === 'granted';
+    console.log('[Permissions] Calendar:', hasCalendar);
+  } catch (error) {
+    console.log('[Permissions] Calendar check error:', error.message);
+  }
+
+  // 3. Microphone
+  const micStatus = await ExpoSpeechRecognitionModule.getPermissionsAsync();
+  const hasMic = micStatus.granted;
+  console.log('[Permissions] Microphone:', hasMic, micStatus);
+
+  // 4. Full Screen Intent (Android alarms)
+  let hasFullScreen = true;
+  if (Platform.OS === 'android') {
+    const settings = await notifee.getNotificationSettings();
+    hasFullScreen = settings.android?.canUseFullScreenIntent !== false;
+    console.log('[Permissions] Full Screen:', hasFullScreen);
+  }
+
+  // 5. Accessibility
+  let hasAccessibility = false;
+  if (Platform.OS === 'android' && AppBlocker) {
+    hasAccessibility = await AppBlocker.isAccessibilityServiceEnabled();
+    console.log('[Permissions] Accessibility:', hasAccessibility);
+  }
+
+  const snapshot = {
+    notifications: hasNotifications,
+    calendar: hasCalendar,
+    microphone: hasMic,
+    fullScreenIntent: hasFullScreen,
+    accessibility: hasAccessibility,
+  };
+  console.log('[Permissions] Final state:', snapshot);
+  return snapshot;
+};
 
 const PermissionItem = ({ title, description, icon: Icon, isGranted, onRequest, isAndroidOnly }) => {
+  const { t } = useTranslation();
   if (isAndroidOnly && Platform.OS !== 'android') return null;
 
   return (
     <TouchableOpacity
       activeOpacity={0.7}
-      onPress={isGranted ? () => Linking.openSettings() : onRequest}
+      onPress={() => {
+        if (isGranted) {
+          Alert.alert(
+            t('permissions.alreadyGrantedTitle'),
+            t('permissions.alreadyGrantedMessage'),
+            [
+              { text: t('common.cancel'), style: 'cancel' },
+              { text: t('permissions.openSettings'), onPress: () => Linking.openSettings() }
+            ]
+          );
+        } else {
+          onRequest();
+        }
+      }}
       style={styles.permissionItem}
     >
       <View style={styles.permissionLeft}>
         <View style={[styles.iconCircle, isGranted && styles.iconCircleGranted]}>
-          <Icon color={isGranted ? '#fff' : '#A855F7'} size={20} />
+          <Icon color={isGranted ? '#fff' : '#FFFFFF'} size={20} />
         </View>
         <View style={styles.permissionText}>
           <Text style={styles.permissionTitle}>{title}</Text>
@@ -28,7 +104,7 @@ const PermissionItem = ({ title, description, icon: Icon, isGranted, onRequest, 
       
       <View style={styles.permissionRight}>
         {isGranted ? (
-          <CheckCircle2 color="#22c55e" size={24} />
+          <CheckCircle2 color="#E5E7EB" size={24} />
         ) : (
           <XCircle color="#444" size={24} />
         )}
@@ -37,188 +113,148 @@ const PermissionItem = ({ title, description, icon: Icon, isGranted, onRequest, 
   );
 };
 export const PermissionsScreen = ({ navigation }) => {
-  const [permissions, setPermissions] = useState({
-    notifications: false,
-    calendar: false,
-    microphone: false,
-    fullScreenIntent: true, // Android only
-  });
+  const { t } = useTranslation();
+  const [permissions, setPermissions] = useState(INITIAL_PERMISSIONS);
 
-  const checkPermissions = async () => {
+  // Event-facing refresh used after permission prompts and AppState changes.
+  const checkPermissions = useCallback(async () => {
     try {
-      // 1. Notifications
-      const notifSettings = await notifee.getNotificationSettings();
-      const hasNotifications = notifSettings.authorizationStatus === 1; // AUTHORIZED
-      console.log('[Permissions] Notifications:', hasNotifications, notifSettings);
-
-      // 2. Calendar (new API - non-deprecated)
-      let hasCalendar = false;
-      try {
-        const { status } = await Calendar.getCalendarPermissions();
-        hasCalendar = status === 'granted';
-        console.log('[Permissions] Calendar:', hasCalendar);
-      } catch (e) {
-        hasCalendar = false;
-        console.log('[Permissions] Calendar check error:', e.message);
-      }
-
-      // 3. Microphone
-      const micStatus = await ExpoSpeechRecognitionModule.getPermissionsAsync();
-      const hasMic = micStatus.granted;
-      console.log('[Permissions] Microphone:', hasMic, micStatus);
-
-      // 4. Full Screen Intent (Android Alarms)
-      let hasFullScreen = true;
-      if (Platform.OS === 'android') {
-        const settings = await notifee.getNotificationSettings();
-        hasFullScreen = settings.android?.canUseFullScreenIntent !== false;
-        console.log('[Permissions] Full Screen:', hasFullScreen);
-      }
-
-      setPermissions({
-        notifications: hasNotifications,
-        calendar: hasCalendar,
-        microphone: hasMic,
-        fullScreenIntent: hasFullScreen,
-      });
-      
-      console.log('[Permissions] Final state:', {
-        notifications: hasNotifications,
-        calendar: hasCalendar,
-        microphone: hasMic,
-        fullScreenIntent: hasFullScreen,
-      });
-    } catch (e) {
-      console.error('[Permissions] Error checking permissions:', e);
+      setPermissions(await readPermissionSnapshot());
+    } catch (error) {
+      console.error('[Permissions] Error checking permissions:', error);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    checkPermissions();
-    // Re-check when app comes back to foreground (user might have changed settings)
-    const subscription = AppState.addEventListener('change', nextAppState => {
-      if (nextAppState === 'active') {
-        checkPermissions();
-      }
+    let active = true;
+
+    // The commit is visibly behind a native async boundary, and an answer that
+    // arrives after unmount is ignored.
+    readPermissionSnapshot().then((snapshot) => {
+      if (active) setPermissions(snapshot);
+    }).catch((error) => {
+      console.error('[Permissions] Error checking permissions:', error);
     });
-    return () => subscription.remove();
-  }, []);
+
+    // Re-check when the app returns from system settings.
+    const subscription = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState === 'active') checkPermissions();
+    });
+
+    return () => {
+      active = false;
+      subscription.remove();
+    };
+  }, [checkPermissions]);
 
   const handleRequestNotification = async () => {
     try {
       console.log('[Permissions] Requesting notification permission...');
-      
-      // Check current status first
-      const currentSettings = await notifee.getNotificationSettings();
-      console.log('[Permissions] Current notification status:', currentSettings);
-      
-      if (currentSettings.authorizationStatus === 1) {
-        // Already granted
-        Alert.alert('Already Granted', 'Notifications are already enabled for LifePilot.');
-        return;
-      }
-      
-      // Request permission
       const result = await notifee.requestPermission();
       console.log('[Permissions] Notification result:', result);
       
       if (result.authorizationStatus === 1) {
-        Alert.alert('Success', 'Notifications enabled!');
-      } else if (result.authorizationStatus === 2) {
-        // Denied
+        Alert.alert(t('common.success'), t('permissions.notificationsEnabled'));
+      } else {
+        // OS didn't show dialog — open settings directly
         Alert.alert(
-          'Permission Denied',
-          'Notifications were denied. You can enable them in Settings.',
+          t('permissions.permissionRequiredTitle'),
+          t('permissions.enableNotificationsMessage'),
           [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Open Settings', onPress: () => Linking.openSettings() }
+            { text: t('common.cancel'), style: 'cancel' },
+            { text: t('permissions.openSettings'), onPress: () => Linking.openSettings() }
           ]
         );
       }
-      
       await checkPermissions();
     } catch (error) {
       console.error('[Permissions] Notification error:', error);
-      Alert.alert('Error', 'Failed to request notification permission: ' + error.message);
+      Alert.alert(
+        t('permissions.permissionRequiredTitle'),
+        t('permissions.requestPermissionErrorMessage'),
+        [
+          { text: t('permissions.openSettings'), onPress: () => Linking.openSettings() }
+        ]
+      );
     }
   };
 
   const handleRequestCalendar = async () => {
     try {
       console.log('[Permissions] Requesting calendar permission...');
-      
-      // Check if already granted
-      const { status } = await Calendar.getCalendarPermissions();
-      if (status === 'granted') {
-        Alert.alert('Already Granted', 'Calendar access is already enabled.');
-        await checkPermissions();
-        return;
+      let granted = false;
+
+      if (Platform.OS === 'android') {
+        // expo-calendar v56 only reports "granted" when BOTH READ and WRITE
+        // calendar permissions are granted, so request them together.
+        const res = await PermissionsAndroid.requestMultiple([
+          PermissionsAndroid.PERMISSIONS.READ_CALENDAR,
+          PermissionsAndroid.PERMISSIONS.WRITE_CALENDAR,
+        ]);
+        granted =
+          res[PermissionsAndroid.PERMISSIONS.READ_CALENDAR] === PermissionsAndroid.RESULTS.GRANTED &&
+          res[PermissionsAndroid.PERMISSIONS.WRITE_CALENDAR] === PermissionsAndroid.RESULTS.GRANTED;
+      } else {
+        const { status } = await Calendar.requestCalendarPermissions();
+        granted = status === 'granted';
       }
-      
-      console.log('[Permissions] Calendar not granted yet, requesting permission...');
-      
-      // Request permission (new API)
-      const result = await Calendar.requestCalendarPermissions();
-      console.log('[Permissions] Calendar result:', result);
-      
-      if (result.granted) {
-        Alert.alert('Success', 'Calendar access granted!');
-      } else if (result.canAskAgain === false) {
+
+      console.log('[Permissions] Calendar result:', granted);
+      if (granted) {
+        Alert.alert(t('common.success'), t('permissions.calendarGranted'));
+      } else {
         Alert.alert(
-          'Permission Required',
-          'Calendar permission was previously denied. Please enable it in Settings.',
+          t('permissions.permissionRequiredTitle'),
+          t('permissions.enableCalendarMessage'),
           [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Open Settings', onPress: () => Linking.openSettings() }
+            { text: t('common.cancel'), style: 'cancel' },
+            { text: t('permissions.openSettings'), onPress: () => Linking.openSettings() }
           ]
         );
-      } else {
-        Alert.alert('Permission Denied', 'Calendar access was denied.');
       }
-      
       await checkPermissions();
     } catch (error) {
       console.error('[Permissions] Calendar error:', error);
-      Alert.alert('Error', 'Failed to request calendar permission: ' + error.message);
+      Alert.alert(
+        t('permissions.permissionRequiredTitle'),
+        t('permissions.requestPermissionErrorMessage'),
+        [
+          { text: t('common.cancel'), style: 'cancel' },
+          { text: t('permissions.openSettings'), onPress: () => Linking.openSettings() }
+        ]
+      );
     }
   };
 
   const handleRequestMic = async () => {
     try {
       console.log('[Permissions] Requesting microphone permission...');
-      const status = await ExpoSpeechRecognitionModule.getPermissionsAsync();
-      console.log('[Permissions] Mic status:', status);
+      const result = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+      console.log('[Permissions] Mic result:', result);
       
-      if (status.granted) {
-        // Already granted
-        Alert.alert('Already Granted', 'Microphone access is already enabled.');
-        return;
-      }
-      
-      if (status.canAskAgain) {
-        const result = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
-        console.log('[Permissions] Mic result:', result);
-        
-        if (result.granted) {
-          Alert.alert('Success', 'Microphone access granted!');
-        } else {
-          Alert.alert('Permission Denied', 'Microphone access was denied.');
-        }
+      if (result.granted) {
+        Alert.alert(t('common.success'), t('permissions.microphoneGranted'));
       } else {
         Alert.alert(
-          'Permission Required',
-          'Microphone permission was previously denied. Please enable it in Settings.',
+          t('permissions.permissionRequiredTitle'),
+          t('permissions.enableMicrophoneMessage'),
           [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Open Settings', onPress: () => Linking.openSettings() }
+            { text: t('common.cancel'), style: 'cancel' },
+            { text: t('permissions.openSettings'), onPress: () => Linking.openSettings() }
           ]
         );
       }
-      
       await checkPermissions();
     } catch (error) {
       console.error('[Permissions] Microphone error:', error);
-      Alert.alert('Error', 'Failed to request microphone permission: ' + error.message);
+      Alert.alert(
+        t('permissions.permissionRequiredTitle'),
+        t('permissions.requestPermissionErrorMessage'),
+        [
+          { text: t('common.cancel'), style: 'cancel' },
+          { text: t('permissions.openSettings'), onPress: () => Linking.openSettings() }
+        ]
+      );
     }
   };
 
@@ -229,7 +265,29 @@ export const PermissionsScreen = ({ navigation }) => {
         await IntentLauncher.startActivityAsync(IntentLauncher.ActivityAction.MANAGE_APP_USE_FULL_SCREEN_INTENT);
       } catch (e) {
         console.error('[Permissions] Full screen intent error:', e);
-        Alert.alert('Error', 'Could not open system settings');
+        Alert.alert(t('common.error'), t('permissions.openSystemSettingsError'));
+      }
+    }
+  };
+
+  const handleRequestAccessibility = async () => {
+    if (Platform.OS === 'android' && AppBlocker) {
+      try {
+        const isEnabled = await AppBlocker.isAccessibilityServiceEnabled();
+        if (!isEnabled) {
+          Alert.alert(
+            t('permissions.actionRequiredTitle'),
+            t('permissions.enableAccessibilityMessage'),
+            [
+              { text: t('common.cancel'), style: 'cancel' },
+              { text: t('permissions.openSettings'), onPress: () => AppBlocker.openAccessibilitySettings() }
+            ]
+          );
+        } else {
+          Alert.alert(t('common.success'), t('permissions.accessibilityAlreadyEnabled'));
+        }
+      } catch (e) {
+        console.error('[Permissions] Accessibility error:', e);
       }
     }
   };
@@ -241,58 +299,67 @@ export const PermissionsScreen = ({ navigation }) => {
         <TouchableOpacity style={styles.backButton} onPress={() => navigation.replace('Dashboard')}>
           <ArrowLeft color="#fff" size={24} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>App Permissions</Text>
+        <Text style={styles.headerTitle}>{t('permissions.headerTitle')}</Text>
         <View style={{ width: 24 }} />
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         {/* Header Section */}
         <View style={styles.headerSection}>
-          <Text style={styles.title}>PERMISSIONS</Text>
+          <Text style={styles.title}>{t('permissions.title')}</Text>
           <Text style={styles.subtitle}>
-            Tap any permission to grant access
+            {t('permissions.subtitle')}
           </Text>
         </View>
 
         {/* Permissions List */}
         <View style={styles.permissionsList}>
           <PermissionItem 
-            title="Notifications"
-            description="Reminders and alarm triggers"
+            title={t('permissions.notificationsTitle')}
+            description={t('permissions.notificationsDesc')}
             icon={Bell}
             isGranted={permissions.notifications}
             onRequest={handleRequestNotification}
           />
 
           <PermissionItem 
-            title="Calendar Sync"
-            description="Import calendar events"
+            title={t('permissions.calendarTitle')}
+            description={t('permissions.calendarDesc')}
             icon={CalendarIcon}
             isGranted={permissions.calendar}
             onRequest={handleRequestCalendar}
           />
 
           <PermissionItem 
-            title="Microphone"
-            description="Voice commands for Aura"
+            title={t('permissions.microphoneTitle')}
+            description={t('permissions.microphoneDesc')}
             icon={Mic}
             isGranted={permissions.microphone}
             onRequest={handleRequestMic}
           />
 
           <PermissionItem 
-            title="Full Screen Alarms"
-            description="Wake screen for alarms"
+            title={t('permissions.fullScreenTitle')}
+            description={t('permissions.fullScreenDesc')}
             icon={Settings}
             isGranted={permissions.fullScreenIntent}
             onRequest={handleRequestFullScreen}
+            isAndroidOnly={true}
+          />
+
+          <PermissionItem 
+            title={t('permissions.accessibilityTitle')}
+            description={t('permissions.accessibilityDesc')}
+            icon={Shield}
+            isGranted={permissions.accessibility}
+            onRequest={handleRequestAccessibility}
             isAndroidOnly={true}
           />
         </View>
         
         {/* Privacy Note */}
         <Text style={styles.privacyNote}>
-          Your data is stored locally and encrypted. We never share your information with third parties.
+          {t('permissions.privacyNote')}
         </Text>
         
         <View style={{ height: 40 }} />
@@ -368,9 +435,9 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: 'rgba(168, 85, 247, 0.1)',
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
     borderWidth: 1,
-    borderColor: 'rgba(168, 85, 247, 0.3)',
+    borderColor: 'rgba(255, 255, 255, 0.3)',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 16,

@@ -8,21 +8,32 @@
  */
 
 export const AI_CONFIG = {
-  // Production recommendation: set this to a secure backend/edge-function URL
-  // and keep provider API keys off the mobile client.
+  // AI providers are proxy-only. Provider secrets belong in Supabase Function
+  // secrets and are never referenced by Metro, even when local .env is sourced.
   AI_PROXY_URL: process.env.EXPO_PUBLIC_AI_PROXY_URL || '',
+  REQUIRE_AI_PROXY:
+    process.env.EXPO_PUBLIC_REQUIRE_AI_PROXY === 'true'
+    || process.env.EXPO_PUBLIC_REQUIRE_AI_PROXY === '1',
+};
 
-  // Primary Engine (Generous free tier, highly intelligent)
-  GEMINI_API_KEY: process.env.EXPO_PUBLIC_GEMINI_API_KEY,
-  
-  // Fallback 1 (Completely free, blazing fast Llama-3-70B)
-  GROQ_API_KEY: process.env.EXPO_PUBLIC_GROQ_API_KEY,
-  
-  // Fallback 2 (Generous free tier)
-  MISTRAL_API_KEY: process.env.EXPO_PUBLIC_MISTRAL_API_KEY,
-  
-  // Fallback 3 (Generous free tier)
-  COHERE_API_KEY: process.env.EXPO_PUBLIC_COHERE_API_KEY,
+const trimTrailingSlash = (value = '') => value.replace(/\/+$/, '');
+
+export const COLLABORATION_CONFIG = Object.freeze({
+  INVITE_LANDING_URL: trimTrailingSlash(
+    process.env.EXPO_PUBLIC_INVITE_LANDING_URL
+      || (process.env.EXPO_PUBLIC_SUPABASE_URL
+        ? `${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/invite`
+        : ''),
+  ),
+});
+
+// Raw invite secrets remain in memory only and are placed in the fragment so
+// browsers never send them to the landing endpoint, access logs, or referrers.
+export const buildInviteShareUrl = (rawToken) => {
+  const token = typeof rawToken === 'string' ? rawToken.trim() : '';
+  const base = COLLABORATION_CONFIG.INVITE_LANDING_URL;
+  if (!/^[a-f0-9]{64}$/i.test(token) || !base.startsWith('https://')) return '';
+  return `${base}#token=${encodeURIComponent(token)}`;
 };
 
 /**

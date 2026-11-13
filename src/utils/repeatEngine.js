@@ -1,10 +1,17 @@
-import { Storage } from './storage';
-import { supabase } from '../lib/supabase';
 import { cacheTasks } from '../lib/dataManager';
+import { syncToSupabase } from '../lib/syncQueue';
+import { Storage } from './storage';
 
 /**
- * Repeat Engine — Resets completed repeating tasks when they are due again.
- * 
+ * Repeat Engine — Resets repeating tasks IN PLACE when they are due again.
+ *
+ * Model (important):
+ *   A recurring task is ONE persistent row. When it becomes due again for a
+ *   new period we simply flip it back to uncompleted on the SAME row. We do
+ *   NOT spawn new rows and we do NOT delete anything. This is what keeps the
+ *   task from duplicating and stops recurring tasks from inflating lifetime
+ *   metrics (each recurring task counts as exactly one row, forever).
+ *
  * Supported repeat_rule values:
  *   'daily'
  *   'weekdays'
@@ -22,7 +29,7 @@ const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
  * based on when it was last completed.
  */
 const shouldResetToday = (task) => {
-  if (!task.repeat_rule || !task.is_completed) return false;
+  if (!task.repeat_rule) return false;
 
   const rule = task.repeat_rule.toLowerCase().trim();
   const now = new Date();
@@ -30,15 +37,14 @@ const shouldResetToday = (task) => {
   const dayOfWeek = now.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
   const dayName = DAY_NAMES[dayOfWeek];
 
-  // When was the task last marked complete?
-  // We use `updated_at` from supabase, or `completed_at` if we track it,
-  // or fall back to the last reset date we stored.
-  const lastCompletedStr = task.last_reset_date || task.updated_at || task.created_at;
-  const lastCompleted = new Date(lastCompletedStr);
-  const lastCompletedDate = new Date(lastCompleted.getFullYear(), lastCompleted.getMonth(), lastCompleted.getDate());
+  // When was the task last processed/created?
+  // We use `completed_at` if it was completed, otherwise `last_reset_date`, `updated_at`, or `created_at`.
+  const baseTimeStr = task.completed_at || task.last_reset_date || task.updated_at || task.created_at;
+  const baseTime = new Date(baseTimeStr);
+  const baseDate = new Date(baseTime.getFullYear(), baseTime.getMonth(), baseTime.getDate());
 
-  // If already reset today, skip
-  if (lastCompletedDate.getTime() >= today.getTime()) return false;
+  // If already processed/reset today, skip
+  if (baseDate.getTime() >= today.getTime()) return false;
 
   // ── Daily ──
   if (rule === 'daily') {
@@ -52,7 +58,7 @@ const shouldResetToday = (task) => {
 
   // ── Weekly ──
   if (rule === 'weekly') {
-    const diffDays = Math.floor((today - lastCompletedDate) / (1000 * 60 * 60 * 24));
+    const diffDays = Math.floor((today - baseDate) / (1000 * 60 * 60 * 24));
     return diffDays >= 7;
   }
 
@@ -60,14 +66,14 @@ const shouldResetToday = (task) => {
   if (rule === 'monthly') {
     // Reset if we're in a different month than when it was completed
     return (
-      today.getMonth() !== lastCompletedDate.getMonth() ||
-      today.getFullYear() !== lastCompletedDate.getFullYear()
+      today.getMonth() !== baseDate.getMonth() ||
+      today.getFullYear() !== baseDate.getFullYear()
     );
   }
 
   // ── Yearly ──
   if (rule === 'yearly') {
-    return today.getFullYear() !== lastCompletedDate.getFullYear();
+    return today.getFullYear() !== baseDate.getFullYear();
   }
 
   // ── Custom: "every N unit" or "every N unit on Day1,Day2" ──
@@ -83,7 +89,7 @@ const shouldResetToday = (task) => {
       ? daysMatch[1].split(',').map(d => d.trim().charAt(0).toUpperCase() + d.trim().slice(1).toLowerCase())
       : null;
 
-    const diffMs = today - lastCompletedDate;
+    const diffMs = today - baseDate;
     const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
 
     switch (unit) {
@@ -102,13 +108,13 @@ const shouldResetToday = (task) => {
 
       case 'month': {
         const monthsDiff =
-          (today.getFullYear() - lastCompletedDate.getFullYear()) * 12 +
-          (today.getMonth() - lastCompletedDate.getMonth());
+          (today.getFullYear() - baseDate.getFullYear()) * 12 +
+          (today.getMonth() - baseDate.getMonth());
         return monthsDiff >= interval;
       }
 
       case 'year': {
-        const yearsDiff = today.getFullYear() - lastCompletedDate.getFullYear();
+        const yearsDiff = today.getFullYear() - baseDate.getFullYear();
         return yearsDiff >= interval;
       }
 
@@ -120,60 +126,100 @@ const shouldResetToday = (task) => {
   return false;
 };
 
-/**
- * Run the repeat engine for a given user.
- * Call this once when the app loads (e.g., in DashboardScreen or TodayScreen).
- * 
- * It will:
- * 1. Load all tasks from cache
- * 2. Find completed tasks with a repeat_rule
- * 3. Check if they should be reset today
- * 4. Reset them (is_completed = false) locally and in Supabase
- * 5. Save the updated cache
- */
 export const runRepeatEngine = async (userId) => {
-  if (!userId) return;
+  if (!userId) return false;
 
-  // Check if we already ran today
+  // Run at most once per day per device (the reset itself is idempotent, so
+  // an extra run is harmless — this is just to avoid needless work).
   const todayStr = new Date().toDateString();
   const lastRunDate = await Storage.get(`repeatEngine_lastRun_${userId}`);
-  if (lastRunDate === todayStr) return; // Already processed today
+  if (lastRunDate === todayStr) return false;
 
   try {
-    // Fetch fresh tasks from Supabase
-    const { data: tasks, error } = await supabase
-      .from('tasks')
-      .select('*')
-      .eq('user_id', userId);
+    // Offline-first: work off the local cache so we never lose local-only state.
+    const tasks = await Storage.get(`tasks_${userId}`) || [];
 
-    if (error || !tasks) return;
+    if (tasks.length === 0) {
+      // Tasks probably not loaded yet — try again on the next pass.
+      return false;
+    }
 
     const tasksToReset = tasks.filter(t => shouldResetToday(t));
 
     if (tasksToReset.length === 0) {
-      // Nothing to reset, just mark as run
       await Storage.set(`repeatEngine_lastRun_${userId}`, todayStr);
-      return;
+      return false;
     }
 
-    // Reset tasks in Supabase
-    const resetIds = tasksToReset.map(t => t.id);
-    await supabase
-      .from('tasks')
-      .update({ is_completed: false, updated_at: new Date().toISOString() })
-      .in('id', resetIds);
+    const resetIds = new Set(tasksToReset.map(t => t.id));
+    const nowISO = new Date().toISOString();
 
-    // Update local cache
-    const updatedTasks = tasks.map(t =>
-      resetIds.includes(t.id) ? { ...t, is_completed: false, last_reset_date: todayStr } : t
-    );
+    // ── Reset each due repeating task IN PLACE (same row) ──
+    // No new rows, no deletes, no stripping repeat_rule. This is what prevents
+    // duplication and stops recurring tasks from inflating lifetime metrics.
+    const updatedTasks = tasks.map(t => {
+      if (!resetIds.has(t.id)) return t;
+
+      // Roll the reminder time forward to today, preserving the hour/minute.
+      let updatedReminder = t.reminder_time;
+      if (t.reminder_time) {
+        const oldRem = new Date(t.reminder_time);
+        const newRem = new Date();
+        newRem.setHours(oldRem.getHours(), oldRem.getMinutes(), 0, 0);
+        updatedReminder = newRem.toISOString();
+      }
+
+      // Steps belong to the same recurring row, so a new period must start with
+      // them unchecked too. Without this the parent flipped back to open while
+      // every micro-task stayed ticked from the previous run.
+      const updatedSubtasks = Array.isArray(t.subtasks) && t.subtasks.length > 0
+        ? t.subtasks.map((subtask) => (
+          subtask?.is_completed ? { ...subtask, is_completed: false } : subtask
+        ))
+        : t.subtasks;
+
+      return {
+        ...t,
+        is_completed: false,
+        completed_at: null,
+        xp_awarded: null,           // clear so the next completion grants/deducts cleanly
+        last_reset_date: nowISO,    // local-only marker (not synced) for shouldResetToday
+        reminder_time: updatedReminder,
+        due_date: t.due_date ? nowISO : null,
+        subtasks: updatedSubtasks,
+      };
+    });
+
+    // 1. Persist locally first (optimistic / offline-first).
     await cacheTasks(userId, updatedTasks);
 
-    // Mark engine as run for today
+    // 2. Queue the reset to the server through the offline sync queue (never
+    //    write to Supabase directly). We only send columns that definitely
+    //    exist on the tasks table — `last_reset_date` stays local-only.
+    for (const t of tasksToReset) {
+      const resetTask = updatedTasks.find(u => u.id === t.id);
+      // Only sync real DB columns. `xp_awarded` is a local-only field (the
+      // toggle flows never sync it), so we keep it out of the server payload.
+      const payload = {
+        is_completed: false,
+        completed_at: null,
+        reminder_time: resetTask ? resetTask.reminder_time : t.reminder_time,
+        due_date: resetTask ? resetTask.due_date : t.due_date,
+      };
+      // Push the cleared steps too, but only when the task actually has any —
+      // sending an empty/undefined value would wipe a column needlessly.
+      if (Array.isArray(resetTask?.subtasks) && resetTask.subtasks.length > 0) {
+        payload.subtasks = resetTask.subtasks;
+      }
+      syncToSupabase('tasks', 'update', payload, { column: 'id', value: t.id });
+    }
+
     await Storage.set(`repeatEngine_lastRun_${userId}`, todayStr);
 
-    console.log(`[RepeatEngine] Reset ${tasksToReset.length} repeating tasks for today.`);
+    console.log(`[RepeatEngine] Reset ${tasksToReset.length} repeating task(s) in place for today.`);
+    return true; // signal the caller to reload/re-render
   } catch (err) {
     console.error('[RepeatEngine] Error:', err);
+    return false;
   }
 };

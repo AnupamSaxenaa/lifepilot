@@ -1,95 +1,167 @@
 <div align="center">
-  <img src="assets/images/splash-icon.png" alt="LifePilot Logo" width="150" height="150" />
-  <h1>LifePilot</h1>
-  <p><strong>Your Ultimate AI-Powered Life Operating System</strong></p>
-  <p>
-    <img src="https://img.shields.io/badge/Platform-Android-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Android" />
-    <img src="https://img.shields.io/badge/React_Native-20232A?style=for-the-badge&logo=react&logoColor=61DAFB" alt="React Native" />
-    <img src="https://img.shields.io/badge/Expo-000020?style=for-the-badge&logo=expo&logoColor=white" alt="Expo" />
-    <img src="https://img.shields.io/badge/Supabase-3ECF8E?style=for-the-badge&logo=supabase&logoColor=white" alt="Supabase" />
-  </p>
+
+# LifePilot
+
+**An offline-first Android task manager with an AI planning assistant,
+gamification and home-screen widgets.**
+
+`React Native` · `Expo SDK 56` · `Supabase` · `Android`
+
 </div>
 
 ---
 
-## 🌟 Overview
+## 📖 New here? Start with the docs
 
-**LifePilot** is not just another to-do list—it's a fully integrated, AI-powered life operating system. Built specifically for Android, LifePilot combines advanced offline-first architecture, local AI processing, gamification, and native widgets to help you command your day effortlessly.
+**→ [`docs/README.md`](docs/README.md)** is the documentation index.
 
-Whether you're speaking naturally to the AI to schedule your tasks, glancing at your Android Home Screen Widget, or entering deep Focus Mode, LifePilot adapts to how you work best.
+If you've inherited this project and don't yet know the codebase or the language,
+read these four in order (about 90 minutes):
 
----
+1. [What is LifePilot](docs/01-orientation/01-what-is-lifepilot.md) — what the app does
+2. [The tech stack](docs/01-orientation/02-tech-stack.md) — every technology, and why
+3. [Glossary](docs/01-orientation/03-glossary.md) — every unfamiliar word
+4. [Repository tour](docs/02-codebase-map/01-repository-tour.md) — what every folder is
 
-## ✨ Core Features
+Then, to learn the language using this app as the textbook:
 
-### 🤖 **Voice-First AI Assistant**
-Stop typing. Just tap the magical aura and speak naturally. LifePilot's AI understands complex commands, schedules tasks, and organizes your life instantly.
-- Native speech recognition.
-- Powered by advanced LLMs for deep intent understanding.
-
-### ⚡ **True Offline-First Architecture**
-No internet? No problem.
-- **Instant Local Storage**: Every action is saved instantly to your device.
-- **Background Sync Engine**: Your tasks automatically sync to the Supabase cloud the moment you reconnect to the internet.
-
-### 🎮 **Gamification & Progression**
-Stay motivated by turning productivity into a game.
-- Earn XP for every completed task.
-- Build your Daily Streak and level up.
-- Track your Lifetime Progress with beautiful, animated rings.
-
-### 📅 **Native Calendar Integration**
-LifePilot seamlessly reads and writes to your native Android Calendar, ensuring your schedule is always perfectly aligned with your tasks.
-
-### 📱 **Android Home Screen Widgets**
-Never open the app just to check your day.
-- Fully native Android widgets built using Expo Modules.
-- Instantly view your remaining daily tasks right from your home screen.
-
-### 🎯 **Deep Focus Mode & Brain Dump**
-Enter a distraction-free zone to tackle your hardest tasks.
-- **Brain Dump**: Got a distracting thought? Quickly jot it down into your task list without leaving your focus session or losing your flow.
-
-### 🔄 **OTA & Force Updates**
-LifePilot uses an advanced Over-The-Air (OTA) update system.
-- Seamless, invisible background updates for minor features.
-- Beautiful, full-screen mandatory update banners for critical native releases.
+**→ [12-week learning plan](docs/03-learn-the-language/00-learning-plan.md)**
 
 ---
 
-## 🚀 Download & Installation
+## 🚀 Quick start
 
-Experience LifePilot on your Android device today.
+```bash
+npm install                        # once
+adb reverse tcp:8081 tcp:8081      # let the phone reach your Mac
+npm run dev:android                # or: npx expo start --dev-client
+```
 
-### **Current Version: v1.0.1**
+Save a file and the app reloads. Develop against **LP LAB**, never the public app.
 
-1. **[Download the Latest APK](../../releases/lifepilot-v1.0.1.apk)** *(Make sure to click 'View Raw' if downloading from GitHub directly).*
-2. Open the downloaded `.apk` file on your Android device.
-3. If prompted, allow installation from "Unknown Sources" in your Android Settings.
-4. Launch LifePilot, sign in, and take control of your day!
+## 🧪 Before you ship anything
+
+```bash
+npm run verify        # tests + release harnesses + lint
+```
+
+## 📦 Build for Google Play
+
+```bash
+npm run build:play    # remote EAS signing, remote version increment, AAB output
+```
+
+Upload the result to Play **Internal testing**, install and smoke-test that exact
+artifact, then promote it to Production. For an installable store-equivalent APK,
+use the `production-apk` profile. For JS/assets-only updates after launch:
+
+```bash
+npm run update:store -- "what changed"
+```
+
+Full procedure, including signing, permission and OTA traps:
+**[Build and release](docs/04-operations/01-build-and-release.md)**
 
 ---
 
-## 🛠️ Tech Stack
+## Three apps, one codebase
 
-LifePilot is built on the bleeding edge of mobile development:
+`APP_VARIANT` decides which app you build. Different package IDs, so all three can
+coexist on one phone.
 
-- **Framework**: React Native & Expo SDK 52
-- **Backend/Database**: Supabase (PostgreSQL, Auth, Edge Functions)
-- **Local Storage**: React Native Async Storage
-- **Styling**: Reanimated, Lucide Icons, Glassmorphism UI
-- **Native Modules**: Expo Modules API (Kotlin) for Widgets & Background Alarms
+| Variant | Name | Package | Purpose |
+|---------|------|---------|---------|
+| `store` | LifePilot | `com.anupam.lifepilot` | Google Play app; `store-production` OTA |
+| `development` | LP LAB | `com.anupam.lp.tester` | lab app; `development` OTA |
+| *(default)* | LifePilot | `com.anupam.lp` | legacy only; `legacy-production` OTA |
+
+Google Play production access was granted on **October 4, 2026**. Production is
+not live yet: the latest EAS AAB is v2.0.0/code 25 and predates recent fixes, so a
+new artifact must be built, tested and promoted. See
+[current release state](docs/04-operations/01-build-and-release.md#-current-release-state).
 
 ---
 
-## 🤝 Contributing
+## Project layout
 
-This repository is actively maintained. Development is currently taking place on the `development` branch.
+```
+App.js              entry point — read this first
+src/                all application code
+  lib/              the brain: dataManager, syncQueue, AIEngine, Aura context/memory
+  screens/          35 screens
+  components/       42 shared components
+  widgets/          Android home-screen widgets
+  theme/            palette + contrast maths
+  features/alarm/   large, currently DISABLED feature
+supabase/           migrations + the ai-proxy edge function
+scripts/            verification harnesses (npm run check)
+tools/              one-off maintenance scripts
+docs/               documentation + learning plan
+release/            built APKs
+android/            GENERATED by expo prebuild — gitignored
+```
 
-**Note:** All internal AI architecture documents (`*.md`) are preserved securely on the local machine but are ignored via `.gitignore` to keep this repository pristine and beautiful.
+---
+
+## The one architectural rule
+
+> **Local storage is the source of truth for the UI. The server syncs in the
+> background.**
+
+- Screens call `src/lib/dataManager.js` — **never** Supabase directly
+- Writes update AsyncStorage **first**, then queue a sync
+- Never show a spinner when cached data exists
+
+Details: **[Architecture](docs/02-codebase-map/02-architecture.md)** ·
+**[How data flows](docs/02-codebase-map/03-how-data-flows.md)**
+
+---
+
+## Commands
+
+| Command | Does |
+|---------|------|
+| `npm run dev:android` | run on a device with live reload |
+| `npm run lint` | find mistakes without running the app |
+| `npm test` | 147 unit tests |
+| `npm run check` | 11 verification harnesses |
+| `npm run verify` | all of the above |
+| `npm run build:apk` | build the public APK locally |
+
+More: **[Command cheat sheet](docs/05-reference/01-command-cheatsheet.md)**
+
+---
+
+## Things that will bite you
+
+| Trap | Detail |
+|------|--------|
+| Never `./gradlew clean` | use `rm -rf android/app/.cxx android/app/build` |
+| Always source `.env` before `eas update` | otherwise users get a grey screen |
+| `app.config.js` overrides `app.json` | wrong app name? look there |
+| Never `supabase db push` blindly | `0011_alarm_system.sql` must stay unapplied |
+| Signature must match | or nobody can update in place |
+| A new widget needs a rebuild | native config; fast refresh won't show it |
+
+Full list: **[Troubleshooting](docs/05-reference/02-troubleshooting.md)**
+
+---
+
+## Documentation map
+
+| Area | Doc |
+|------|-----|
+| Orientation | [`docs/01-orientation/`](docs/01-orientation/) |
+| Codebase map | [`docs/02-codebase-map/`](docs/02-codebase-map/) |
+| Learn the language | [`docs/03-learn-the-language/`](docs/03-learn-the-language/) |
+| Operations | [`docs/04-operations/`](docs/04-operations/) |
+| Reference | [`docs/05-reference/`](docs/05-reference/) |
+| Historical notes | [`docs/archive/`](docs/archive/) — not maintained |
+
+AI agents working on this repo: see [`AGENTS.md`](AGENTS.md).
 
 ---
 
 <div align="center">
-  <p>Built with ❤️ for productivity hackers everywhere.</p>
+<sub>Built with React Native and Expo · Backend by Supabase · Android</sub>
 </div>

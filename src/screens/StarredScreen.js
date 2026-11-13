@@ -1,13 +1,18 @@
-import { Bell, Calendar, CheckCircle2, Circle, FileText, GripVertical, ListChecks, Menu, MoreVertical, Plus, Repeat, Star, Trash2, X } from 'lucide-react-native';
-import { useEffect, useRef, useState, useMemo } from 'react';
+import { Bell, Calendar, CheckCircle2, Circle, FileText, Flag, GripVertical, ListChecks, Menu, MoreVertical, Plus, Repeat, Star, Trash2, X } from 'lucide-react-native';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Share, StyleSheet, Text, TouchableOpacity, useColorScheme, View } from 'react-native';
 import { NestableDraggableFlatList, NestableScrollContainer, ScaleDecorator } from 'react-native-draggable-flatlist';
 import Animated, { Easing, FadeIn, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BackgroundWrapper } from '../components/BackgroundWrapper';
 import { GlassSidebar } from '../components/GlassSidebar';
+import { LevelUpModal } from '../components/LevelUpModal';
 import { ScribbleStrike } from '../components/ScribbleStrike';
-import { cacheTasks, loadProfile, loadTasks, reorderTasks, toggleTaskImportance } from '../lib/dataManager';
+import { getPriorityColor, shouldShowFlag } from '../config/priorityConfig';
+import { useTheme as useAppTheme } from '../context/ThemeContext';
+import { useWidgetTaskSync } from '../hooks/useWidgetTaskSync';
+import { cacheTasks, getCurrentUserId, loadProfile, loadTasks, reorderTasks, toggleTaskImportance } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
 import { syncToSupabase } from '../lib/syncQueue';
 import { COLORS } from '../theme/theme';
@@ -34,8 +39,131 @@ const SkeletonTask = () => {
   );
 };
 
+// Extracted + memoized so dragging/toggling one row doesn't force React to
+// rebuild every other row's JSX tree from scratch on each render.
+const StarredTaskRow = memo(function StarredTaskRow({ task, theme, isCompleting, drag, isActive, todayStart, formatDate, formatDateTime, onPress, onToggle, onToggleImportant, onDelete }) {
+  const hasSubtasks = task.subtasks && task.subtasks.length > 0;
+  const hasNotes = task.notes && task.notes.trim().length > 0;
+  const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes || true;
+  const isOverdue = task.due_date && new Date(task.due_date) < todayStart && !task.is_completed;
+  const completedSubs = hasSubtasks ? task.subtasks.filter(s => s.is_completed).length : 0;
+  const totalSubs = hasSubtasks ? task.subtasks.length : 0;
+
+  return (
+    <ScaleDecorator>
+      <TouchableOpacity
+        activeOpacity={0.75}
+        onPress={onPress}
+        onLongPress={drag}
+        disabled={isActive}
+        style={[
+          styles.taskCard,
+          theme?.surface && { backgroundColor: theme.surface },
+          isActive && { backgroundColor: 'rgba(255,255,255,0.08)', elevation: 12 }
+        ]}
+      >
+        {/* Left: drag handle + checkbox */}
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          {!isCompleting && (
+            <TouchableOpacity onPressIn={drag} style={{ padding: 4, marginRight: 2 }}>
+              <GripVertical color="#444" size={20} />
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity
+            onPress={onToggle}
+            disabled={isCompleting}
+            style={[
+              styles.checkbox,
+              isCompleting && { marginLeft: 28 }
+            ]}
+          >
+            {isCompleting ? (
+              <CheckCircle2 color="#34D399" size={24} />
+            ) : (
+              <Circle color={theme.text} size={24} />
+            )}
+          </TouchableOpacity>
+        </View>
+
+        {/* Title & Meta */}
+        <View style={styles.taskContent}>
+          <ScribbleStrike isCompleted={isCompleting} shouldAnimate={isCompleting} color={theme.textMuted}>
+            <Text
+              style={[
+                styles.taskTitle,
+                isCompleting && styles.taskCompletedText,
+              ]}
+            >
+              {task.title}
+            </Text>
+          </ScribbleStrike>
+
+          {hasMeta && (
+            <View style={styles.taskMetaRow}>
+              {shouldShowFlag(task.priority) && (
+                <View style={styles.metaPill}>
+                  <Flag color={getPriorityColor(task.priority)} size={11} fill={getPriorityColor(task.priority)} />
+                </View>
+              )}
+              {task.due_date && (
+                <View style={styles.metaPill}>
+                  <Calendar color={isOverdue ? '#FB7185' : '#888'} size={11} />
+                  <Text style={[styles.metaLabel, isOverdue && { color: '#FB7185' }]}>
+                    {formatDate(task.due_date)}
+                  </Text>
+                </View>
+              )}
+              {task.reminder_time && (
+                <View style={styles.metaPill}>
+                  <Bell color="#888" size={11} />
+                  <Text style={styles.metaLabel}>
+                    {formatDateTime(task.reminder_time)}
+                  </Text>
+                </View>
+              )}
+              {task.repeat_rule && (
+                <View style={styles.metaPill}>
+                  <Repeat color="#888" size={11} />
+                  <Text style={styles.metaLabel}>
+                    {task.repeat_rule}
+                  </Text>
+                </View>
+              )}
+              {hasSubtasks && (
+                <View style={styles.metaPill}>
+                  <ListChecks color="#888" size={11} />
+                  <Text style={styles.metaLabel}>
+                    {completedSubs}/{totalSubs}
+                  </Text>
+                </View>
+              )}
+              {hasNotes && (
+                <View style={[styles.metaPill, { paddingHorizontal: 6 }]}>
+                  <FileText color="#888" size={11} />
+                </View>
+              )}
+            </View>
+          )}
+        </View>
+
+        {/* Right: star + delete */}
+        <View style={styles.taskActions}>
+          <TouchableOpacity onPress={onToggleImportant} style={styles.iconButtonSmall}>
+            <Star color="#FFFFFF" fill="#FFFFFF" size={18} />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={onDelete} style={styles.iconButtonSmall}>
+            <Trash2 color="#444" size={18} />
+          </TouchableOpacity>
+        </View>
+      </TouchableOpacity>
+    </ScaleDecorator>
+  );
+});
+
 export const StarredScreen = ({ navigation }) => {
+  const { t } = useTranslation();
   const colorScheme = useColorScheme();
+  useAppTheme().themeVersion;
   const theme = colorScheme === 'dark' ? COLORS.dark : COLORS.light;
   const insets = useSafeAreaInsets();
 
@@ -45,6 +173,15 @@ export const StarredScreen = ({ navigation }) => {
   const [userId, setUserId] = useState(null);
   const [profile, setProfile] = useState(null);
   const [showMenu, setShowMenu] = useState(false);
+
+  // Widget → app sync: reflect widget task toggles on resume / while foregrounded.
+  useWidgetTaskSync(userId, (fresh) => {
+    const refreshedTasks = Array.isArray(fresh) ? fresh : [];
+    setTasks(refreshedTasks.filter((t) => t.is_important));
+  });
+  const [activeToolbarMenu, setActiveToolbarMenu] = useState(null);
+  const [levelUpData, setLevelUpData] = useState(null);
+  const completingTimeouts = useRef({});
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [sortBy, setSortBy] = useState('custom'); // custom by default for drag & drop
   const [isSortLoaded, setIsSortLoaded] = useState(false);
@@ -53,15 +190,16 @@ export const StarredScreen = ({ navigation }) => {
 
   useEffect(() => {
     const init = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
-      setUserId(session.user.id);
+      const resolvedUserId = await getCurrentUserId();
+      if (!resolvedUserId) return;
+      setUserId(resolvedUserId);
       
       const [cachedProfile, cachedSort, cachedTasks] = await Promise.all([
-        loadProfile(session.user.id, (fresh) => setProfile(fresh)),
+        loadProfile(resolvedUserId, (fresh) => setProfile(fresh)),
         Storage.get('sortBy_starred'),
-        loadTasks(session.user.id, (fresh) => {
-          setTasks(fresh.filter(t => t.is_important));
+        loadTasks(resolvedUserId, (fresh) => {
+          const refreshedTasks = Array.isArray(fresh) ? fresh : [];
+          setTasks(refreshedTasks.filter(t => t.is_important));
           setLoading(false);
           setIsCacheLoaded(true);
         })
@@ -71,7 +209,7 @@ export const StarredScreen = ({ navigation }) => {
       if (cachedSort) setSortBy(cachedSort);
       setIsSortLoaded(true);
       
-      if (cachedTasks) {
+      if (Array.isArray(cachedTasks)) {
         setTasks(cachedTasks.filter(t => t.is_important));
         setLoading(false);
         setIsCacheLoaded(true);
@@ -95,20 +233,21 @@ export const StarredScreen = ({ navigation }) => {
       // Completing task - show animation
       setCompletingTaskIds(prev => [...prev, taskId]);
       
-      setTimeout(async () => {
-        const completedAt = new Date().toISOString();
-        const updated = tasks.map(t => 
-          t.id === taskId ? { ...t, is_completed: true, completed_at: completedAt } : t
-        );
-        setTasks(updated);
-        setCompletingTaskIds(prev => prev.filter(id => id !== taskId));
-        
+      completingTimeouts.current[taskId] = setTimeout(async () => {
         if (userId) {
-          // ✅ FIX: Load fresh tasks RIGHT NOW, not relying on stale closure
+          const completedAt = new Date().toISOString();
+          
           const latestTasks = await Storage.get(`tasks_${userId}`) || [];
+          const targetTask = latestTasks.find(t => t.id === taskId);
+          const xpAmount = Gamification.xpForTask(targetTask);
+
           const updatedAll = latestTasks.map(t =>
-            t.id === taskId ? { ...t, is_completed: true, completed_at: completedAt } : t
+            t.id === taskId ? { ...t, is_completed: true, completed_at: completedAt, xp_awarded: xpAmount } : t
           );
+          
+          setTasks(updatedAll);
+          setCompletingTaskIds(prev => prev.filter(id => id !== taskId));
+          delete completingTimeouts.current[taskId];
           
           await cacheTasks(userId, updatedAll);
           
@@ -117,23 +256,36 @@ export const StarredScreen = ({ navigation }) => {
             { column: 'id', value: taskId }
           );
           
-          await Gamification.addXP(userId, 25);
+          const oldState = await Gamification.checkStreak(userId);
+          const prevLevel = oldState?.level || 1;
+          
+          const newState = await Gamification.addXP(userId, xpAmount);
+          
+          if (newState && newState.level > prevLevel) {
+            setLevelUpData({ oldLevel: prevLevel, newLevel: newState.level });
+          }
         }
       }, 600);
     } else {
       // Un-completing task - instant
-      const updated = tasks.map(t => 
-        t.id === taskId ? { ...t, is_completed: false, completed_at: null } : t
-      );
-      setTasks(updated);
+      let shouldSubtractXP = true;
+      if (completingTimeouts.current[taskId]) {
+        clearTimeout(completingTimeouts.current[taskId]);
+        delete completingTimeouts.current[taskId];
+        shouldSubtractXP = false; // Cancelled before the 600ms XP award fired
+      }
+      setCompletingTaskIds(prev => prev.filter(id => id !== taskId));
       
       if (userId) {
-        // ✅ FIX: Load fresh tasks
         const latestTasks = await Storage.get(`tasks_${userId}`) || [];
+        const targetTask = latestTasks.find(t => t.id === taskId);
+        const xpAmount = (targetTask && targetTask.xp_awarded != null) ? targetTask.xp_awarded : Gamification.xpForTask(targetTask);
+
         const updatedAll = latestTasks.map(t =>
-          t.id === taskId ? { ...t, is_completed: false, completed_at: null } : t
+          t.id === taskId ? { ...t, is_completed: false, completed_at: null, xp_awarded: null } : t
         );
         
+        setTasks(updatedAll);
         await cacheTasks(userId, updatedAll);
         
         syncToSupabase('tasks', 'update',
@@ -141,7 +293,9 @@ export const StarredScreen = ({ navigation }) => {
           { column: 'id', value: taskId }
         );
         
-        await Gamification.addXP(userId, -25);
+        if (shouldSubtractXP) {
+          await Gamification.addXP(userId, -xpAmount);
+        }
       }
     }
   };
@@ -175,16 +329,16 @@ export const StarredScreen = ({ navigation }) => {
     setShowMenu(false);
     if (tasks.length === 0) return;
     
-    const textList = getSortedTasks().map((t, i) => {
-      let line = `${i + 1}. [${t.is_completed ? 'x' : ' '}] ${t.title}`;
+    const textList = getSortedTasks().map((taskItem, i) => {
+      let line = `${i + 1}. [${taskItem.is_completed ? 'x' : ' '}] ${taskItem.title}`;
       const extras = [];
-      if (t.due_date) extras.push(`Due: ${new Date(t.due_date).toLocaleDateString()}`);
-      if (t.reminder_time) extras.push(`Reminder: ${new Date(t.reminder_time).toLocaleTimeString()}`);
+      if (taskItem.due_date) extras.push(t('starred.shareDuePrefix', { date: new Date(taskItem.due_date).toLocaleDateString() }));
+      if (taskItem.reminder_time) extras.push(t('starred.shareReminderPrefix', { time: new Date(taskItem.reminder_time).toLocaleTimeString() }));
       if (extras.length > 0) line += ` (${extras.join(' | ')})`;
       return line;
     }).join('\n');
     
-    const message = `★ My Starred Tasks:\n\n${textList}`;
+    const message = `${t('starred.shareListHeader')}\n\n${textList}`;
     
     try {
       await Share.share({ message });
@@ -286,10 +440,10 @@ export const StarredScreen = ({ navigation }) => {
   );
 
   const SORT_LABELS = {
-    creation: 'Creation Date',
-    due_date: 'By due date',
-    today: 'Added to Today',
-    alphabetical: 'A–Z',
+    creation: t('starred.sortCreationDate'),
+    due_date: t('starred.sortByDueDateBadge'),
+    today: t('starred.sortAddedToToday'),
+    alphabetical: t('starred.sortAlphabeticalBadge'),
     custom: null,
   };
 
@@ -305,9 +459,9 @@ export const StarredScreen = ({ navigation }) => {
     const yesterday = new Date(today);
     yesterday.setDate(yesterday.getDate() - 1);
 
-    if (date.toDateString() === today.toDateString()) return 'Today';
-    if (date.toDateString() === tomorrow.toDateString()) return 'Tomorrow';
-    if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
+    if (date.toDateString() === today.toDateString()) return t('starred.today');
+    if (date.toDateString() === tomorrow.toDateString()) return t('starred.tomorrow');
+    if (date.toDateString() === yesterday.toDateString()) return t('starred.yesterday');
     
     return date.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
   };
@@ -321,8 +475,8 @@ export const StarredScreen = ({ navigation }) => {
 
     const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     
-    if (date.toDateString() === today.toDateString()) return `Today ${timeStr}`;
-    if (date.toDateString() === tomorrow.toDateString()) return `Tomorrow ${timeStr}`;
+    if (date.toDateString() === today.toDateString()) return t('starred.todayTime', { time: timeStr });
+    if (date.toDateString() === tomorrow.toDateString()) return t('starred.tomorrowTime', { time: timeStr });
     return `${date.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })} ${timeStr}`;
   };
 
@@ -351,7 +505,7 @@ export const StarredScreen = ({ navigation }) => {
 
         {/* Title + active sort badge */}
         <View style={styles.titleContainer}>
-          <Text style={styles.headerTitle}>STARRED</Text>
+          <Text style={styles.headerTitle}>{t('starred.title')}</Text>
           <View style={styles.titleRow}>
             {SORT_LABELS[sortBy] && (
               <View style={styles.sortBadge}>
@@ -368,32 +522,32 @@ export const StarredScreen = ({ navigation }) => {
         {showMenu && (
           <TouchableOpacity style={styles.menuOverlay} activeOpacity={1} onPress={() => setShowMenu(false)}>
             <View style={[styles.menuCard, { top: Math.max(insets.top, 20) + 50 }]}>
-              <Text style={styles.menuSectionTitle}>Sort By</Text>
+              <Text style={styles.menuSectionTitle}>{t('starred.sortByLabel')}</Text>
               
               <TouchableOpacity style={styles.menuItem} onPress={() => { setSortBy('custom'); setShowMenu(false); }}>
-                <Text style={[styles.menuText, sortBy === 'custom' && { color: THEME_COLOR, fontWeight: 'bold' }]}>Custom Order (Drag)</Text>
+                <Text style={[styles.menuText, sortBy === 'custom' && { color: THEME_COLOR, fontWeight: 'bold' }]}>{t('starred.sortCustomOrder')}</Text>
               </TouchableOpacity>
 
               <TouchableOpacity style={styles.menuItem} onPress={() => { setSortBy('due_date'); setShowMenu(false); }}>
-                <Text style={[styles.menuText, sortBy === 'due_date' && { color: THEME_COLOR, fontWeight: 'bold' }]}>Due Date</Text>
+                <Text style={[styles.menuText, sortBy === 'due_date' && { color: THEME_COLOR, fontWeight: 'bold' }]}>{t('starred.sortDueDate')}</Text>
               </TouchableOpacity>
               
               <TouchableOpacity style={styles.menuItem} onPress={() => { setSortBy('today'); setShowMenu(false); }}>
-                <Text style={[styles.menuText, sortBy === 'today' && { color: THEME_COLOR, fontWeight: 'bold' }]}>Added to Today</Text>
+                <Text style={[styles.menuText, sortBy === 'today' && { color: THEME_COLOR, fontWeight: 'bold' }]}>{t('starred.sortAddedToToday')}</Text>
               </TouchableOpacity>
               
               <TouchableOpacity style={styles.menuItem} onPress={() => { setSortBy('alphabetical'); setShowMenu(false); }}>
-                <Text style={[styles.menuText, sortBy === 'alphabetical' && { color: THEME_COLOR, fontWeight: 'bold' }]}>Alphabetically</Text>
+                <Text style={[styles.menuText, sortBy === 'alphabetical' && { color: THEME_COLOR, fontWeight: 'bold' }]}>{t('starred.sortAlphabetically')}</Text>
               </TouchableOpacity>
               
               <TouchableOpacity style={styles.menuItem} onPress={() => { setSortBy('creation'); setShowMenu(false); }}>
-                <Text style={[styles.menuText, sortBy === 'creation' && { color: THEME_COLOR, fontWeight: 'bold' }]}>Creation Date</Text>
+                <Text style={[styles.menuText, sortBy === 'creation' && { color: THEME_COLOR, fontWeight: 'bold' }]}>{t('starred.sortCreationDate')}</Text>
               </TouchableOpacity>
               
               <View style={styles.divider} />
               
               <TouchableOpacity style={styles.menuItem} onPress={shareList}>
-                <Text style={styles.menuText}>Print List / Send Copy</Text>
+                <Text style={styles.menuText}>{t('starred.printOrSendCopy')}</Text>
               </TouchableOpacity>
             </View>
           </TouchableOpacity>
@@ -410,8 +564,8 @@ export const StarredScreen = ({ navigation }) => {
         ) : sortedActiveTasks.length === 0 && completedTasks.length === 0 ? (
           <View style={styles.emptyState}>
             <Star color="#444" size={60} style={{ marginBottom: 16 }} />
-            <Text style={styles.emptyText}>No starred tasks yet.</Text>
-            <Text style={styles.emptySub}>Star a task to see it here.</Text>
+            <Text style={styles.emptyText}>{t('starred.emptyTitle')}</Text>
+            <Text style={styles.emptySub}>{t('starred.emptySubtitle')}</Text>
           </View>
         ) : (
           <NestableScrollContainer style={{ flex: 1 }}>
@@ -422,8 +576,8 @@ export const StarredScreen = ({ navigation }) => {
                 showsVerticalScrollIndicator={false}
                 contentContainerStyle={styles.scroll}
                 keyboardShouldPersistTaps="handled"
-                onContainerLayout={() => {}}
-                removeClippedSubviews={true}
+                activationDistance={8}
+                autoscrollThreshold={60}
                 maxToRenderPerBatch={10}
                 updateCellsBatchingPeriod={50}
                 initialNumToRender={10}
@@ -446,134 +600,33 @@ export const StarredScreen = ({ navigation }) => {
                     reorderTasks(userId, mergedTasks, changedTasks, 'starred_order_index');
                   });
                 }}
-                renderItem={({ item: task, drag, isActive }) => {
-                  const hasSubtasks = task.subtasks && task.subtasks.length > 0;
-                  const hasNotes = task.notes && task.notes.trim().length > 0;
-                  const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes;
-                  const isOverdue = task.due_date && new Date(task.due_date) < todayStart && !task.is_completed;
-                  const completedSubs = hasSubtasks ? task.subtasks.filter(s => s.is_completed).length : 0;
-                  const totalSubs = hasSubtasks ? task.subtasks.length : 0;
-                  
-                  return (
-                    <ScaleDecorator>
-                      <TouchableOpacity
-                        activeOpacity={0.75}
-                        onPress={() => navigation.navigate('TaskDetail', { task, userId })}
-                        onLongPress={drag}
-                        disabled={isActive}
-                        style={[
-                          styles.taskCard,
-                          isActive && { backgroundColor: 'rgba(255,255,255,0.08)', elevation: 12 }
-                        ]}
-                      >
-                        <View style={[
-                          styles.cardIndicator,
-                          isOverdue ? { backgroundColor: '#EF4444' } : { backgroundColor: '#FFFFFF' }
-                        ]} />
-
-                        {/* Left: drag handle + checkbox */}
-                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                          {!completingTaskIds.includes(task.id) && (
-                            <TouchableOpacity onPressIn={drag} style={{ padding: 4, marginRight: 2 }}>
-                              <GripVertical color="#444" size={20} />
-                            </TouchableOpacity>
-                          )}
-                          <TouchableOpacity 
-                            onPress={() => toggleTask(task.id, task.is_completed)} 
-                            disabled={completingTaskIds.includes(task.id)}
-                            style={[
-                              styles.checkbox,
-                              completingTaskIds.includes(task.id) && { marginLeft: 28 }
-                            ]}
-                          >
-                            {completingTaskIds.includes(task.id) ? (
-                              <CheckCircle2 color="#10B981" size={24} />
-                            ) : (
-                              <Circle color={theme.text} size={24} />
-                            )}
-                          </TouchableOpacity>
-                        </View>
-
-                        {/* Title & Meta */}
-                        <View style={styles.taskContent}>
-                          <ScribbleStrike isCompleted={completingTaskIds.includes(task.id)} shouldAnimate={completingTaskIds.includes(task.id)} color={theme.textMuted}>
-                            <Text
-                              style={[
-                                styles.taskTitle,
-                                completingTaskIds.includes(task.id) && styles.taskCompletedText,
-                              ]}
-                            >
-                              {task.title}
-                            </Text>
-                          </ScribbleStrike>
-                          
-                          {hasMeta && (
-                            <View style={styles.taskMetaRow}>
-                              {task.due_date && (
-                                <View style={styles.metaPill}>
-                                  <Calendar color={isOverdue ? '#EF4444' : '#888'} size={11} />
-                                  <Text style={[styles.metaLabel, isOverdue && { color: '#EF4444' }]}>
-                                    {formatDate(task.due_date)}
-                                  </Text>
-                                </View>
-                              )}
-                              {task.reminder_time && (
-                                <View style={styles.metaPill}>
-                                  <Bell color="#888" size={11} />
-                                  <Text style={styles.metaLabel}>
-                                    {formatDateTime(task.reminder_time)}
-                                  </Text>
-                                </View>
-                              )}
-                              {task.repeat_rule && (
-                                <View style={styles.metaPill}>
-                                  <Repeat color="#888" size={11} />
-                                  <Text style={styles.metaLabel}>
-                                    {task.repeat_rule}
-                                  </Text>
-                                </View>
-                              )}
-                              {hasSubtasks && (
-                                <View style={styles.metaPill}>
-                                  <ListChecks color="#888" size={11} />
-                                  <Text style={styles.metaLabel}>
-                                    {completedSubs}/{totalSubs}
-                                  </Text>
-                                </View>
-                              )}
-                              {hasNotes && (
-                                <View style={[styles.metaPill, { paddingHorizontal: 6 }]}>
-                                  <FileText color="#888" size={11} />
-                                </View>
-                              )}
-                            </View>
-                          )}
-                        </View>
-
-                        {/* Right: star + delete */}
-                        <View style={styles.taskActions}>
-                          <TouchableOpacity onPress={() => toggleImportant(task.id, task.is_important)} style={styles.iconButtonSmall}>
-                            <Star color="#FFFFFF" fill="#FFFFFF" size={18} />
-                          </TouchableOpacity>
-                          <TouchableOpacity onPress={() => deleteTaskHandler(task.id)} style={styles.iconButtonSmall}>
-                            <Trash2 color="#444" size={18} />
-                          </TouchableOpacity>
-                        </View>
-                      </TouchableOpacity>
-                    </ScaleDecorator>
-                  );
-                }}
+                renderItem={({ item: task, drag, isActive }) => (
+                  <StarredTaskRow
+                    task={task}
+                    theme={theme}
+                    isCompleting={completingTaskIds.includes(task.id)}
+                    drag={drag}
+                    isActive={isActive}
+                    todayStart={todayStart}
+                    formatDate={formatDate}
+                    formatDateTime={formatDateTime}
+                    onPress={() => navigation.navigate('TaskDetail', { task, userId })}
+                    onToggle={() => toggleTask(task.id, task.is_completed || completingTaskIds.includes(task.id))}
+                    onToggleImportant={() => toggleImportant(task.id, task.is_important)}
+                    onDelete={() => deleteTaskHandler(task.id)}
+                  />
+                )}
               />
             )}
 
             {/* Completed Tasks */}
             {completedTasks.length > 0 && (
               <View style={{ paddingHorizontal: 16, paddingBottom: 100, paddingTop: sortedActiveTasks.length > 0 ? 0 : 10 }}>
-                <Text style={styles.completedHeaderText}>Completed ({completedTasks.length})</Text>
+                <Text style={styles.completedHeaderText}>{t('starred.completedCount', { count: completedTasks.length })}</Text>
                 {completedTasks.map(task => {
                   const hasSubtasks = task.subtasks && task.subtasks.length > 0;
                   const hasNotes = task.notes && task.notes.trim().length > 0;
-                  const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes;
+                  const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes || true;
                   const completedSubs = hasSubtasks ? task.subtasks.filter(s => s.is_completed).length : 0;
                   const totalSubs = hasSubtasks ? task.subtasks.length : 0;
                   
@@ -584,12 +637,12 @@ export const StarredScreen = ({ navigation }) => {
                         onPress={() => navigation.navigate('TaskDetail', { task, userId })}
                         style={[styles.taskCard, styles.taskCardCompleted]}
                       >
-                        <View style={[styles.cardIndicator, { backgroundColor: '#10B981' }]} />
+
                         <TouchableOpacity
-                          onPress={() => toggleTask(task.id, task.is_completed)}
+                          onPress={() => toggleTask(task.id, task.is_completed || completingTaskIds.includes(task.id))}
                           style={[styles.checkbox, { marginLeft: 28 }]}
                         >
-                          <CheckCircle2 color="#10B981" size={24} />
+                          <CheckCircle2 color="#34D399" size={24} />
                         </TouchableOpacity>
 
                         <View style={styles.taskContent}>
@@ -598,6 +651,11 @@ export const StarredScreen = ({ navigation }) => {
                           </Text>
                           {hasMeta && (
                             <View style={styles.taskMetaRow}>
+                              {shouldShowFlag(task.priority) && (
+                                <View style={styles.metaPill}>
+                                  <Flag color={getPriorityColor(task.priority)} size={11} fill={getPriorityColor(task.priority)} />
+                                </View>
+                              )}
                               {task.due_date && (
                                 <View style={styles.metaPill}>
                                   <Calendar color="#888" size={11} />
@@ -640,6 +698,12 @@ export const StarredScreen = ({ navigation }) => {
         </TouchableOpacity>
 
       </SafeAreaView>
+      <LevelUpModal
+        isVisible={!!levelUpData}
+        oldLevel={levelUpData?.oldLevel || 1}
+        newLevel={levelUpData?.newLevel || 2}
+        onClose={() => setLevelUpData(null)}
+      />
     </BackgroundWrapper>
   );
 };

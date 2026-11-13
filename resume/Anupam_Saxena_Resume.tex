@@ -1,0 +1,203 @@
+%-------------------------
+% Resume in LaTeX
+% Author : Anupam Saxena
+% Based off of: https://github.com/sb2nov/resume
+% License : MIT
+%
+% ATS NOTES (why this version parses better than the previous one):
+%   - Single-column layout throughout (removed multicol; parsers read it as one stream)
+%   - No icon glyphs inside the contact line (icons can corrupt email/phone extraction)
+%   - Plain, standard section headings: Education / Technical Skills / Experience /
+%     Projects / Achievements / Positions of Responsibility
+%   - Skills placed high for keyword extraction
+%   - \pdfgentounicode=1 keeps all text selectable and machine-readable
+%-------------------------
+
+\documentclass[letterpaper,10pt]{article}
+
+\usepackage{latexsym}
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage[usenames,dvipsnames]{color}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage[english]{babel}
+\usepackage{tabularx}
+\input{glyphtounicode}
+
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+\addtolength{\oddsidemargin}{-0.6in}
+\addtolength{\evensidemargin}{-0.5in}
+\addtolength{\textwidth}{1.19in}
+\addtolength{\topmargin}{-.55in}
+\addtolength{\textheight}{1.1in}
+
+\urlstyle{same}
+\raggedbottom
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+% Sections formatting
+\titleformat{\section}{
+  \vspace{-2pt}\scshape\raggedright\large\bfseries
+}{}{0em}{}[\color{black}\titlerule \vspace{-3pt}]
+
+% Ensure that generated PDF is machine readable/ATS parsable
+\pdfgentounicode=1
+
+%-------------------------
+% Custom commands
+\newcommand{\resumeItem}[1]{
+  \item{{#1}}
+}
+
+\newcommand{\resumeSubheading}[4]{
+  \vspace{-1pt}\item
+    \begin{tabular*}{1.0\textwidth}[t]{l@{\extracolsep{\fill}}r}
+      \textbf{#1} & \textbf{\small #2} \\
+      \textit{\small#3} & \textit{\small #4} \\
+    \end{tabular*}\vspace{-5pt}
+}
+
+\newcommand{\resumeProjectHeading}[2]{
+  \item
+    \begin{tabular*}{1.0\textwidth}{l@{\extracolsep{\fill}}r}
+      \small#1 & \textbf{\small #2}\\
+    \end{tabular*}\vspace{-5pt}
+}
+
+% Collision-proof project heading: only the short title shares a row with the date.
+% The tech stack and links render below the table with the full page width.
+% Args: {1: title} {2: tech stack / links} {3: date}
+\newcommand{\resumeProject}[3]{
+  \item
+    \begin{tabular*}{1.0\textwidth}[t]{l@{\extracolsep{\fill}}r}
+      \textbf{#1} & \textbf{\small #3} \\
+    \end{tabular*}
+    \vspace{-4pt}
+    {\small\textit{#2}}\par\vspace{-4pt}
+}
+
+\renewcommand\labelitemi{$\vcenter{\hbox{\tiny$\bullet$}}$}
+
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.0in, label={}, topsep=2pt, itemsep=5pt]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}[leftmargin=0.15in, topsep=3pt, itemsep=1.5pt]}
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-3pt}}
+
+%%%%%%  RESUME STARTS HERE  %%%%%%
+\begin{document}
+
+%----------HEADING----------
+\begin{center}
+  {\Huge \scshape Anupam Saxena} \\ \vspace{2pt}
+  {\large Software Engineer $|$ Mobile \& Full-Stack Developer} \\ \vspace{3pt}
+  \small
+  Ghaziabad, India $|$ +91 9211062086 $|$
+  \href{mailto:saxenaanupam2004@gmail.com}{saxenaanupam2004@gmail.com} \\ \vspace{2pt}
+  \href{https://www.linkedin.com/in/anupamsaxenaa/}{linkedin.com/in/anupamsaxenaa} $|$
+  \href{https://github.com/AnupamSaxenaa}{github.com/AnupamSaxenaa}
+  \vspace{-6pt}
+\end{center}
+
+%-----------SUMMARY-----------
+\section{Summary}
+{
+Computer Science undergraduate at IIIT Kota targeting software engineering internships. Built Android
+and full-stack applications using \textbf{React Native, Node.js, and PostgreSQL}, with strengths in
+\textbf{Data Structures, RESTful APIs, offline caching, and unit testing}; solved 500+ coding problems.
+}
+\vspace{-6pt}
+
+%-----------EDUCATION-----------
+\section{Education}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Indian Institute of Information Technology (IIIT) Kota}{Kota, India}
+      {Bachelor of Technology in Computer Science and Engineering}{Aug 2024 -- May 2028 (Expected)}
+    \resumeSubheading
+      {Ryan International School}{Ghaziabad, India}
+      {Senior Secondary (PCM) --- \textbf{92.20\%}}{2021 -- 2023}
+  \resumeSubHeadingListEnd
+\vspace{-4pt}
+
+%-----------TECHNICAL SKILLS-----------
+\section{Technical Skills}
+ \begin{itemize}[leftmargin=0.15in, label={}]
+    \small{\item{
+     \textbf{Languages}{: C++, Java, JavaScript (ES6+), SQL, HTML/CSS, Kotlin (basic)} \\
+     \textbf{Frameworks \& Libraries}{: React.js, React Native (Expo), Node.js, Express.js, Tailwind CSS} \\
+     \textbf{Databases \& APIs}{: PostgreSQL, MySQL, MongoDB, REST APIs, JWT Authentication} \\
+     \textbf{Tools \& Platforms}{: Git, GitHub, Jest, Postman, Android Studio, Expo EAS, Netlify}
+    }}
+ \end{itemize}
+ \vspace{-8pt}
+
+%-----------EXPERIENCE-----------
+\section{Experience}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Smart India Hackathon (SIH) 2025}{2025}
+      {Software Development Team Lead $|$ Team of 6}{Kota, India}
+      \resumeItemListStart
+        \resumeItem{Led 6 developers through a 36-hour rapid-development sprint, assigning module ownership and integrating a functional full-stack prototype before the submission deadline.}
+        \resumeItem{Coordinated 2 parallel workstreams --- frontend and backend --- through Git branches and code reviews, reducing integration conflicts during final delivery.}
+      \resumeItemListEnd
+  \resumeSubHeadingListEnd
+\vspace{-6pt}
+
+%-----------PROJECTS-----------
+\section{Projects}
+\vspace{-3pt}
+  \resumeSubHeadingListStart
+
+    \resumeProject
+      {LifePilot --- Offline-First Productivity \& Alarm Platform}
+      {React Native (Expo), Supabase (PostgreSQL), Kotlin, Jest, AsyncStorage}
+      {2025 -- Present}
+      \resumeItemListStart
+        \resumeItem{Developed and deployed an Android productivity app spanning \textbf{30+ screens}, delivered through an \textbf{over-the-air release pipeline} with version gating and rollback.}
+        \resumeItem{Architected an \textbf{offline-first data layer} with local caching, a durable mutation queue, retry handling, and last-write-wins conflict resolution for uninterrupted offline use.}
+        \resumeItem{Implemented exact alarms, full-screen notifications, and wake-session recovery through \textbf{Kotlin native modules}; generated an on-device app blocker through a custom Expo config plugin.}
+        \resumeItem{Integrated automatic failover across \textbf{4 LLM providers}, localized the app into \textbf{21 languages}, and validated core logic with \textbf{105 unit tests across 12 Jest suites}.}
+      \resumeItemListEnd
+
+    \resumeProject
+      {Classiq --- Smart Campus Attendance \& Academics Manager}
+      {React Native, Wi-Fi P2P, Node.js $|$ \href{https://www.classiqdtc.me/}{\underline{Live Demo}}}
+      {2025}
+      \resumeItemListStart
+        \resumeItem{Delivered a proxy-resistant attendance system that verifies on-site presence over local Wi-Fi/P2P with \textbf{0 additional biometric or RFID devices}.}
+        \resumeItem{Built a faculty dashboard for assignments and announcements and optimized cached student views, reducing administrative communication overhead by approximately \textbf{40\%}.}
+      \resumeItemListEnd
+
+  \resumeSubHeadingListEnd
+\vspace{-6pt}
+
+%-----------ACHIEVEMENTS-----------
+\section{Achievements}
+{\small
+\begin{itemize}[leftmargin=0.15in]
+  \item {Scored \textbf{98.02 percentile} (top \textbf{1.98\%}) in JEE Main 2024 among more than 1.4 million candidates.}
+  \item {Reached \textbf{Codeforces Pupil} (maximum rating 1300+) and solved \textbf{500+} problems across Codeforces and LeetCode.}
+\end{itemize}
+}
+\vspace{-6pt}
+
+%-----------POSITIONS OF RESPONSIBILITY-----------
+\section{Positions of Responsibility}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Team Green Campus Chapter (TGCC), IIIT Kota}{Sep 2024 -- May 2025}
+      {Junior Executive \& Coordinator}{Kota, India}
+      \resumeItemListStart
+        \resumeItem{Coordinated campus waste-management and plantation initiatives and organized volunteer teams to improve sustainability participation at IIIT Kota.}
+      \resumeItemListEnd
+  \resumeSubHeadingListEnd
+
+\end{document}

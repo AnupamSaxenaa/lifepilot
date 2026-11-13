@@ -1,14 +1,14 @@
-import React, { useEffect } from 'react';
+import { useEffect } from 'react';
 import { StyleSheet, View } from 'react-native';
-import Svg, { Defs, RadialGradient, Stop, Ellipse } from 'react-native-svg';
 import Animated, {
-  Easing,
-  useAnimatedStyle,
-  useSharedValue,
-  withRepeat,
-  withSequence,
-  withTiming,
+    Easing,
+    useAnimatedStyle,
+    useSharedValue,
+    withRepeat,
+    withSequence,
+    withTiming,
 } from 'react-native-reanimated';
+import Svg, { Defs, Ellipse, RadialGradient, Stop } from 'react-native-svg';
 
 const SIZE = 260; // Increased size for a more expansive aura
 const CENTER = SIZE / 2;
@@ -198,7 +198,7 @@ export const LiquidAura = ({ isProcessing }) => {
         />
         <AuraLobe
           angle={Math.PI * 0.5}
-          color="#C084FC" // Purple
+          color="#FFFFFF" // Purple
           duration={11200}
           size={190}
           isProcessing={isProcessing}
@@ -262,8 +262,8 @@ const styles = StyleSheet.create({
     height: CORE_SIZE + 40,
     borderRadius: (CORE_SIZE + 40) / 2,
     borderWidth: 1,
-    borderColor: 'rgba(167, 139, 250, 0.4)',
-    shadowColor: '#A78BFA',
+    borderColor: 'rgba(255, 255, 255, 0.4)',
+    shadowColor: '#FFFFFF',
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.8,
     shadowRadius: 20,

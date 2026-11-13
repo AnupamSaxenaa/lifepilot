@@ -1,25 +1,25 @@
-import React, { useState } from 'react';
-import { StyleSheet, Text, View, SafeAreaView, useColorScheme, TouchableOpacity, Alert } from 'react-native';
-import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
-import { BackgroundWrapper } from '../components/BackgroundWrapper';
-import { GlassCard } from '../components/GlassCard';
-import { GlassInput } from '../components/GlassInput';
-import { GlassButton } from '../components/GlassButton';
-import { COLORS } from '../theme/theme';
-import { Mail, ArrowLeft } from 'lucide-react-native';
+import { Mail } from 'lucide-react-native';
+import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { Alert, StyleSheet, View } from 'react-native';
+import {
+    AuthBackButton,
+    AuthButton,
+    AuthCard,
+    AuthField,
+    AuthHero,
+    AuthScreen,
+} from '../components/auth/AuthKit';
 import { supabase } from '../lib/supabase';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export const ForgotPasswordScreen = ({ navigation }) => {
+  const { t } = useTranslation();
   const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(false);
-  const colorScheme = useColorScheme();
-  const theme = colorScheme === 'dark' ? COLORS.dark : COLORS.light;
-  const insets = useSafeAreaInsets();
 
   const handleRequestOTP = async () => {
     if (!email) {
-      Alert.alert('Error', 'Please enter your email address');
+      Alert.alert(t('common.error'), t('forgotPassword.errorMissingEmail'));
       return;
     }
 
@@ -31,107 +31,54 @@ export const ForgotPasswordScreen = ({ navigation }) => {
       if (error) throw error;
 
       Alert.alert(
-        'Email Sent!', 
-        'If an account exists, an 8-digit recovery code has been sent to your email.',
+        t('forgotPassword.emailSentTitle'), 
+        t('forgotPassword.emailSentMessage'),
         [
-          { text: 'Enter Code', onPress: () => navigation.navigate('ResetPassword', { email }) }
+          { text: t('forgotPassword.enterCode'), onPress: () => navigation.navigate('ResetPassword', { email }) }
         ]
       );
       
     } catch (err) {
-      Alert.alert('Error', err.message);
+      Alert.alert(t('common.error'), err.message);
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <BackgroundWrapper>
-      <KeyboardAwareScrollView 
-        style={styles.container}
-        contentContainerStyle={styles.scrollContent}
-        enableOnAndroid={true}
-        enableAutomaticScroll={true}
-        keyboardShouldPersistTaps="handled"
-        extraScrollHeight={20}
-      >
-        <SafeAreaView style={styles.safeArea}>
-          <TouchableOpacity 
-            style={[styles.backButton, { top: Math.max(insets.top, 20) }]} 
-            onPress={() => navigation.goBack()}
-          >
-            <ArrowLeft color={theme.text} size={28} />
-          </TouchableOpacity>
-
-          <View style={styles.headerContainer}>
-            <Text style={[styles.title, { color: theme.text }]}>Reset Password</Text>
-            <Text style={[styles.subtitle, { color: theme.textMuted }]}>
-              {"Enter your email address and we'll send you an 8-digit code to reset your password."}
-            </Text>
-          </View>
-
-          <View style={styles.formContainer}>
-            <GlassCard>
-              <GlassInput
-                placeholder="Email address"
-                value={email}
-                onChangeText={setEmail}
-                icon={Mail}
-                keyboardType="email-address"
-                autoCapitalize="none"
-              />
-
-              <GlassButton 
-                title={loading ? "Sending..." : "Send Recovery Code"} 
-                onPress={handleRequestOTP} 
-                style={{ marginTop: 24 }}
-                disabled={loading}
-              />
-            </GlassCard>
-          </View>
-        </SafeAreaView>
-      </KeyboardAwareScrollView>
-    </BackgroundWrapper>
+    <AuthScreen centered contentStyle={styles.screenContent}>
+      <AuthBackButton onPress={() => navigation.goBack()} />
+      <View style={styles.shell}>
+        <AuthHero
+          icon={Mail}
+          title={t('forgotPassword.title')}
+          subtitle={t('forgotPassword.subtitle')}
+        />
+        <AuthCard>
+          <AuthField
+            index={0}
+            icon={Mail}
+            label={t('forgotPassword.emailPlaceholder')}
+            placeholder={t('forgotPassword.emailPlaceholder')}
+            value={email}
+            onChangeText={setEmail}
+            keyboardType="email-address"
+            autoCapitalize="none"
+            autoComplete="email"
+          />
+          <AuthButton
+            title={loading ? t('forgotPassword.sending') : t('forgotPassword.sendButton')}
+            onPress={handleRequestOTP}
+            loading={loading}
+            disabled={loading}
+          />
+        </AuthCard>
+      </View>
+    </AuthScreen>
   );
 };
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  scrollContent: {
-    flexGrow: 1,
-  },
-  safeArea: {
-    flex: 1,
-  },
-  backButton: {
-    position: 'absolute',
-    left: 24,
-    zIndex: 10,
-    padding: 8,
-  },
-  headerContainer: {
-    alignItems: 'center',
-    marginTop: 100,
-    marginBottom: 40,
-    paddingHorizontal: 24,
-  },
-  title: {
-    fontFamily: 'PlaywriteGBJ_400Regular',
-    fontSize: 32,
-    marginBottom: 12,
-    textAlign: 'center',
-  },
-  subtitle: {
-    fontSize: 16,
-    textAlign: 'center',
-    lineHeight: 24,
-    paddingHorizontal: 16,
-  },
-  formContainer: {
-    paddingHorizontal: 24,
-    width: '100%',
-    paddingBottom: 40,
-  },
+  screenContent: { paddingTop: 0 },
+  shell: { width: '100%', maxWidth: 520, alignSelf: 'center' },
 });

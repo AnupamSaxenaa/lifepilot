@@ -1,0 +1,135 @@
+% ATS-optimized one-page resume; all original facts, sections, links, and projects retained.
+\documentclass[10pt,a4paper]{article}
+\usepackage[left=0.46in,right=0.46in,top=0.42in,bottom=0.42in]{geometry}
+\usepackage{graphicx}
+\usepackage{tikz}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage[english]{babel}
+\usepackage{tabularx}
+\input{glyphtounicode}
+
+\pagestyle{empty}
+\pdfgentounicode=1
+\setlength{\parindent}{0pt}
+\setlength{\tabcolsep}{0pt}
+\urlstyle{same}
+\raggedright
+
+\titleformat{\section}{\bfseries\large}{}{0pt}{}[\titlerule]
+\titlespacing*{\section}{0pt}{4pt}{2pt}
+\setlist[itemize]{leftmargin=0.17in,topsep=1pt,itemsep=0pt,parsep=0pt,partopsep=0pt}
+
+\newcommand{\project}[2]{%
+  \textbf{#1}\hfill\href{#2}{\underline{GitHub}}\\[-2pt]
+}
+\newcommand{\role}[2]{%
+  \textbf{#1}\hfill\textbf{\small #2}\\[-2pt]
+}
+
+\begin{document}
+
+% The image is visual only; all contact information remains in the single text stream for ATS parsing.
+\begin{minipage}[c]{0.81\textwidth}
+  {\fontsize{20}{22}\selectfont\textbf{Aaditya Vijay}}\\[2pt]
+  {\large B.Tech Computer Science and Engineering}\\[-1pt]
+  Indian Institute of Information Technology (IIIT), Kota\\[3pt]
+  +91 9983819355 $|$ \href{mailto:aadityavj505@gmail.com}{aadityavj505@gmail.com}\\[2pt]
+  \href{https://github.com/aaditya-loops}{github.com/aaditya-loops} $|$
+  \href{https://www.linkedin.com/in/aaditya-vijay-31a40727a}{linkedin.com/in/aaditya-vijay-31a40727a}\\[2pt]
+  \href{https://leetcode.com/u/aadityavj101/}{leetcode.com/u/aadityavj101} $|$
+  \href{https://codeforces.com/profile/aadityavj505}{codeforces.com/profile/aadityavj505} $|$
+  \href{https://www.codechef.com/users/aadityavj505}{codechef.com/users/aadityavj505}
+\end{minipage}\hfill
+\begin{minipage}[c]{0.16\textwidth}
+  \centering
+  \begin{tikzpicture}
+    \draw[blue!70,line width=1.5pt] (0,0) circle (1.27cm);
+    \clip (0,0) circle (1.19cm);
+    \IfFileExists{photo.jpeg}{\node at (0,0){\includegraphics[width=2.38cm,height=2.38cm]{photo.jpeg}};}{\node at (0,0){\rule{2.38cm}{2.38cm}};}
+  \end{tikzpicture}
+\end{minipage}
+\vspace{-4pt}
+\section{Career Objective}
+{\small Motivated Computer Science undergraduate with strong foundations in Data Structures, Algorithms, full-stack development, and AI-powered applications. Seeking a Software Engineering internship to build scalable products and solve real-world problems.}
+
+\section{Technical Skills}
+{\small
+\textbf{Languages:} C, C++, Java, Python, JavaScript, TypeScript\\
+\textbf{Frontend:} HTML, CSS, React, Next.js, Tailwind CSS, Vite \quad
+\textbf{Backend:} Node.js, Express.js, Spring Boot, Spring Security, REST APIs, JWT\\
+\textbf{Databases:} MongoDB, MySQL, Prisma ORM \quad
+\textbf{Core:} Data Structures \& Algorithms, OOP, DBMS, Operating Systems\\
+\textbf{Tools:} Git, GitHub, Linux, VS Code, Postman
+}
+
+\section{Projects}
+{\small
+\project{LeetCode Progress Visualizer}{https://github.com/aaditya-loops}
+\begin{itemize}
+  \item Developed an interactive analytics dashboard to visualize LeetCode problem-solving progress.
+  \item Implemented tag-wise and difficulty-based analytics using dynamic JavaScript charts.
+  \item Designed a responsive user interface for a seamless experience across devices.
+  \item \textbf{Technologies:} HTML, CSS, JavaScript.
+\end{itemize}
+\vspace{1pt}
+
+\project{eMitra Connect}{https://github.com/aaditya-loops/econnect}
+\begin{itemize}
+  \item Developed a real-time marketplace connecting clients with verified service providers.
+  \item Implemented OTP-based authentication and a secure service-request approval workflow.
+  \item Integrated an escrow payment flow and Jitsi-powered video consultations.
+  \item \textbf{Technologies:} Next.js, React, TypeScript, Prisma, Tailwind CSS.
+\end{itemize}
+\vspace{1pt}
+
+\project{StudySpark --- AI Study Assistant}{https://github.com/aaditya-loops/ai-study-assistant}
+\begin{itemize}
+  \item Built an AI-powered study assistant using the Google Gemini API for personalized learning.
+  \item Generated summaries, quizzes, and flashcards from uploaded study materials.
+  \item Implemented JWT authentication with Spring Security and RESTful APIs.
+  \item \textbf{Technologies:} Java, Spring Boot, React, MongoDB, JWT, Google Gemini AI.
+\end{itemize}
+\vspace{1pt}
+
+\project{GirviBook Pro}{https://github.com/aaditya-loops/GirviBook-Pro}
+\begin{itemize}
+  \item Developed a multi-tenant pawn-shop management system with isolated databases.
+  \item Automated interest calculation and customer credit-risk management workflows.
+  \item Added PDF and Excel report generation and WhatsApp notification support.
+  \item \textbf{Technologies:} Node.js, Express.js, MongoDB, Mongoose, ExcelJS, PDFKit.
+\end{itemize}
+}
+\section{Education}
+{\small
+\role{Indian Institute of Information Technology (IIIT), Kota}{2024 -- Present}
+B.Tech in Computer Science and Engineering\\[-1pt]
+JEE Advanced CRL Rank: 21,225
+}
+
+\section{Positions of Responsibility}
+{\small
+\role{General Secretary, Paryavaran Shakti Club, IIIT Kota}{2024 -- Present}
+\begin{itemize}
+  \item Managed club operations, events, and environmental awareness initiatives.
+\end{itemize}
+\vspace{1pt}
+\role{Volunteer, Shree Kalpataru Organisation (NGO)}{2024}
+\begin{itemize}
+  \item Participated in tree-plantation drives and community outreach programs.
+\end{itemize}
+}
+
+\section{Achievements}
+{\small
+\begin{itemize}
+  \item Qualified JEE Advanced with All India Rank (AIR) 21,225.
+  \item Finalist, Enigma 2025 Hackathon.
+\end{itemize}
+}
+
+\section{Strengths}
+{\small Hardworking, disciplined, quick learner, adaptable.}
+
+\end{document}

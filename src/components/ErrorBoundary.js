@@ -1,6 +1,7 @@
 import { AlertTriangle } from 'lucide-react-native';
 import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import i18n from '../i18n';
 
 /**
  * Error Boundary - Catches unhandled errors and prevents white screen crashes
@@ -44,17 +45,17 @@ export class ErrorBoundary extends React.Component {
       return (
         <View style={styles.container}>
           <View style={styles.iconContainer}>
-            <AlertTriangle color="#ef4444" size={60} />
+            <AlertTriangle color="#FB7185" size={60} />
           </View>
           
-          <Text style={styles.title}>Oops! Something went wrong</Text>
+          <Text style={styles.title}>{i18n.t('errorBoundary.title')}</Text>
           <Text style={styles.subtitle}>
-            Don't worry, your data is safe and automatically saved.
+            {i18n.t('errorBoundary.subtitle')}
           </Text>
           
           {__DEV__ && this.state.error && (
             <View style={styles.errorBox}>
-              <Text style={styles.errorTitle}>Debug Info:</Text>
+              <Text style={styles.errorTitle}>{i18n.t('errorBoundary.debugInfoLabel')}</Text>
               <Text style={styles.errorText} numberOfLines={5}>
                 {this.state.error.toString()}
               </Text>
@@ -66,11 +67,11 @@ export class ErrorBoundary extends React.Component {
             onPress={this.handleReset}
             activeOpacity={0.8}
           >
-            <Text style={styles.buttonText}>Reload App</Text>
+            <Text style={styles.buttonText}>{i18n.t('errorBoundary.reloadButton')}</Text>
           </TouchableOpacity>
           
           <Text style={styles.footerText}>
-            If this keeps happening, try restarting the app.
+            {i18n.t('errorBoundary.footerText')}
           </Text>
         </View>
       );
@@ -106,27 +107,27 @@ const styles = StyleSheet.create({
     lineHeight: 24,
   },
   errorBox: {
-    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    backgroundColor: 'rgba(161, 161, 170, 0.1)',
     borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.3)',
+    borderColor: 'rgba(161, 161, 170, 0.3)',
     borderRadius: 8,
     padding: 15,
     marginBottom: 30,
     maxWidth: '100%',
   },
   errorTitle: {
-    color: '#ef4444',
+    color: '#FB7185',
     fontSize: 14,
     fontWeight: '600',
     marginBottom: 8,
   },
   errorText: {
-    color: '#ef4444',
+    color: '#FB7185',
     fontSize: 12,
     fontFamily: 'monospace',
   },
   button: {
-    backgroundColor: '#A78BFA',
+    backgroundColor: '#FFFFFF',
     paddingHorizontal: 40,
     paddingVertical: 16,
     borderRadius: 12,

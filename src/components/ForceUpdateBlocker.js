@@ -1,9 +1,11 @@
 import { Download } from 'lucide-react-native';
 import React, { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Alert, Animated, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { downloadAndInstallAPK } from '../utils/apkDownloader';
 
 export const ForceUpdateBlocker = ({ updateInfo, visible }) => {
+  const { t } = useTranslation();
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
 
@@ -29,7 +31,7 @@ export const ForceUpdateBlocker = ({ updateInfo, visible }) => {
     
     if (!url) {
       console.error('[ForceUpdate] No download URL available!');
-      Alert.alert('Error', 'Download URL not available. Please contact support.');
+      Alert.alert(t('forceUpdate.errorTitle'), t('forceUpdate.noDownloadUrlMessage'));
       return;
     }
 
@@ -39,8 +41,10 @@ export const ForceUpdateBlocker = ({ updateInfo, visible }) => {
       setDownloadProgress(0);
 
       await downloadAndInstallAPK(url, (progress) => {
-        console.log('[ForceUpdate] Progress:', Math.round(progress * 100) + '%');
-        setDownloadProgress(progress);
+        // If progress is negative (missing content-length), cap it at 0 to avoid UI bugs
+        const safeProgress = progress < 0 ? 0 : progress;
+        console.log('[ForceUpdate] Progress:', Math.round(safeProgress * 100) + '%');
+        setDownloadProgress(safeProgress);
       });
       
       console.log('[ForceUpdate] Download completed, installer should open');
@@ -48,8 +52,8 @@ export const ForceUpdateBlocker = ({ updateInfo, visible }) => {
       console.error('[ForceUpdate] Download failed:', error);
       setDownloading(false);
       Alert.alert(
-        'Download Failed', 
-        error.message || 'Failed to download update. Please check your internet connection and try again.'
+        t('forceUpdate.downloadFailedTitle'),
+        error.message || t('forceUpdate.downloadFailedMessage')
       );
     }
   };
@@ -71,7 +75,7 @@ export const ForceUpdateBlocker = ({ updateInfo, visible }) => {
         <View style={styles.content}>
           {/* Minimal Header */}
           <View style={styles.header}>
-            <Text style={styles.updateLabel}>UPDATE REQUIRED</Text>
+            <Text style={styles.updateLabel}>{t('forceUpdate.updateRequiredLabel')}</Text>
             <View style={styles.versionRow}>
               <Text style={styles.versionSmall}>{currentVer}</Text>
               <Text style={styles.arrow}>→</Text>
@@ -84,21 +88,22 @@ export const ForceUpdateBlocker = ({ updateInfo, visible }) => {
 
           {/* Message */}
           <Text style={styles.message}>
-            A new version is required to continue.{'\n'}
-            Please update now.
+            {t('forceUpdate.updateMessage')}
           </Text>
 
           {/* Download Button or Progress */}
           {!downloading ? (
             <TouchableOpacity style={styles.downloadButton} onPress={handleDownload} activeOpacity={0.7}>
               <Download color="#000" size={20} strokeWidth={2.5} />
-              <Text style={styles.downloadButtonText}>Download Update</Text>
+              <Text style={styles.downloadButtonText}>{t('forceUpdate.downloadButton')}</Text>
             </TouchableOpacity>
           ) : (
             <View style={styles.progressContainer}>
               <View style={styles.progressHeader}>
-                <Text style={styles.progressLabel}>Downloading</Text>
-                <Text style={styles.progressPercent}>{Math.round(downloadProgress * 100)}%</Text>
+                <Text style={styles.progressLabel}>{t('forceUpdate.downloadingLabel')}</Text>
+                <Text style={styles.progressPercent}>
+                  {downloadProgress > 0 ? Math.round(downloadProgress * 100) + '%' : t('forceUpdate.startingLabel')}
+                </Text>
               </View>
               <View style={styles.progressBarBackground}>
                 <Animated.View 
@@ -109,14 +114,14 @@ export const ForceUpdateBlocker = ({ updateInfo, visible }) => {
                 />
               </View>
               {downloadProgress === 1 && (
-                <Text style={styles.installHint}>Opening installer...</Text>
+                <Text style={styles.installHint}>{t('forceUpdate.openingInstallerLabel')}</Text>
               )}
             </View>
           )}
 
           {/* Footer Note */}
           <Text style={styles.footerNote}>
-            This update contains critical improvements
+            {t('forceUpdate.footerNote')}
           </Text>
         </View>
       </Animated.View>

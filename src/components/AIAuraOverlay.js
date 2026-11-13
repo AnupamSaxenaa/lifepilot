@@ -1,18 +1,21 @@
 /* eslint-disable react-hooks/immutability, react-hooks/set-state-in-effect */
 import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
-import { Calendar, CheckCircle2, Circle, Mic, Send, Sparkles, X, Zap } from 'lucide-react-native';
+import i18n from 'i18next';
+import { Calendar, Check, CheckCircle2, Circle, Flame, Languages, LayoutGrid, Mic, Send, Share2, Sparkles, X, Zap } from 'lucide-react-native';
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
     Alert,
-    Dimensions,
     Keyboard,
     KeyboardAvoidingView,
     Modal,
     Platform, ScrollView,
+    Share,
     StyleSheet,
     Text,
     TextInput,
     TouchableOpacity,
+    useWindowDimensions,
     View
 } from 'react-native';
 import Animated, {
@@ -26,13 +29,23 @@ import Animated, {
     withTiming
 } from 'react-native-reanimated';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { PLAYSTORE_MODE } from '../config/flags';
+import { getPriorityLabel, shouldShowFlag } from '../config/priorityConfig';
+import { DEFAULT_LANGUAGE_CODE, SUPPORTED_LANGUAGES } from '../i18n/languages';
 import { chatWithAura, generatePlan } from '../lib/AIEngine';
+import { buildAuraContext } from '../lib/auraContext';
+import { loadMemory, mergeMemory } from '../lib/auraMemory';
 import { supabase } from '../lib/supabase';
+import { syncToSupabase } from '../lib/syncQueue';
 import { fetchTodayEvents } from '../utils/calendarSync';
+import { formatPlanAsText, savePlanForToday } from '../utils/planStore';
+import { getCardLayout, getScaledType, isNarrow, isShort } from '../utils/responsive';
 import { Storage } from '../utils/storage';
 import { LiquidAura } from './LiquidAura';
 
-const { width, height } = Dimensions.get('window');
+// Deliberately NOT `Dimensions.get('window')` at module scope: that value is
+// captured once at import and is wrong after a rotation, in split screen and on
+// foldables. This screen reads the live size via `useWindowDimensions()`.
 const MAX_CHAT_MESSAGES = 24;
 
 const getScopedKey = (key, userId) => (userId ? `${key}_${userId}` : key);
@@ -46,6 +59,7 @@ const formatTaskContext = (tasks = []) => {
     const details = [
       `title="${task.title}"`,
       `id=${task.id}`,
+      shouldShowFlag(task.priority) ? `priority=${getPriorityLabel(task.priority)}` : null,
       task.is_important ? 'important=true' : null,
       task.due_date ? `due=${new Date(task.due_date).toLocaleString()}` : null,
       task.reminder_time ? `reminder=${new Date(task.reminder_time).toLocaleString()}` : null,
@@ -59,21 +73,22 @@ const formatTaskContext = (tasks = []) => {
 };
 
 const TypewriterText = ({ message, isProcessing, style }) => {
+  const { t } = useTranslation();
   const [displayedText, setDisplayedText] = useState('');
 
   useEffect(() => {
     if (isProcessing) {
       let dots = 0;
-      setDisplayedText('Thinking...');
+      setDisplayedText(t('auraChat.thinking') + '...');
       const dotInterval = setInterval(() => {
         dots = (dots + 1) % 4;
-        setDisplayedText('Thinking' + '.'.repeat(dots));
+        setDisplayedText(t('auraChat.thinking') + '.'.repeat(dots));
       }, 400);
       return () => clearInterval(dotInterval);
     }
     
     if (!message || !message.content) {
-      setDisplayedText('How can I help you?');
+      setDisplayedText(t('auraChat.defaultGreeting'));
       return;
     }
 
@@ -136,11 +151,11 @@ const VoiceVisualizer = () => {
 
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3, marginHorizontal: 8, height: 30, justifyContent: 'center' }}>
-      <Animated.View style={[{ width: 3, backgroundColor: '#A78BFA', borderRadius: 2 }, s1]} />
-      <Animated.View style={[{ width: 3, backgroundColor: '#C084FC', borderRadius: 2 }, s2]} />
+      <Animated.View style={[{ width: 3, backgroundColor: '#FFFFFF', borderRadius: 2 }, s1]} />
+      <Animated.View style={[{ width: 3, backgroundColor: '#FFFFFF', borderRadius: 2 }, s2]} />
       <Animated.View style={[{ width: 3, backgroundColor: '#E879F9', borderRadius: 2 }, s3]} />
       <Animated.View style={[{ width: 3, backgroundColor: '#F472B6', borderRadius: 2 }, s4]} />
-      <Animated.View style={[{ width: 3, backgroundColor: '#A78BFA', borderRadius: 2 }, s5]} />
+      <Animated.View style={[{ width: 3, backgroundColor: '#FFFFFF', borderRadius: 2 }, s5]} />
     </View>
   );
 };
@@ -165,8 +180,8 @@ const PulseMicButton = ({ isListening, disabled, onPress }) => {
 
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [{ scale: pulse.value }],
-    backgroundColor: isListening ? 'rgba(167, 139, 250, 0.3)' : 'transparent',
-    shadowColor: '#A78BFA',
+    backgroundColor: isListening ? 'rgba(255, 255, 255, 0.3)' : 'transparent',
+    shadowColor: '#FFFFFF',
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: isListening ? 0.6 : 0,
     shadowRadius: isListening ? 12 : 0,
@@ -176,14 +191,14 @@ const PulseMicButton = ({ isListening, disabled, onPress }) => {
   return (
     <Animated.View style={[styles.micBtn, animatedStyle, { position: 'relative' }]}>
       {isListening && (
-        <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: '#A78BFA', borderRadius: 25, opacity: 0.15 }]} />
+        <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: '#FFFFFF', borderRadius: 25, opacity: 0.15 }]} />
       )}
       <TouchableOpacity 
         style={{ width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center', borderRadius: 25 }} 
         disabled={disabled}
         onPress={onPress}
       >
-        <Mic color={isListening ? "#FFF" : "#A78BFA"} size={22} />
+        <Mic color={isListening ? "#FFF" : "#FFFFFF"} size={22} />
       </TouchableOpacity>
     </Animated.View>
   );
@@ -191,6 +206,7 @@ const PulseMicButton = ({ isListening, disabled, onPress }) => {
 
 let accumulatedSpeech = "";
 export const AIAuraOverlay = ({ visible, onClose, tasks, savedPlan, onPlanGenerated, onToggleTask, userId }) => {
+  const { t } = useTranslation();
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
@@ -199,8 +215,30 @@ export const AIAuraOverlay = ({ visible, onClose, tasks, savedPlan, onPlanGenera
   const [userMemory, setUserMemory] = useState('');
   const [creditsLeft, setCreditsLeft] = useState(20);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
+  // Frank Mode is an explicit, adult opt-in. It persists per user until it is
+  // switched off, and consent is only asked for once per account.
+  const [frankMode, setFrankMode] = useState(false);
+  // Aura's reply language follows the app locale until the user overrides it
+  // here; the override is then remembered per account.
+  const [auraLanguage, setAuraLanguage] = useState(null);
+  const [isLanguagePickerOpen, setIsLanguagePickerOpen] = useState(false);
   const insets = useSafeAreaInsets();
-  
+
+  // Live window size. The planner card used to be sized from a module-scope
+  // `Dimensions.get('window')` snapshot, so its layout was wrong after rotation
+  // and broke on short screens where a fixed 70%-height card left the scroll
+  // area with almost no room once the header and footer took their share.
+  const { width: winW, height: winH } = useWindowDimensions();
+  const shortScreen = isShort(winH);
+  const narrowScreen = isNarrow(winW);
+
+  // Sizing rules live in src/utils/responsive.js so they can be tested. The key
+  // guarantee is that `height` is a resolved number: the plan list is a
+  // `flex: 1` ScrollView, and with an auto-height card it collapses to zero and
+  // the draft schedule renders with no rows.
+  const plannerCardSize = getCardLayout(winW, winH);
+  const scaled = getScaledType(winW, winH);
+
   // Animation values
   const overlayOpacity = useSharedValue(0);
   const plannerScale = useSharedValue(0);
@@ -267,7 +305,7 @@ export const AIAuraOverlay = ({ visible, onClose, tasks, savedPlan, onPlanGenera
       } else {
         const result = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
         if (!result.granted) {
-          Alert.alert('Microphone Error', 'Please enable microphone permissions in settings.');
+          Alert.alert(t('auraChat.microphoneErrorTitle'), t('auraChat.microphonePermissionMessage'));
           return;
         }
         ExpoSpeechRecognitionModule.start({ 
@@ -279,7 +317,7 @@ export const AIAuraOverlay = ({ visible, onClose, tasks, savedPlan, onPlanGenera
       }
     } catch (e) {
       console.error(e);
-      Alert.alert('Microphone Error', 'Could not start voice recognition.');
+      Alert.alert(t('auraChat.microphoneErrorTitle'), t('auraChat.microphoneStartFailedMessage'));
     }
   };
 
@@ -288,63 +326,58 @@ export const AIAuraOverlay = ({ visible, onClose, tasks, savedPlan, onPlanGenera
       const init = async () => {
         const memoryKey = getScopedKey('aimemory', userId);
         
-        // IMPROVEMENT 1: Sync memory from cloud first, then fall back to local
+        // Memory: pull the cloud copy first (cross-device), then fold it into
+        // the structured fact store. `mergeMemory` unions cloud + local facts,
+        // so switching devices adds knowledge instead of replacing it.
         if (userId) {
+          let cloudMemory = '';
           try {
             const { data: profileData, error } = await supabase
               .from('profiles')
               .select('ai_memory')
               .eq('id', userId)
               .single();
-            
-            if (!error && profileData?.ai_memory) {
-              setUserMemory(profileData.ai_memory);
-              // Cache it locally for offline access
-              await Storage.set(memoryKey, profileData.ai_memory);
-              console.log('🧠 Memory synced from cloud');
-            } else {
-              // Fall back to local storage
-              const legacyMemory = await Storage.get('aimemory');
-              const mem = await Storage.get(memoryKey) || legacyMemory || '';
-              if (mem) setUserMemory(mem);
-              
-              if (legacyMemory && userId) {
-                await Storage.set(memoryKey, legacyMemory);
-                await Storage.remove('aimemory');
-              }
-            }
+            if (!error && profileData?.ai_memory) cloudMemory = profileData.ai_memory;
           } catch (err) {
             console.log('⚠️ Failed to fetch memory from cloud:', err.message);
-            // Fall back to local storage
-            const legacyMemory = await Storage.get('aimemory');
-            const mem = await Storage.get(memoryKey) || legacyMemory || '';
-            if (mem) setUserMemory(mem);
           }
-        } else {
-          // No userId, use local storage only
-          const legacyMemory = await Storage.get('aimemory');
-          const mem = await Storage.get(memoryKey) || legacyMemory || '';
-          if (mem) setUserMemory(mem);
-          
-          if (legacyMemory) {
-            await Storage.set(memoryKey, legacyMemory);
+
+          // One-time migration of the pre-scoping global blob.
+          const legacyGlobal = await Storage.get('aimemory');
+          if (legacyGlobal) {
+            await mergeMemory(userId, legacyGlobal);
             await Storage.remove('aimemory');
           }
+
+          const merged = cloudMemory
+            ? await mergeMemory(userId, cloudMemory)
+            : await loadMemory(userId);
+          if (merged.text) setUserMemory(merged.text);
+        } else {
+          // Signed out: nothing to scope memory to, so keep the local blob only.
+          const mem = (await Storage.get(memoryKey)) || (await Storage.get('aimemory')) || '';
+          if (mem) setUserMemory(mem);
         }
 
-        const localProfile = await Storage.get(`profile_${userId}`);
-        const isPremium = localProfile && (localProfile.username === 'terminator' || localProfile.username === 'saxenaanupam2004');
-        
-        if (isPremium) {
-          setCreditsLeft(99999999);
-        } else {
-          const localCredits = await Storage.get(`aicredits_${userId}`);
-          if (localCredits !== null && localCredits !== undefined) {
-            setCreditsLeft(parseInt(localCredits, 10));
-          } else {
-            setCreditsLeft(20);
-          }
+        // Restore the persisted Frank Mode choice before the first message so
+        // the tone never silently resets between sessions.
+        const savedFrankMode = await Storage.get(getScopedKey('aura_frank_mode', userId));
+        setFrankMode(savedFrankMode === true || savedFrankMode === 'true');
+
+        // Null means "follow the app language", so changing the app locale keeps
+        // Aura in sync until the user deliberately pins a different language.
+        const savedLanguage = await Storage.get(getScopedKey('aura_language', userId));
+        setAuraLanguage(
+          SUPPORTED_LANGUAGES.some((item) => item.code === savedLanguage) ? savedLanguage : null,
+        );
+
+        // AI tokens are server-authoritative and ALWAYS metered (no unlimited).
+        // Show cached value instantly, then confirm the real balance with the server.
+        const localCredits = await Storage.get(`aicredits_${userId}`);
+        if (localCredits !== null && localCredits !== undefined) {
+          setCreditsLeft(parseInt(localCredits, 10));
         }
+        await refreshCredits();
 
         const savedMessages = await Storage.get(getScopedKey('ai_chat_history', userId));
         if (Array.isArray(savedMessages) && savedMessages.length > 0) {
@@ -357,10 +390,10 @@ export const AIAuraOverlay = ({ visible, onClose, tasks, savedPlan, onPlanGenera
         const currentMemory = await Storage.get(memoryKey);
         if (currentMemory && currentMemory.length > 30) {
           const returningGreetings = [
-            "Welcome back! Any changes to your usual routine today?",
-            "Hello again! Should we stick to your standard schedule, or is something new happening?",
-            "Ready to conquer the day? Let me know if you have any special meetings to add.",
-            "I've got your habits loaded! Anything specific you want to focus on today?"
+            t('auraChat.returningGreeting1'),
+            t('auraChat.returningGreeting2'),
+            t('auraChat.returningGreeting3'),
+            t('auraChat.returningGreeting4')
           ];
           const randomGreeting = returningGreetings[Math.floor(Math.random() * returningGreetings.length)];
           const nextMessages = [{ role: 'assistant', content: randomGreeting }];
@@ -368,10 +401,10 @@ export const AIAuraOverlay = ({ visible, onClose, tasks, savedPlan, onPlanGenera
           persistMessages(nextMessages);
         } else {
           const newGreetings = [
-            "Hello! To build the perfect schedule, could you tell me your occupation?",
-            "Welcome! What do you do for work? Knowing your occupation helps me plan your day.",
-            "Hi there! Tell me a bit about your daily life and occupation so I can customize your timeline.",
-            "Hello! What's your main focus everyday? (e.g., Software Engineer, Student)"
+            t('auraChat.newGreeting1'),
+            t('auraChat.newGreeting2'),
+            t('auraChat.newGreeting3'),
+            t('auraChat.newGreeting4')
           ];
           const randomGreeting = newGreetings[Math.floor(Math.random() * newGreetings.length)];
           const nextMessages = [{ role: 'assistant', content: randomGreeting }];
@@ -402,33 +435,112 @@ export const AIAuraOverlay = ({ visible, onClose, tasks, savedPlan, onPlanGenera
     }
   }, [visible, savedPlan, userId]);
 
+  // Store builds require the secure proxy, so AsyncStorage is display cache
+  // only and can never become an authoritative balance.
+  const SERVER_CREDITS =
+    process.env.EXPO_PUBLIC_REQUIRE_AI_PROXY === 'true'
+    || process.env.EXPO_PUBLIC_REQUIRE_AI_PROXY === '1'
+    || !!process.env.EXPO_PUBLIC_AI_PROXY_URL;
+
+  // Read the authoritative token balance (daily free + purchased) from server.
+  const refreshCredits = async () => {
+    if (!userId) return;
+    try {
+      const { data, error } = await supabase.rpc('get_ai_balance');
+      if (!error && data) {
+        const total = data.total ?? 0;
+        setCreditsLeft(total);
+        await Storage.set(`aicredits_${userId}`, total.toString());
+      }
+    } catch (e) {
+      console.log('[Tokens] refresh failed:', e.message);
+    }
+  };
+
+  // In production the server already decremented; we just re-sync the UI.
+  // In dev (no proxy) we optimistically decrement locally so testing works.
   const deductCredits = async (amount) => {
+    if (SERVER_CREDITS) {
+      await refreshCredits();
+      return creditsLeft;
+    }
     const newCredits = Math.max(0, creditsLeft - amount);
     setCreditsLeft(newCredits);
     await Storage.set(`aicredits_${userId}`, newCredits.toString());
-    if (userId) {
-      supabase.from('profiles').update({ ai_credits: newCredits }).eq('id', userId).then();
-    }
     return newCredits;
   };
 
-  // IMPROVEMENT 2: Refund credits if operation fails
   const refundCredits = async (amount) => {
+    if (SERVER_CREDITS) {
+      await refreshCredits();
+      return creditsLeft;
+    }
     const newCredits = creditsLeft + amount;
     setCreditsLeft(newCredits);
     await Storage.set(`aicredits_${userId}`, newCredits.toString());
-    if (userId) {
-      supabase.from('profiles').update({ ai_credits: newCredits }).eq('id', userId).then();
-    }
-    console.log(`💰 Refunded ${amount} credits due to error`);
     return newCredits;
+  };
+
+  const handleSelectLanguage = async (code) => {
+    setAuraLanguage(code);
+    setIsLanguagePickerOpen(false);
+    await Storage.set(getScopedKey('aura_language', userId), code);
+  };
+
+  const handleFollowAppLanguage = async () => {
+    setAuraLanguage(null);
+    setIsLanguagePickerOpen(false);
+    await Storage.remove(getScopedKey('aura_language', userId));
+  };
+
+  const resolvedLanguageCode = auraLanguage || i18n.language || DEFAULT_LANGUAGE_CODE;
+  const activeLanguage = SUPPORTED_LANGUAGES.find((item) => item.code === resolvedLanguageCode)
+    || SUPPORTED_LANGUAGES.find((item) => item.code === resolvedLanguageCode.split('-')[0])
+    || SUPPORTED_LANGUAGES[0];
+
+  const applyFrankMode = async (enabled) => {
+    setFrankMode(enabled);
+    await Storage.set(getScopedKey('aura_frank_mode', userId), enabled);
+  };
+
+  const handleToggleFrankMode = async () => {
+    if (frankMode) {
+      await applyFrankMode(false);
+      return;
+    }
+
+    const consentKey = getScopedKey('aura_frank_mode_consent', userId);
+    const consented = await Storage.get(consentKey);
+    if (consented === true || consented === 'true') {
+      await applyFrankMode(true);
+      return;
+    }
+
+    Alert.alert(
+      t('auraChat.frankModeConsentTitle', { defaultValue: 'Frank Mode · 18+' }),
+      t('auraChat.frankModeConsentBody', {
+        defaultValue:
+          'Aura stops being nice. Expect blunt orders, strong profanity, dark humour, and zero motivational padding.\n\nIt will never use slurs, threaten you, or encourage self-harm. Stays on until you turn it off.',
+      }),
+      [
+        { text: t('common.cancel', { defaultValue: 'Cancel' }), style: 'cancel' },
+        {
+          text: t('auraChat.frankModeConsentAccept', { defaultValue: "I'm 18+, turn it on" }),
+          style: 'destructive',
+          onPress: async () => {
+            await Storage.set(consentKey, true);
+            await applyFrankMode(true);
+          },
+        },
+      ],
+    );
   };
 
   const handleSend = async () => {
     if (!inputText.trim() || isProcessing) return;
 
     if (creditsLeft < 1) {
-      const outOfCreditsMessage = { role: 'assistant', content: 'You have run out of AI credits for today! Please check back tomorrow.' };
+      const outOfCreditsMessage = { role: 'assistant', content: t('auraChat.outOfCreditsMessage') };
       setMessages([...messages, outOfCreditsMessage]);
       setInputText('');
       return;
@@ -454,35 +566,51 @@ export const AIAuraOverlay = ({ visible, onClose, tasks, savedPlan, onPlanGenera
         console.log('[Calendar Fetch Error]:', calError.message);
       }
       
-      const taskContext = formatTaskContext(tasks || []);
-      
+      // Full workspace snapshot (lists, overdue, today, upcoming, backlog,
+      // routines, momentum) instead of only the tasks array passed in — and
+      // token-budgeted so the prompt stays cheap.
+      const worldContext = await buildAuraContext(userId, tasks);
+      const taskContext = worldContext || formatTaskContext(tasks || []);
+
       const chatSysPrompt = {
         role: 'system',
-        content: `Current date: ${new Date().toDateString()}. Current time: ${new Date().toLocaleTimeString()}.
-The user might ask about their tasks, calendar, or schedule. If they ask what is in the calendar, answer directly from the calendar events below.
-Use this context to inform chat, but do not build a full planner unless they ask for it.
+        content: `The user may ask about their tasks, lists, backlog, routines, calendar or schedule. Answer directly from the workspace snapshot below — it is the live state of their account. Reference specific list names and counts when relevant. Do not build a full planner unless asked.
 
-LifePilot tasks:
+WORKSPACE SNAPSHOT:
 ${taskContext}${calendarContext}`
       };
-      
-      const responseJson = await chatWithAura([chatSysPrompt, ...newMessages], userMemory);
-      
-      if (responseJson.memory && responseJson.memory !== userMemory) {
-        setUserMemory(responseJson.memory);
-        await Storage.set(getScopedKey('aimemory', userId), responseJson.memory);
-        
-        if (userId) {
-          // Sync new memory up to the cloud!
-          supabase.from('profiles').update({ ai_memory: responseJson.memory }).eq('id', userId).then(({error}) => {
-             if(error) console.log('Failed to sync memory to cloud:', error.message);
-          });
+
+      const responseJson = await chatWithAura([chatSysPrompt, ...newMessages], userMemory, {
+        frankMode,
+        languageCode: activeLanguage.code,
+        languageName: activeLanguage.label,
+      });
+
+      // Merge rather than overwrite: facts the model restates win, facts it
+      // simply didn't mention this turn survive. That's what stops Aura from
+      // forgetting things it already learned.
+      if (responseJson.memory) {
+        const { text: mergedMemory, changed } = await mergeMemory(userId, responseJson.memory);
+        if (changed && mergedMemory && mergedMemory !== userMemory) {
+          setUserMemory(mergedMemory);
+
+          if (userId) {
+            // Through SyncQueue, not a direct write: a fire-and-forget call was
+            // silently lost whenever the user chatted offline, so those facts
+            // never reached the cloud and died on uninstall. Queued means it
+            // retries automatically once connectivity returns.
+            syncToSupabase(
+              'profiles',
+              'update',
+              { ai_memory: mergedMemory },
+              { column: 'id', value: userId },
+            );
+          }
+          console.log('🧠 Memory merged & queued for sync');
         }
-        
-        console.log('🧠 Memory Updated & Synced:', responseJson.memory);
       }
       
-      const nextMessages = trimMessages([...newMessages, { role: 'assistant', content: responseJson.reply || "Got it. Anything else?" }]);
+      const nextMessages = trimMessages([...newMessages, { role: 'assistant', content: responseJson.reply || t('auraChat.defaultReply') }]);
       setMessages(nextMessages);
       await persistMessages(nextMessages);
       
@@ -493,15 +621,45 @@ ${taskContext}${calendarContext}`
       }
     } catch (error) {
       console.error('[AI Chat Error]:', error);
-      
+
+      // Out of credits — inform the user (paywall hook point).
+      if (error?.code === 'INSUFFICIENT_CREDITS') {
+        setCreditsLeft(error.remaining ?? 0);
+        const outMsg = PLAYSTORE_MODE
+          ? t('auraChat.outOfCreditsUpgradeMessage')
+          : t('auraChat.outOfCreditsTomorrowMessage');
+        const nextMessages = trimMessages([...newMessages, { role: 'assistant', content: outMsg }]);
+        setMessages(nextMessages);
+        await persistMessages(nextMessages);
+        setIsProcessing(false);
+        return;
+      }
+
+      // Server-side rate limit hit — no tokens were spent (rejected before
+      // the spend), so nothing to refund. Slow down messaging only.
+      if (error?.code === 'RATE_LIMITED') {
+        const nextMessages = trimMessages([...newMessages, { role: 'assistant', content: t('auraChat.rateLimitedMessage') }]);
+        setMessages(nextMessages);
+        await persistMessages(nextMessages);
+        setIsProcessing(false);
+        return;
+      }
+
+      // Global AI kill switch is off — nothing was spent.
+      if (error?.code === 'AI_DISABLED') {
+        const nextMessages = trimMessages([...newMessages, { role: 'assistant', content: t('auraChat.aiDisabledMessage') }]);
+        setMessages(nextMessages);
+        await persistMessages(nextMessages);
+        setIsProcessing(false);
+        return;
+      }
+
       // IMPROVEMENT 2: Refund credits if we deducted them before the error
       if (creditsDeducted) {
         await refundCredits(1);
       }
       
-      const errorMessage = error.message === 'All AI services are currently unavailable.'
-        ? 'All AI services are temporarily unavailable. Please check your API keys and try again later.'
-        : 'I lost the AI connection for a moment. Please try again.';
+      const errorMessage = t('auraChat.connectionLostMessage');
       
       const nextMessages = trimMessages([...newMessages, { role: 'assistant', content: errorMessage }]);
       setMessages(nextMessages);
@@ -513,7 +671,7 @@ ${taskContext}${calendarContext}`
 
   const handleBuildSchedule = async () => {
     setIsProcessing(true);
-    const planningMessages = trimMessages([...messages, { role: 'assistant', content: 'Weaving your perfect timeline...' }]);
+    const planningMessages = trimMessages([...messages, { role: 'assistant', content: t('auraChat.buildingScheduleMessage') }]);
     setMessages(planningMessages);
     persistMessages(planningMessages);
     
@@ -521,7 +679,7 @@ ${taskContext}${calendarContext}`
 
     try {
       if (creditsLeft < 3) {
-        const nextMessages = trimMessages([...planningMessages, { role: 'assistant', content: 'You need at least 3 AI credits to build a daily planner! Please check back tomorrow.' }]);
+        const nextMessages = trimMessages([...planningMessages, { role: 'assistant', content: t('auraChat.notEnoughCreditsForPlannerMessage') }]);
         setMessages(nextMessages);
         await persistMessages(nextMessages);
         setIsProcessing(false);
@@ -529,8 +687,11 @@ ${taskContext}${calendarContext}`
       }
 
       const now = new Date();
-      const taskContext = formatTaskContext(tasks || []);
-      
+      // Same full snapshot the chat sees, so the planner can weigh backlog and
+      // routines instead of only the tasks handed to this component.
+      const plannerWorld = await buildAuraContext(userId, tasks);
+      const taskContext = plannerWorld || formatTaskContext(tasks || []);
+
       let calendarContext = '';
       try {
         const calEvents = await fetchTodayEvents(userId);
@@ -561,14 +722,22 @@ ${taskContext}${calendarContext}`
       const planJson = await generatePlan([sysPrompt, ...messages], userMemory, tasks);
       console.log('✅ Plan generated:', planJson);
       setGeneratedPlan(planJson);
-      
+
+      // Save the plan for TODAY as soon as it exists, rather than waiting for
+      // "Build & Save". Closing the overlay (or the app dying) used to throw the
+      // schedule away even though 3 credits had already been spent on it, and
+      // the home-screen widget had nothing to show.
+      if (onPlanGenerated) onPlanGenerated(planJson);
+      else await savePlanForToday(userId, planJson);
+
+
       // IMPROVEMENT 2: Only deduct if not fallback and track deduction
       if (!planJson._isFallback) {
         await deductCredits(3);
         creditsDeducted = true;
       }
       
-      const finalMessages = trimMessages([...planningMessages, { role: 'assistant', content: "I've assembled your perfect timeline. Swipe up the planner to review and accept it!" }]);
+      const finalMessages = trimMessages([...planningMessages, { role: 'assistant', content: t('auraChat.scheduleReadyMessage') }]);
       setMessages(finalMessages);
       await persistMessages(finalMessages);
 
@@ -578,14 +747,41 @@ ${taskContext}${calendarContext}`
       
     } catch (error) {
       console.error('[Build Schedule Error]:', error);
-      console.error('[Error Stack]:', error.stack);
-      
+
+      if (error?.code === 'INSUFFICIENT_CREDITS') {
+        setCreditsLeft(error.remaining ?? 0);
+        const outMsg = PLAYSTORE_MODE
+          ? t('auraChat.notEnoughTokensUpgradeMessage')
+          : t('auraChat.notEnoughTokensTomorrowMessage');
+        const nextMessages = trimMessages([...planningMessages, { role: 'assistant', content: outMsg }]);
+        setMessages(nextMessages);
+        await persistMessages(nextMessages);
+        setIsProcessing(false);
+        return;
+      }
+
+      if (error?.code === 'RATE_LIMITED') {
+        const nextMessages = trimMessages([...planningMessages, { role: 'assistant', content: t('auraChat.buildRateLimitedMessage') }]);
+        setMessages(nextMessages);
+        await persistMessages(nextMessages);
+        setIsProcessing(false);
+        return;
+      }
+
+      if (error?.code === 'AI_DISABLED') {
+        const nextMessages = trimMessages([...planningMessages, { role: 'assistant', content: t('auraChat.aiDisabledMessage') }]);
+        setMessages(nextMessages);
+        await persistMessages(nextMessages);
+        setIsProcessing(false);
+        return;
+      }
+
       // IMPROVEMENT 2: Refund credits if we deducted them before the error
       if (creditsDeducted) {
         await refundCredits(3);
       }
       
-      const nextMessages = trimMessages([...planningMessages, { role: 'assistant', content: `I could not build a schedule yet: ${error.message}` }]);
+      const nextMessages = trimMessages([...planningMessages, { role: 'assistant', content: t('auraChat.buildFailedMessage', { message: error.message }) }]);
       setMessages(nextMessages);
       await persistMessages(nextMessages);
     } finally {
@@ -599,7 +795,9 @@ ${taskContext}${calendarContext}`
     }
     
     plannerScale.value = withTiming(0, { duration: 500, easing: Easing.inOut(Easing.ease) });
-    plannerY.value = withTiming(-height / 2, { duration: 500, easing: Easing.inOut(Easing.ease) });
+    // Live height, not the module-scope snapshot — after a rotation the old
+    // value sent the card the wrong distance.
+    plannerY.value = withTiming(-winH / 2, { duration: 500, easing: Easing.inOut(Easing.ease) });
     overlayOpacity.value = withTiming(0, { duration: 500 }, () => {
       runOnJS(onClose)();
     });
@@ -618,6 +816,39 @@ ${taskContext}${calendarContext}`
     }
     setGeneratedPlan(newPlan);
     if (onPlanGenerated) onPlanGenerated(newPlan);
+  };
+
+  /** Share the day's schedule as plain text through the OS share sheet. */
+  const handleSharePlan = async () => {
+    const message = formatPlanAsText(generatedPlan);
+    if (!message) return;
+    try {
+      await Share.share({ message, title: "Today's Plan" });
+    } catch (error) {
+      // User dismissing the sheet also lands here on some OEMs — stay quiet.
+      console.log('[Aura] Share cancelled/failed:', error?.message);
+    }
+  };
+
+  /**
+   * Put the plan on the home screen.
+   *
+   * `react-native-android-widget` exposes no pin/requestPinAppWidget binding, so
+   * a widget cannot be placed programmatically. What we CAN do is make sure the
+   * plan is saved for today and the widget is rendered with it, then tell the
+   * user the one manual step left.
+   */
+  const handleAddToHomeScreen = async () => {
+    if (!generatedPlan) return;
+    // The host screen persists + refreshes the widget via savePlanForToday; only
+    // save directly when no host is listening, so the widget never renders empty.
+    if (onPlanGenerated) onPlanGenerated(generatedPlan);
+    else await savePlanForToday(userId, generatedPlan);
+    Alert.alert(
+      "Add Today's Plan widget",
+      'Your plan is saved. To put it on your home screen: long-press an empty spot on the home screen, tap Widgets, find LifePilot, then drag "Today\'s Plan" out.\n\nYou can tick tasks straight from the widget, just like the Today widget.',
+      [{ text: 'Got it' }]
+    );
   };
 
   const animatedOverlayStyle = useAnimatedStyle(() => ({
@@ -650,7 +881,7 @@ ${taskContext}${calendarContext}`
               <Animated.View style={animatedBoltStyle}>
                 <Zap color="#FFD700" size={14} fill="#FFD700" />
               </Animated.View>
-              <Text style={styles.creditsText}>{creditsLeft} Credits Left</Text>
+              <Text style={styles.creditsText}>{t('auraChat.creditsLeftLabel', { count: creditsLeft })}</Text>
             </View>
             
             <TouchableOpacity 
@@ -688,17 +919,61 @@ ${taskContext}${calendarContext}`
 
                 {/* Chat Input Pushed to Bottom */}
                 <View style={styles.inputWrapper}>
+                  <View style={styles.modeRow}>
+                    <TouchableOpacity
+                      style={[styles.frankToggle, frankMode && styles.frankToggleActive]}
+                      onPress={handleToggleFrankMode}
+                      activeOpacity={0.82}
+                      accessibilityRole="switch"
+                      accessibilityState={{ checked: frankMode }}
+                      accessibilityLabel={t('auraChat.frankModeToggleLabel', { defaultValue: 'Frank Mode' })}
+                      accessibilityHint={t('auraChat.frankModeToggleHint', {
+                        defaultValue: 'Adult mode. Blunt, profane coaching that stays on until you turn it off.',
+                      })}
+                    >
+                      <View style={[styles.frankIndicator, frankMode && styles.frankIndicatorActive]}>
+                        <Flame color={frankMode ? '#0B0B0C' : '#8E8E93'} size={13} strokeWidth={2.1} />
+                      </View>
+                      <View style={styles.frankCopy}>
+                        <Text style={[styles.frankTitle, frankMode && styles.frankTitleActive]} numberOfLines={1}>
+                          {t('auraChat.frankModeToggleLabel', { defaultValue: 'Frank Mode' })}
+                        </Text>
+                        <Text style={styles.frankCaption} numberOfLines={1}>
+                          {frankMode
+                            ? t('auraChat.frankModeOnCaption', { defaultValue: 'No filter · tap to stop' })
+                            : t('auraChat.frankModeOffCaption', { defaultValue: '18+ · brutal coaching' })}
+                        </Text>
+                      </View>
+                      <View style={[styles.frankDot, frankMode && styles.frankDotActive]} />
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.languageChip}
+                      onPress={() => setIsLanguagePickerOpen(true)}
+                      activeOpacity={0.82}
+                      accessibilityRole="button"
+                      accessibilityLabel={t('auraChat.languageButtonLabel', {
+                        language: activeLanguage.label,
+                        defaultValue: `Aura language: ${activeLanguage.label}`,
+                      })}
+                    >
+                      <Languages color="#A1A1AA" size={14} strokeWidth={1.9} />
+                      <Text style={styles.languageChipText} numberOfLines={1}>
+                        {activeLanguage.nativeLabel}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
                   <View style={styles.inputBox}>
                     <TouchableOpacity 
-                      style={[styles.micBtn, isListening && { backgroundColor: 'rgba(167, 139, 250, 0.2)' }]} 
+                      style={[styles.micBtn, isListening && { backgroundColor: 'rgba(255, 255, 255, 0.2)' }]} 
                       disabled={isProcessing}
                       onPress={handleMicPress}
                     >
-                      <Mic color={isListening ? "#FFF" : "#A78BFA"} size={22} />
+                      <Mic color={isListening ? "#FFF" : "#FFFFFF"} size={22} />
                     </TouchableOpacity>
                     <TextInput
-                      style={[styles.input, isListening && { color: '#A78BFA', fontWeight: '500' }]}
-                      placeholder={isListening ? "Listening... Start speaking" : "Type or tap the mic..."}
+                      style={[styles.input, isListening && { color: '#FFFFFF', fontWeight: '500' }]}
+                      placeholder={isListening ? t('auraChat.listeningPlaceholder') : t('auraChat.inputPlaceholder')}
                       placeholderTextColor="#888"
                       value={inputText}
                       onChangeText={setInputText}
@@ -711,9 +986,9 @@ ${taskContext}${calendarContext}`
                   
                   {/* Build Schedule Button */}
                   {creditsLeft < 3 ? (
-                    <View style={{ marginTop: 12, padding: 12, backgroundColor: 'rgba(239, 68, 68, 0.1)', borderRadius: 12, alignItems: 'center' }}>
-                      <Text style={{ color: '#ef4444', fontSize: 13, fontWeight: '600', textAlign: 'center' }}>
-                        ⚡ Not enough AI credits (costs 3).{'\n'}Please check back tomorrow!
+                    <View style={{ marginTop: 12, padding: 12, backgroundColor: 'rgba(161, 161, 170, 0.1)', borderRadius: 12, alignItems: 'center' }}>
+                      <Text style={{ color: '#A1A1AA', fontSize: 13, fontWeight: '600', textAlign: 'center' }}>
+                        {t('auraChat.notEnoughCreditsInline')}
                       </Text>
                     </View>
                   ) : (
@@ -723,9 +998,9 @@ ${taskContext}${calendarContext}`
                       disabled={isProcessing}
                       activeOpacity={0.8}
                     >
-                      <Sparkles color="#A78BFA" size={20} />
+                      <Sparkles color="#FFFFFF" size={20} />
                       <Text style={styles.buildBtnText}>
-                        Build Schedule (Costs 3 ⚡)
+                        {t('auraChat.buildScheduleButton')}
                       </Text>
                     </TouchableOpacity>
                   )}
@@ -734,12 +1009,38 @@ ${taskContext}${calendarContext}`
             ) : (
               /* The Generated Planner Card */
               <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-                <Animated.View style={[styles.plannerCard, animatedPlannerStyle]}>
-                  <View style={styles.plannerHeader}>
-                    <Calendar color="#FFF" size={24} />
-                    <Text style={styles.plannerTitle}>Your Draft Schedule</Text>
+                <Animated.View style={[styles.plannerCard, plannerCardSize, animatedPlannerStyle]}>
+                  <View style={[styles.plannerHeader, shortScreen && { marginBottom: 12 }]}>
+                    <Calendar color="#FFF" size={scaled.headerIcon} />
+                    <Text
+                      style={[styles.plannerTitle, { fontSize: scaled.title, flexShrink: 1 }]}
+                      numberOfLines={1}
+                    >
+                      {t('auraChat.draftScheduleTitle')}
+                    </Text>
+                    <View style={{ flex: 1, minWidth: 8 }} />
+                    <TouchableOpacity
+                      style={styles.plannerHeaderAction}
+                      onPress={handleAddToHomeScreen}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      accessibilityRole="button"
+                      accessibilityLabel="How to add this plan to your home screen"
+                    >
+                      <LayoutGrid color="#FFFFFF" size={17} />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.plannerHeaderAction}
+                      onPress={handleSharePlan}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      accessibilityRole="button"
+                      accessibilityLabel="Share this plan"
+                    >
+                      <Share2 color="#FFFFFF" size={17} />
+                    </TouchableOpacity>
                   </View>
-                  <ScrollView style={styles.plannerScroll}>
+                  {/* `flexShrink` lets the list give up space to the header and
+                      footer on short screens rather than pushing them off. */}
+                  <ScrollView style={styles.plannerScroll} contentContainerStyle={{ paddingBottom: 4 }}>
                     {generatedPlan.map((item, index) => {
                       const isImplicit = !item.taskId;
                       return (
@@ -751,41 +1052,56 @@ ${taskContext}${calendarContext}`
                       >
                         {isImplicit ? (
                           // Implicit Task: Glowing Dot
-                          <View style={{ width: 14, height: 14, borderRadius: 7, backgroundColor: '#A78BFA', marginHorizontal: 4, shadowColor: '#A78BFA', shadowOffset: {width:0, height:0}, shadowOpacity: 0.8, shadowRadius: 6 }} />
+                          <View style={{ width: 14, height: 14, borderRadius: 7, backgroundColor: '#FFFFFF', marginHorizontal: 4, shadowColor: '#FFFFFF', shadowOffset: {width:0, height:0}, shadowOpacity: 0.8, shadowRadius: 6 }} />
                         ) : (
                           // Explicit Task: Checkbox
                           item.completed ? (
-                            <CheckCircle2 color="#A78BFA" size={22} />
+                            <CheckCircle2 color="#FFFFFF" size={22} />
                           ) : (
                             <Circle color="#666" size={22} />
                           )
                         )}
                         <View style={styles.plannerItemContent}>
-                          <Text style={[styles.plannerItemTime, item.completed && styles.completedText, isImplicit && { color: '#A78BFA' }]}>{item.time}</Text>
-                          <Text style={[styles.plannerItemTitle, item.completed && styles.completedText]}>{item.title}</Text>
+                          <Text
+                            style={[styles.plannerItemTime, { fontSize: scaled.itemTime }, item.completed && styles.completedText, isImplicit && { color: '#FFFFFF' }]}
+                            numberOfLines={1}
+                          >
+                            {item.time}
+                          </Text>
+                          <Text
+                            style={[styles.plannerItemTitle, { fontSize: scaled.itemTitle }, item.completed && styles.completedText]}
+                            numberOfLines={2}
+                          >
+                            {item.title}
+                          </Text>
                         </View>
                       </TouchableOpacity>
                     )})}
                   </ScrollView>
 
-                  {/* The Enhance & Build Buttons */}
-                  <View style={styles.draftFooter}>
+                  {/* The Enhance & Build Buttons. On a narrow screen two
+                      side-by-side labels at 16px clip, so they stack instead. */}
+                  <View style={[styles.draftFooter, narrowScreen && styles.draftFooterStacked]}>
                     <TouchableOpacity 
                       style={styles.draftEnhanceBtn} 
                       onPress={() => {
                         setGeneratedPlan(null);
-                        const nextMessages = trimMessages([...messages, { role: 'assistant', content: "No problem. What would you like me to enhance or change?" }]);
+                        const nextMessages = trimMessages([...messages, { role: 'assistant', content: t('auraChat.enhancePromptMessage') }]);
                         setMessages(nextMessages);
                         persistMessages(nextMessages);
                       }}
                     >
-                      <Sparkles color="#A78BFA" size={18} />
-                      <Text style={styles.draftEnhanceBtnText}>Enhance</Text>
+                      <Sparkles color="#FFFFFF" size={scaled.actionIcon} />
+                      <Text style={[styles.draftEnhanceBtnText, { fontSize: scaled.action }]} numberOfLines={1}>
+                        {t('auraChat.enhanceButton')}
+                      </Text>
                     </TouchableOpacity>
                     
                     <TouchableOpacity style={styles.draftSaveBtn} onPress={triggerMinimizeAnimation}>
-                      <CheckCircle2 color="#111" size={18} />
-                      <Text style={styles.draftSaveBtnText}>Build & Save</Text>
+                      <CheckCircle2 color="#111" size={scaled.actionIcon} />
+                      <Text style={[styles.draftSaveBtnText, { fontSize: scaled.action }]} numberOfLines={1}>
+                        {t('auraChat.buildAndSaveButton')}
+                      </Text>
                     </TouchableOpacity>
                   </View>
                 </Animated.View>
@@ -794,6 +1110,70 @@ ${taskContext}${calendarContext}`
           </KeyboardAvoidingView>
           </View>
         </SafeAreaView>
+
+        <Modal
+          transparent
+          visible={isLanguagePickerOpen}
+          animationType="fade"
+          statusBarTranslucent
+          onRequestClose={() => setIsLanguagePickerOpen(false)}
+        >
+          <View style={[styles.langBackdrop, { paddingTop: Math.max(insets.top, 16), paddingBottom: Math.max(insets.bottom, 16) }]}>
+            <View style={[styles.langSheet, { maxHeight: winH * 0.72 }]} accessibilityViewIsModal>
+              <View style={styles.langHeader}>
+                <View>
+                  <Text style={styles.langTitle}>
+                    {t('auraChat.languageSheetTitle', { defaultValue: 'Aura speaks' })}
+                  </Text>
+                  <Text style={styles.langSubtitle}>
+                    {t('auraChat.languageSheetSubtitle', { defaultValue: 'Applies to Aura only, not the app' })}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  onPress={() => setIsLanguagePickerOpen(false)}
+                  style={styles.langClose}
+                  accessibilityRole="button"
+                  accessibilityLabel={t('common.close', { defaultValue: 'Close' })}
+                >
+                  <X color="#8E8E93" size={19} />
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
+                <TouchableOpacity
+                  style={styles.langRow}
+                  onPress={handleFollowAppLanguage}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: !auraLanguage }}
+                >
+                  <View style={styles.langRowCopy}>
+                    <Text style={styles.langRowLabel}>
+                      {t('auraChat.languageFollowApp', { defaultValue: 'Match app language' })}
+                    </Text>
+                    <Text style={styles.langRowMeta}>{activeLanguage.nativeLabel}</Text>
+                  </View>
+                  {!auraLanguage ? <Check color="#F4F4F5" size={17} /> : null}
+                </TouchableOpacity>
+
+                {SUPPORTED_LANGUAGES.map((item) => (
+                  <TouchableOpacity
+                    key={item.code}
+                    style={styles.langRow}
+                    onPress={() => handleSelectLanguage(item.code)}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: auraLanguage === item.code }}
+                  >
+                    <View style={styles.langRowCopy}>
+                      <Text style={styles.langRowLabel}>{item.nativeLabel}</Text>
+                      <Text style={styles.langRowMeta}>{item.label}</Text>
+                    </View>
+                    {auraLanguage === item.code ? <Check color="#F4F4F5" size={17} /> : null}
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          </View>
+        </Modal>
       </Animated.View>
     </Modal>
   );
@@ -857,6 +1237,100 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingBottom: Platform.OS === 'ios' ? 20 : 40,
   },
+  modeRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: 8,
+    marginBottom: 10,
+  },
+  frankToggle: {
+    flex: 1,
+    minHeight: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.18)',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+  },
+  frankToggleActive: {
+    borderColor: 'rgba(244,244,245,0.85)',
+    backgroundColor: 'rgba(244,244,245,0.12)',
+  },
+  frankIndicator: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.22)',
+  },
+  frankIndicatorActive: { backgroundColor: '#F4F4F5', borderColor: '#F4F4F5' },
+  frankCopy: { flex: 1, minWidth: 0 },
+  frankTitle: { color: '#D4D4D8', fontSize: 13, fontWeight: '500', letterSpacing: -0.1 },
+  frankTitleActive: { color: '#FFFFFF' },
+  frankCaption: { color: '#71717A', fontSize: 10, fontWeight: '500', letterSpacing: 0.2, marginTop: 2 },
+  frankDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+  },
+  frankDotActive: { backgroundColor: '#F4F4F5' },
+  languageChip: {
+    minHeight: 48,
+    maxWidth: 132,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.18)',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+  },
+  languageChipText: { color: '#D4D4D8', fontSize: 12, fontWeight: '500', flexShrink: 1 },
+  langBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.72)',
+    justifyContent: 'center',
+    paddingHorizontal: 18,
+  },
+  langSheet: {
+    borderRadius: 22,
+    backgroundColor: '#0D0D0F',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.14)',
+    overflow: 'hidden',
+  },
+  langHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingLeft: 18,
+    paddingRight: 10,
+    paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255,255,255,0.12)',
+  },
+  langTitle: { color: '#F4F4F5', fontSize: 16, fontWeight: '400', letterSpacing: -0.3 },
+  langSubtitle: { color: '#71717A', fontSize: 11, marginTop: 2 },
+  langClose: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
+  langRow: {
+    minHeight: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 18,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255,255,255,0.08)',
+  },
+  langRowCopy: { flex: 1, minWidth: 0 },
+  langRowLabel: { color: '#E4E4E7', fontSize: 14, fontWeight: '400' },
+  langRowMeta: { color: '#71717A', fontSize: 10.5, marginTop: 2 },
   inputBox: {
     flexDirection: 'row',
     width: '100%',
@@ -887,7 +1361,7 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: '#A78BFA',
+    backgroundColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -895,22 +1369,23 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(167, 139, 250, 0.15)',
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
     borderWidth: 1,
-    borderColor: 'rgba(167, 139, 250, 0.4)',
+    borderColor: 'rgba(255, 255, 255, 0.4)',
     borderRadius: 24,
     paddingVertical: 14,
     marginTop: 16,
     gap: 8,
   },
   buildBtnText: {
-    color: '#A78BFA',
+    color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '600',
   },
   plannerCard: {
-    width: width * 0.9,
-    height: height * 0.7,
+    // Size comes from `useWindowDimensions` at render time (see plannerCardSize)
+    // — a module-scope Dimensions snapshot is captured once at import and is
+    // wrong after rotation, in split screen, and on foldables.
     backgroundColor: '#161618',
     borderRadius: 24,
     padding: 20,
@@ -933,8 +1408,21 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontWeight: '700',
   },
+  plannerHeaderAction: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.14)',
+  },
   plannerScroll: {
     flex: 1,
+    // Without flexShrink the list refuses to give ground on a short screen and
+    // pushes the footer buttons off the bottom of the card.
+    flexShrink: 1,
   },
   plannerItem: {
     flexDirection: 'row',
@@ -948,7 +1436,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   plannerItemTime: {
-    color: '#A78BFA',
+    color: '#FFFFFF',
     fontSize: 12,
     fontWeight: '700',
     marginBottom: 4,
@@ -963,26 +1451,32 @@ const styles = StyleSheet.create({
   },
   draftFooter: {
     flexDirection: 'row',
-    padding: 16,
+    paddingTop: 14,
     borderTopWidth: 1,
     borderTopColor: '#333',
     justifyContent: 'space-between',
     gap: 12,
+  },
+  // Narrow screens can't fit two labelled buttons side by side without
+  // clipping, so they become a full-width stack.
+  draftFooterStacked: {
+    flexDirection: 'column',
+    gap: 8,
   },
   draftEnhanceBtn: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(167, 139, 250, 0.1)',
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
     borderWidth: 1,
-    borderColor: 'rgba(167, 139, 250, 0.3)',
+    borderColor: 'rgba(255, 255, 255, 0.3)',
     borderRadius: 20,
     paddingVertical: 12,
     gap: 6,
   },
   draftEnhanceBtnText: {
-    color: '#A78BFA',
+    color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '600',
   },
@@ -991,7 +1485,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#A78BFA',
+    backgroundColor: '#FFFFFF',
     borderRadius: 20,
     paddingVertical: 12,
     gap: 6,

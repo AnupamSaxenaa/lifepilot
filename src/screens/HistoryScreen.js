@@ -7,11 +7,14 @@ import {
     Menu,
     RotateCcw,
     Search,
-    Star
+    Star,
+    Trash2
 } from 'lucide-react-native';
 import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
     ActivityIndicator,
+    Alert,
     ScrollView,
     StyleSheet,
     Text,
@@ -22,14 +25,14 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { GlassSidebar } from '../components/GlassSidebar';
-import { cacheTasks, loadProfile, loadTasks } from '../lib/dataManager';
+import { clearCompletedTasks, getCurrentUserId, loadProfile, loadTasks, toggleTaskCompletion } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
-import { syncToSupabase } from '../lib/syncQueue';
-import { Storage } from '../utils/storage';
+import { Gamification } from '../utils/gamification';
 
 const THEME_COLOR = '#FFFFFF';
 
 export const HistoryScreen = ({ navigation }) => {
+  const { t } = useTranslation();
   const colorScheme = useColorScheme();
   const insets = useSafeAreaInsets();
 
@@ -42,20 +45,20 @@ export const HistoryScreen = ({ navigation }) => {
 
   useEffect(() => {
     const init = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
-      setUserId(session.user.id);
+      const resolvedUserId = await getCurrentUserId();
+      if (!resolvedUserId) return;
+      setUserId(resolvedUserId);
       
       const [cachedProfile, cachedTasks] = await Promise.all([
-        loadProfile(session.user.id, setProfile),
-        loadTasks(session.user.id, (fresh) => {
-          setTasks(fresh);
+        loadProfile(resolvedUserId, setProfile),
+        loadTasks(resolvedUserId, (fresh) => {
+          setTasks(Array.isArray(fresh) ? fresh : []);
           setLoading(false);
         })
       ]);
 
       if (cachedProfile) setProfile(cachedProfile);
-      if (cachedTasks) {
+      if (Array.isArray(cachedTasks)) {
         setTasks(cachedTasks);
         setLoading(false);
       }
@@ -64,27 +67,42 @@ export const HistoryScreen = ({ navigation }) => {
   }, []);
 
   const handleRestoreTask = async (task) => {
-    // ✅ FIX: Load fresh tasks, un-complete this specific task
-    const latestTasks = await Storage.get(`tasks_${userId}`) || [];
-    const updated = latestTasks.map(t =>
-      t.id === task.id 
-        ? { ...t, is_completed: false, completed_at: null }
-        : t
-    );
-    
-    await cacheTasks(userId, updated);
-    
-    syncToSupabase('tasks', 'update',
-      { is_completed: false, completed_at: null },
-      { column: 'id', value: task.id }
-    );
-    
+    const updated = await toggleTaskCompletion(userId, tasks, task.id, true);
     setTasks(updated);
+
+    // Restoring a task un-completes it, so the XP granted for completing it must
+    // come back out. Without this, completing and restoring in a loop minted
+    // unlimited XP — `toggleTaskCompletion` only moves completion state and
+    // never touches gamification.
+    //
+    // Deduct the EXACT amount that was awarded (stored on the task at
+    // completion time), not a recomputed value: if the task's priority changed
+    // in between, recomputing would refund the wrong figure and drift the total.
+    if (!userId) return;
+    const awarded = task?.xp_awarded != null
+      ? Number(task.xp_awarded)
+      : Gamification.xpForTask(task);
+    if (Number.isFinite(awarded) && awarded > 0) {
+      // addXP clamps at zero, decrements today's task count, emits the XP toast,
+      // and queues the daily-rollup delta, so the leaderboard follows too.
+      await Gamification.addXP(userId, -awarded);
+    }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
     navigation.reset({ index: 0, routes: [{ name: 'Onboarding' }] });
-    supabase.auth.signOut();
+  };
+
+  const handleClearHistory = () => {
+    Alert.alert(t('history.clearHistoryTitle'), t('history.clearHistoryMessage'), [
+      { text: t('common.cancel'), style: 'cancel' },
+      { text: t('history.deleteButton'), style: 'destructive', onPress: async () => {
+        setTasks((current) => current.filter((task) => !task.is_completed));
+        const updated = await clearCompletedTasks(userId, tasks);
+        setTasks(updated);
+      }}
+    ]);
   };
 
   // ─── Timeline Grouping Logic ─────────────────────────────
@@ -119,11 +137,11 @@ export const HistoryScreen = ({ navigation }) => {
     const thisMonth = new Date(today.getFullYear(), today.getMonth(), 1);
 
     const groups = {
-      today: { title: 'Today', data: [] },
-      yesterday: { title: 'Yesterday', data: [] },
-      lastWeek: { title: 'Previous 7 Days', data: [] },
-      thisMonth: { title: 'This Month', data: [] },
-      older: { title: 'Older', data: [] }
+      today: { title: t('history.groupToday'), data: [] },
+      yesterday: { title: t('history.groupYesterday'), data: [] },
+      lastWeek: { title: t('history.groupLastWeek'), data: [] },
+      thisMonth: { title: t('history.groupThisMonth'), data: [] },
+      older: { title: t('history.groupOlder'), data: [] }
     };
 
     completed.forEach(task => {
@@ -150,7 +168,7 @@ export const HistoryScreen = ({ navigation }) => {
       groups.thisMonth,
       groups.older
     ].filter(g => g.data.length > 0);
-  }, [tasks, searchQuery]);
+  }, [tasks, searchQuery, t]);
 
   const renderTask = (task) => {
     const hasSubtasks = task.subtasks && task.subtasks.length > 0;
@@ -164,7 +182,7 @@ export const HistoryScreen = ({ navigation }) => {
           onPress={() => handleRestoreTask(task)}
           activeOpacity={0.6}
         >
-          <CheckCircle2 color="#10B981" size={24} />
+          <CheckCircle2 color="#34D399" size={24} />
           <View style={styles.restoreIconContainer}>
             <RotateCcw color="#000" size={12} />
           </View>
@@ -185,8 +203,8 @@ export const HistoryScreen = ({ navigation }) => {
             )}
             {task.due_date && (
               <View style={styles.metaPill}>
-                <Calendar size={12} color={isOverdue ? '#EF4444' : '#888'} />
-                <Text style={[styles.metaText, isOverdue && { color: '#EF4444' }]}>
+                <Calendar size={12} color={isOverdue ? '#FB7185' : '#888'} />
+                <Text style={[styles.metaText, isOverdue && { color: '#FB7185' }]}>
                   {new Date(task.due_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                 </Text>
               </View>
@@ -224,8 +242,10 @@ export const HistoryScreen = ({ navigation }) => {
           <TouchableOpacity onPress={() => setIsSidebarOpen(true)} style={styles.iconBtn}>
             <Menu color={THEME_COLOR} size={26} />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>History</Text>
-          <View style={{ width: 44 }} />
+          <Text style={styles.headerTitle}>{t('history.headerTitle')}</Text>
+          <TouchableOpacity onPress={handleClearHistory} style={styles.iconBtn}>
+            <Trash2 color="#FB7185" size={24} />
+          </TouchableOpacity>
         </View>
 
         {/* Search Bar */}
@@ -234,7 +254,7 @@ export const HistoryScreen = ({ navigation }) => {
             <Search color="#666" size={20} />
             <TextInput 
               style={styles.searchInput}
-              placeholder="Search history..."
+              placeholder={t('history.searchPlaceholder')}
               placeholderTextColor="#666"
               value={searchQuery}
               onChangeText={setSearchQuery}
@@ -243,7 +263,9 @@ export const HistoryScreen = ({ navigation }) => {
           </View>
         </View>
 
-        {loading ? (
+        {/* Spin only with nothing cached to show; otherwise cached history
+            paints immediately instead of flashing a spinner on every visit. */}
+        {loading && tasks.length === 0 ? (
           <View style={styles.centerContainer}>
             <ActivityIndicator size="large" color={THEME_COLOR} />
           </View>
@@ -251,7 +273,7 @@ export const HistoryScreen = ({ navigation }) => {
           <View style={styles.centerContainer}>
             <History color="#333" size={64} style={{ marginBottom: 16 }} />
             <Text style={styles.emptyText}>
-              {searchQuery ? "No matching history found." : "Your history is empty."}
+              {searchQuery ? t('history.emptyNoMatch') : t('history.emptyNoHistory')}
             </Text>
           </View>
         ) : (
@@ -374,7 +396,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     bottom: -4,
     right: -4,
-    backgroundColor: '#10B981',
+    backgroundColor: '#34D399',
     borderRadius: 10,
     width: 16,
     height: 16,

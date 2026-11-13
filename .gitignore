@@ -17,6 +17,8 @@ expo-env.d.ts
 *.p12
 *.key
 *.mobileprovision
+*.keystore
+!android/app/debug.keystore
 
 # Metro
 .metro-health-check*
@@ -49,3 +51,20 @@ example
 *.md
 !README.md
 
+
+# Local signing credentials (tester build) — keep out of git
+credentials.json
+credentials/
+*.keystore
+.revenuecat_webhook_secret.txt
+
+# ── Build artifacts (added during the 2026-08 workspace cleanup) ──
+# Built APKs are outputs, not source. They are ~180 MB each and are
+# reproducible with `npm run build:apk`.
+/release/
+*.idsig
+*.aab
+
+# Local Expo export output used for "does it still bundle?" checks
+/dist/
+/dist-build-check/

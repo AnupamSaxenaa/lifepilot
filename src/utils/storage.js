@@ -41,6 +41,30 @@ export const Storage = {
     }
   },
 
+  /**
+   * Remove every LifePilot key. Used on sign-out and account deletion.
+   *
+   * This existed as a CALL SITE long before it existed as a method:
+   * `SettingsScreen.handleDeleteAccount` awaited `Storage.clear()`, which threw
+   * "undefined is not a function" as an unhandled rejection — so deletion always
+   * appeared to hang even when the server side had completed.
+   *
+   * Deliberately NOT `AsyncStorage.clear()`. That wipes the whole store,
+   * including the Supabase auth session and any other library's keys. We only
+   * own the `@lifepilot_` prefix, so we only remove that.
+   */
+  async clear() {
+    try {
+      const keys = await AsyncStorage.getAllKeys();
+      const ours = keys.filter((key) => key.startsWith('@lifepilot_'));
+      if (ours.length > 0) await AsyncStorage.multiRemove(ours);
+      return ours.length;
+    } catch (e) {
+      console.error('Storage clear error:', e);
+      return 0;
+    }
+  },
+
   // ⚡ PERFORMANCE: Batch multiple get operations into 1 disk read
   async getBatch(keys) {
     try {

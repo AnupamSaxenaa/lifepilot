@@ -1,0 +1,56 @@
+# Publishes the contents of web/ to GitHub Pages.
+#
+# Why a workflow instead of the simpler "deploy from a branch" setting:
+# that setting can only serve the repository root or /docs. Our legal pages live
+# in web/, and moving them into /docs would publish the entire internal
+# engineering documentation as a website. This uploads only web/.
+#
+# One-time setup: repo Settings → Pages → Source → "GitHub Actions".
+#
+# Resulting URLs (needed by Play Console):
+#   https://anupamsaxenaa.github.io/lifepilot/privacy-policy.html
+#   https://anupamsaxenaa.github.io/lifepilot/delete-account.html
+name: Deploy legal pages
+
+on:
+  push:
+    branches: [main, master, development]
+    # Only redeploy when the published files actually change.
+    paths: ['web/**', '.github/workflows/pages.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two deploys race; keep the newest.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fail if a required page is missing
+        # A 404 on either URL is grounds for Play removal, so a broken deploy
+        # should fail loudly here rather than silently publish half the site.
+        run: |
+          for f in web/privacy-policy.html web/delete-account.html; do
+            test -s "$f" || { echo "missing or empty: $f"; exit 1; }
+          done
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,7 +1,8 @@
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
-import { ArrowUp, Bell, Calendar, Check, CheckCircle2, ChevronDown, ChevronRight, Circle, FileText, GripVertical, ListChecks, Menu, MoreVertical, Plus, Repeat, Star, Sun, Trash2, X } from 'lucide-react-native';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { ArrowUp, Bell, Calendar, Check, CheckCircle2, ChevronDown, ChevronRight, Circle, FileText, Flag, GripVertical, ListChecks, Menu, MoreVertical, Plus, Repeat, Share2, Star, Sun, Trash2, Users, X } from 'lucide-react-native';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Alert, BackHandler, Keyboard, KeyboardAvoidingView, Modal, Platform, ScrollView, Share, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { NestableDraggableFlatList, NestableScrollContainer, ScaleDecorator } from 'react-native-draggable-flatlist';
 import Animated, { Easing, FadeIn, FadeOut, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
@@ -9,13 +10,19 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AIAuraOverlay } from '../components/AIAuraOverlay';
 import { BackgroundWrapper } from '../components/BackgroundWrapper';
 import { GlassSidebar } from '../components/GlassSidebar';
+import { LevelUpModal } from '../components/LevelUpModal';
 import { ScribbleStrike } from '../components/ScribbleStrike';
-import { cacheTasks, deleteList, addTask as dmAddTask, deleteTask as dmDeleteTask, loadLists, loadProfile, loadTasks, renameList, reorderTasks, toggleTaskImportance } from '../lib/dataManager';
+import { ActivityTimeline, AvatarStack, ConflictSheet, ShareListSheet, SyncStatusStrip } from '../components/collaboration';
+import { getPriorityColor, PRIORITY_CONFIG, shouldShowFlag } from '../config/priorityConfig';
+import { useTheme as useAppTheme } from '../context/ThemeContext';
+import { useWidgetTaskSync } from '../hooks/useWidgetTaskSync';
+import { loadCollaboration, loadSpaceActivity, loadSpaceDetail, refreshCollaboration } from '../lib/collaborationManager';
+import { addTask as dmAddTask, cacheTasks, deleteList, deleteTask as dmDeleteTask, getCurrentUserId, getCurrentUserIdSync, getTasksSync, loadLists, loadProfile, loadTasks, renameList, reorderTasks, toggleTaskCompletion, toggleTaskImportance, updateTask } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
-import { syncToSupabase } from '../lib/syncQueue';
 import { COLORS } from '../theme/theme';
 import { Gamification } from '../utils/gamification';
 import { cancelTaskReminder, scheduleTaskReminder } from '../utils/notifications';
+import { savePlanForToday } from '../utils/planStore';
 import { Storage } from '../utils/storage';
 
 // ─── Helpers ────────────────────────────────────────────
@@ -40,12 +47,13 @@ const formatDateTime = (d) => {
 
 const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const UNIT_OPTIONS = ['days', 'weeks', 'months', 'years'];
+const sameId = (left, right) => left != null && right != null && String(left) === String(right);
 
 const SkeletonTask = () => {
   const opacity = useSharedValue(0.3);
   useEffect(() => {
     opacity.value = withRepeat(withTiming(0.7, { duration: 800, easing: Easing.inOut(Easing.ease) }), -1, true);
-  }, []);
+  }, [opacity]);
   const style = useAnimatedStyle(() => ({ opacity: opacity.value }));
 
   return (
@@ -59,29 +67,198 @@ const SkeletonTask = () => {
   );
 };
 
-import { updateTask } from '../lib/dataManager';
+
+const memberIdentity = (member = {}) => member.profile || member.profiles || member;
+const memberId = (member) => member?.user_id || member?.id;
+const memberName = (member) => {
+  const identity = memberIdentity(member);
+  return identity.display_name || identity.displayName || identity.username || identity.email || 'Member';
+};
+const memberInitials = (member) => memberName(member)
+  .trim().split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase() || '?';
+
+// Extracted + memoized so dragging/toggling one row doesn't force React to
+// rebuild every other row's JSX tree from scratch on each render.
+const CustomListTaskRow = memo(function CustomListTaskRow({ task, theme, members = [], isReadOnly = false, isCompleting, drag, isActive, onPress, onToggle, onToggleToday, onToggleImportant, onDelete }) {
+  const hasSubtasks = task.subtasks && task.subtasks.length > 0;
+  const hasNotes = task.notes && task.notes.trim().length > 0;
+  const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes || task.space_id;
+  const assignee = members.find((member) => sameId(memberId(member), task.assigned_to));
+  const syncError = task._sync_status === 'error' || task._sync_status === 'failed'
+    ? task._sync_error?.message || task.sync_error || task.error || 'Sync error'
+    : null;
+  const syncText = task._sync_status === 'pending' ? 'Pending sync' : syncError;
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const isOverdue = task.due_date && new Date(task.due_date) < todayStart && !task.is_completed;
+  const completedSubs = hasSubtasks ? task.subtasks.filter(s => s.is_completed).length : 0;
+  const totalSubs = hasSubtasks ? task.subtasks.length : 0;
+
+  return (
+    <ScaleDecorator>
+      <TouchableOpacity
+        activeOpacity={0.75}
+        onPress={onPress}
+        onLongPress={isReadOnly ? undefined : drag}
+        disabled={isActive}
+        accessibilityRole="button"
+        accessibilityLabel={`${task.title}${isReadOnly ? ', read only' : ''}`}
+        accessibilityHint={isReadOnly ? 'Task changes are disabled for viewers.' : 'Opens task details.'}
+        accessibilityState={{ disabled: isReadOnly, busy: isCompleting }}
+        style={[
+          styles.taskCard,
+          theme?.surface && { backgroundColor: theme.surface },
+          task.is_important && styles.taskCardImportant,
+          task.is_completed && styles.taskCardCompleted,
+          isActive && { backgroundColor: 'rgba(255,255,255,0.08)', elevation: 12 }
+        ]}>
+
+        {/* Left: drag handle + checkbox */}
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          {!task.is_completed && !isCompleting && !isReadOnly && (
+            <TouchableOpacity onPressIn={drag} style={{ padding: 4, marginRight: 2 }} accessibilityLabel="Reorder task">
+              <GripVertical color="#71717A" size={20} />
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity
+            onPress={onToggle}
+            disabled={isCompleting || isReadOnly}
+            accessibilityRole="checkbox"
+            accessibilityLabel={`${task.is_completed ? 'Mark incomplete' : 'Mark complete'}: ${task.title}`}
+            accessibilityState={{ checked: Boolean(task.is_completed), disabled: isReadOnly, busy: isCompleting }}
+            style={[
+              styles.checkbox,
+              (task.is_completed || isCompleting || isReadOnly) && { marginLeft: 28 }
+            ]}
+          >
+            {(task.is_completed || isCompleting) ? (
+              <CheckCircle2 color="#34D399" size={24} />
+            ) : (
+              <Circle color={theme.text} size={24} />
+            )}
+          </TouchableOpacity>
+        </View>
+
+        {/* Center: title + meta */}
+        <View style={styles.taskContent}>
+          <ScribbleStrike isCompleted={task.is_completed || isCompleting} shouldAnimate={isCompleting} color={theme.textMuted}>
+            <Text
+              style={[
+                styles.taskTitle,
+                { color: isCompleting ? '#666' : (task.is_completed ? '#666' : '#fff') },
+                (task.is_completed || isCompleting) && styles.taskCompleted,
+              ]}
+            >
+              {task.title}
+            </Text>
+          </ScribbleStrike>
+
+          {hasMeta && (
+            <View style={styles.taskMetaRow}>
+              {shouldShowFlag(task.priority) && (
+                <View style={styles.metaPill}>
+                  <Flag color={getPriorityColor(task.priority)} size={11} fill={getPriorityColor(task.priority)} />
+                </View>
+              )}
+              {task.due_date && (
+                <View style={styles.metaPill}>
+                  <Calendar color={isOverdue ? '#FB7185' : '#888'} size={11} />
+                  <Text style={[styles.metaLabel, isOverdue && { color: '#FB7185' }]}>
+                    {formatDate(task.due_date)}
+                  </Text>
+                </View>
+              )}
+              {task.reminder_time && (
+                <View style={styles.metaPill}>
+                  <Bell color="#888" size={11} />
+                  <Text style={styles.metaLabel}>
+                    {formatDateTime(task.reminder_time)}
+                  </Text>
+                </View>
+              )}
+              {task.repeat_rule && (
+                <View style={styles.metaPill}>
+                  <Repeat color="#888" size={11} />
+                  <Text style={styles.metaLabel}>
+                    {task.repeat_rule}
+                  </Text>
+                </View>
+              )}
+              {hasSubtasks && (
+                <View style={styles.metaPill}>
+                  <ListChecks color="#888" size={11} />
+                  <Text style={styles.metaLabel}>
+                    {completedSubs}/{totalSubs}
+                  </Text>
+                </View>
+              )}
+              {hasNotes && (
+                <View style={[styles.metaPill, { paddingHorizontal: 6 }]}>
+                  <FileText color="#888" size={11} />
+                </View>
+              )}
+              {task.space_id && (
+                <View style={styles.assigneeMeta} accessibilityLabel={task.assigned_to ? `Assigned to ${assignee ? memberName(assignee) : 'member'}` : 'Unassigned'}>
+                  <View style={styles.assigneeAvatar}>
+                    <Text style={styles.assigneeInitials}>{assignee ? memberInitials(assignee) : '—'}</Text>
+                  </View>
+                  <Text numberOfLines={1} style={styles.assigneeName}>{assignee ? memberName(assignee) : 'Unassigned'}</Text>
+                </View>
+              )}
+              {syncText ? (
+                <Text accessibilityLiveRegion="polite" style={[styles.taskSyncText, syncError && styles.taskSyncError]}>{syncText}</Text>
+              ) : null}
+            </View>
+          )}
+        </View>
+
+        {/* Right: star + delete + My Day */}
+        <View style={styles.taskActions}>
+          <TouchableOpacity onPress={onToggleToday} disabled={isReadOnly} accessibilityRole="button" accessibilityLabel="Toggle My Day" accessibilityState={{ disabled: isReadOnly }} style={[styles.iconButtonSmall, isReadOnly && styles.mutationDisabled]}>
+            <Sun
+              color={task.added_to_today ? '#FBBF24' : '#71717A'}
+              fill={task.added_to_today ? '#FBBF24' : 'transparent'}
+              size={18}
+            />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={onToggleImportant} disabled={isReadOnly} accessibilityRole="button" accessibilityLabel="Toggle important" accessibilityState={{ disabled: isReadOnly }} style={[styles.iconButtonSmall, isReadOnly && styles.mutationDisabled]}>
+            <Star
+              color={task.is_important ? '#FFFFFF' : '#71717A'}
+              fill={task.is_important ? '#FFFFFF' : 'transparent'}
+              size={18}
+            />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={onDelete} disabled={isReadOnly} accessibilityRole="button" accessibilityLabel="Delete task" accessibilityState={{ disabled: isReadOnly }} style={[styles.iconButtonSmall, isReadOnly && styles.mutationDisabled]}>
+            <Trash2 color="#71717A" size={18} />
+          </TouchableOpacity>
+        </View>
+      </TouchableOpacity>
+    </ScaleDecorator>
+  );
+});
 
 export const CustomListScreen = ({ navigation, route }) => {
-  const { listId, listName } = route?.params || {};
+  const { t } = useTranslation();
+  const { listId, listName, spaceId: routeSpaceId } = route?.params || {};
 
-  const [localListName, setLocalListName] = useState(listName || 'List');
+  const [localListName, setLocalListName] = useState(listName || t('customList.defaultListName'));
   const [showRenameModal, setShowRenameModal] = useState(false);
   const [renameText, setRenameText] = useState(listName || '');
 
+  useAppTheme();
   // Force dark theme only
   const theme = COLORS.dark;
   const insets = useSafeAreaInsets();
 
   // ─── Core State ───────────────────────────────────────
-  const [tasks, setTasks] = useState([]);
+  const [userId, setUserId] = useState(null);
+  const [tasks, setTasks] = useState(() => getTasksSync(getCurrentUserIdSync()) || []);
   const latestTasksRef = useRef(tasks);
   useEffect(() => {
     latestTasksRef.current = tasks;
   }, [tasks]);
 
   const [newTaskTitle, setNewTaskTitle] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [userId, setUserId] = useState(null);
   const [profile, setProfile] = useState(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -89,6 +266,62 @@ export const CustomListScreen = ({ navigation, route }) => {
   const [generatedPlan, setGeneratedPlan] = useState(null);
   const [isAddingTask, setIsAddingTask] = useState(false);
   const [activeToolbarMenu, setActiveToolbarMenu] = useState(null);
+
+  const [collaboration, setCollaboration] = useState({ spaces: [], members: {}, lists: [] });
+  const [activity, setActivity] = useState([]);
+  const [collaborationCacheResolved, setCollaborationCacheResolved] = useState(false);
+  const [activeSharedTab, setActiveSharedTab] = useState('tasks');
+  const [assigneeFilter, setAssigneeFilter] = useState('all');
+  const [showShareSheet, setShowShareSheet] = useState(false);
+  const [showConflictSheet, setShowConflictSheet] = useState(false);
+
+  const currentList = useMemo(
+    () => (collaboration.lists || []).find((list) => sameId(list?.id, listId)) || null,
+    [collaboration.lists, listId],
+  );
+  const resolvedSpaceId = routeSpaceId || currentList?.space_id
+    || tasks.find((task) => sameId(task?.list_id, listId) && task?.space_id)?.space_id
+    || null;
+  const isSharedList = resolvedSpaceId != null && String(resolvedSpaceId).length > 0;
+  const currentSpace = useMemo(
+    () => (collaboration.spaces || []).find((space) => sameId(space?.id, resolvedSpaceId))
+      || (isSharedList ? { id: resolvedSpaceId, name: 'Shared space' } : null),
+    [collaboration.spaces, isSharedList, resolvedSpaceId],
+  );
+  const sharedMembers = useMemo(
+    () => (isSharedList ? collaboration.members?.[String(resolvedSpaceId)] || [] : []),
+    [collaboration.members, isSharedList, resolvedSpaceId],
+  );
+  const currentMembership = sharedMembers.find((member) => sameId(memberId(member), userId));
+  const currentRole = String(currentMembership?.role || '').toLowerCase();
+  // Shared mutations are enabled only from the cached/server member directory.
+  // Route params can be stale or crafted and therefore never grant write access.
+  const isViewer = isSharedList && !['owner', 'editor'].includes(currentRole);
+
+  const applyCollaboration = useCallback((incoming) => {
+    if (!incoming || typeof incoming !== 'object') return;
+    const incomingLists = Array.isArray(incoming.lists) ? incoming.lists : [];
+    const sharedList = incomingLists.find((list) => sameId(list?.id, listId));
+    const candidateSpaceId = routeSpaceId || sharedList?.space_id || null;
+    setCollaboration((previous) => ({
+      spaces: Array.isArray(incoming.spaces) ? incoming.spaces : previous.spaces,
+      members: incoming.members && typeof incoming.members === 'object' ? incoming.members : previous.members,
+      lists: incomingLists.length ? incomingLists : previous.lists,
+    }));
+    if (sharedList?.name) setLocalListName(sharedList.name);
+    if (candidateSpaceId && Array.isArray(incoming.tasks)) {
+      setTasks(incoming.tasks);
+    }
+    if (candidateSpaceId && incoming.activity && typeof incoming.activity === 'object') {
+      setActivity(incoming.activity[String(candidateSpaceId)] || []);
+    }
+    setCollaborationCacheResolved(true);
+  }, [listId, routeSpaceId]);
+
+  // Widget → app sync: reflect widget task toggles on resume / while foregrounded.
+  useWidgetTaskSync(userId, (fresh) => setTasks(fresh));
+  const [levelUpData, setLevelUpData] = useState(null);
+  const completingTimeouts = useRef({});
   const [showCompleted, setShowCompleted] = useState(true);
   const [completingTaskIds, setCompletingTaskIds] = useState([]);
 
@@ -96,9 +329,10 @@ export const CustomListScreen = ({ navigation, route }) => {
   const [pendingDueDate, setPendingDueDate] = useState(null);
   const [pendingReminder, setPendingReminder] = useState(null);
   const [pendingRepeatRule, setPendingRepeatRule] = useState(null);
+  const [pendingPriority, setPendingPriority] = useState(1);
 
   // ─── Keyboard state for Android fallback ──────────────
-  const [androidKeyboardHeight, setAndroidKeyboardHeight] = useState(0);
+  const [, setAndroidKeyboardHeight] = useState(0);
 
   // ─── Native Picker State ──────────────────────────────
   const [showDatePicker, setShowDatePicker] = useState(false);
@@ -119,26 +353,31 @@ export const CustomListScreen = ({ navigation, route }) => {
   const todayDate = new Date().toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long' });
 
   // ─── Init & Fetch ─────────────────────────────────────
-  const [isCacheLoaded, setIsCacheLoaded] = useState(false);
+  // Seeded from the synchronous warm cache: a returning navigation has real
+  // rows on the first frame, so the skeletons no longer flash before content.
+  const [isCacheLoaded, setIsCacheLoaded] = useState(() => !!getTasksSync(getCurrentUserIdSync()));
   
   useEffect(() => {
     const init = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
-      setUserId(session.user.id);
+      const resolvedUserId = await getCurrentUserId();
+      if (!resolvedUserId) return;
+      setUserId(resolvedUserId);
 
-      // Load Profile, Sort Preference, Tasks, and Saved Plan concurrently
-      const [cachedProfile, cachedSort, cachedTasks, cachedPlan, cachedPlanDate] = await Promise.all([
-        loadProfile(session.user.id, (fresh) => setProfile(fresh)),
-        Storage.get('sortBy_today'),
-        loadTasks(session.user.id, (fresh) => {
-          setTasks(fresh);
-          setLoading(false);
+      // Load collaboration and personal caches concurrently. Collaboration owns
+      // shared list/space/member/task I/O and refreshes silently in the background.
+      const [cachedProfile, cachedSort, cachedTasks, cachedPlan, cachedPlanDate, cachedCollaboration] = await Promise.all([
+        loadProfile(resolvedUserId, (fresh) => setProfile(fresh)),
+        Storage.get(`sortBy_custom_${listId}`),
+        loadTasks(resolvedUserId, (fresh) => {
+          if (Array.isArray(fresh)) setTasks(fresh);
           setIsCacheLoaded(true);
         }),
-        Storage.get(`generated_plan_${session.user.id}`),
-        Storage.get(`generated_plan_date_${session.user.id}`)
+        Storage.get(`generated_plan_${resolvedUserId}`),
+        Storage.get(`generated_plan_date_${resolvedUserId}`),
+        loadCollaboration(resolvedUserId, applyCollaboration),
       ]);
+
+      applyCollaboration(cachedCollaboration);
 
       if (cachedProfile) setProfile(cachedProfile);
       if (cachedSort) setSortBy(cachedSort);
@@ -149,13 +388,12 @@ export const CustomListScreen = ({ navigation, route }) => {
       if (cachedPlan && cachedPlanDate === todayString) {
         setGeneratedPlan(cachedPlan);
       } else if (cachedPlan) {
-        Storage.remove(`generated_plan_${session.user.id}`);
-        Storage.remove(`generated_plan_date_${session.user.id}`);
+        Storage.remove(`generated_plan_${resolvedUserId}`);
+        Storage.remove(`generated_plan_date_${resolvedUserId}`);
       }
       
       if (cachedTasks) {
         setTasks(cachedTasks);
-        setLoading(false);
         setIsCacheLoaded(true);
       }
     };
@@ -168,7 +406,52 @@ export const CustomListScreen = ({ navigation, route }) => {
     return () => {
       kShow.remove();
     };
-  }, []);
+  }, [applyCollaboration, listId]);
+
+  useEffect(() => {
+    if (!userId || !isSharedList || resolvedSpaceId == null) return undefined;
+    let active = true;
+    const applyDetail = (detail) => {
+      if (!active || !detail) return;
+      setCollaboration((previous) => ({
+        spaces: detail.space
+          ? [detail.space, ...previous.spaces.filter((space) => String(space?.id) !== String(detail.space.id))]
+          : previous.spaces,
+        members: { ...previous.members, [String(resolvedSpaceId)]: detail.members || [] },
+        lists: Array.isArray(detail.lists)
+          ? [...previous.lists.filter((list) => String(list?.space_id) !== String(resolvedSpaceId)), ...detail.lists]
+          : previous.lists,
+      }));
+      if (Array.isArray(detail.tasks)) {
+        setTasks((previous) => [
+          ...previous.filter((task) => String(task?.space_id) !== String(resolvedSpaceId)),
+          ...detail.tasks,
+        ]);
+        setIsCacheLoaded(true);
+      }
+      const detailList = detail.lists?.find((list) => sameId(list?.id, listId));
+      if (detailList?.name) setLocalListName(detailList.name);
+    };
+    loadSpaceDetail(userId, resolvedSpaceId, applyDetail).then(applyDetail).catch(() => {});
+    loadSpaceActivity(userId, resolvedSpaceId, (fresh) => {
+      if (active) setActivity(fresh || []);
+    }).then((cached) => {
+      if (active) setActivity(cached || []);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [isSharedList, listId, resolvedSpaceId, userId]);
+
+  const refreshSharedWorkspace = useCallback(async (spaceIdOverride = null) => {
+    if (!userId) return null;
+    const fresh = await refreshCollaboration(userId);
+    applyCollaboration(fresh);
+    const refreshedList = (fresh?.lists || []).find((list) => sameId(list?.id, listId));
+    const targetSpaceId = spaceIdOverride || routeSpaceId || refreshedList?.space_id || resolvedSpaceId;
+    if (targetSpaceId != null) {
+      setActivity(fresh?.activity?.[String(targetSpaceId)] || []);
+    }
+    return fresh;
+  }, [applyCollaboration, listId, resolvedSpaceId, routeSpaceId, userId]);
 
   // Handle keyboard hide to close input if no menu is active
   useEffect(() => {
@@ -203,12 +486,12 @@ export const CustomListScreen = ({ navigation, route }) => {
     return () => backHandler.remove();
   }, [isAddingTask]);
 
-  // Save sort preference when it changes, but only after it has loaded
+  // Save this custom list's sort preference independently.
   useEffect(() => {
     if (isSortLoaded) {
-      Storage.set('sortBy_today', sortBy);
+      Storage.set(`sortBy_custom_${listId}`, sortBy);
     }
-  }, [sortBy, isSortLoaded]);
+  }, [sortBy, isSortLoaded, listId]);
 
   // Reload tasks from cache when screen gains focus (e.g. returning from TaskDetail)
   useFocusEffect(
@@ -222,25 +505,30 @@ export const CustomListScreen = ({ navigation, route }) => {
     }, [userId])
   );
 
-  const fetchTasks = async (uid) => {
-    // Refresh from Supabase via dataManager
-    await loadTasks(uid, (fresh) => {
-      setTasks(fresh);
-      setLoading(false);
-    });
+  const matchesAssigneeFilter = (task) => {
+    if (!isSharedList || assigneeFilter === 'all') return true;
+    if (assigneeFilter === 'mine') return sameId(task.assigned_to, userId);
+    return task.assigned_to == null || task.assigned_to === '';
   };
 
   // ─── Sorting — only active tasks for draggable list ──
   const todayStr = new Date().toDateString();
 
   const getSortedActiveTasks = () => {
-    // Keep task in active list while its scribble animation is playing
-    const active = tasks.filter(t => t.list_id === listId && (!t.is_completed || completingTaskIds.includes(t.id)));
+    // Keep task in active list while its scribble animation is playing.
+    const active = tasks.filter((task) => sameId(task.list_id, listId)
+      && matchesAssigneeFilter(task)
+      && (!task.is_completed || completingTaskIds.some((id) => sameId(id, task.id))));
     const sortGroup = (arr) => {
       const s = [...arr];
       switch (sortBy) {
         case 'importance':
-          s.sort((a, b) => (b.is_important ? 1 : 0) - (a.is_important ? 1 : 0));
+          s.sort((a, b) => {
+            const pa = a.priority ?? 1;
+            const pb = b.priority ?? 1;
+            if (pb !== pa) return pb - pa;
+            return (b.is_important ? 1 : 0) - (a.is_important ? 1 : 0);
+          });
           break;
         case 'due_date':
           s.sort((a, b) => {
@@ -268,13 +556,23 @@ export const CustomListScreen = ({ navigation, route }) => {
   };
 
   const getSortedTasks = () => {
-    const active = tasks.filter(t => t.list_id === listId && (!t.is_completed || completingTaskIds.includes(t.id)));
-    const completed = tasks.filter(t => t.list_id === listId && t.is_completed && !completingTaskIds.includes(t.id));
+    const active = tasks.filter((task) => sameId(task.list_id, listId)
+      && matchesAssigneeFilter(task)
+      && (!task.is_completed || completingTaskIds.some((id) => sameId(id, task.id))));
+    const completed = tasks.filter((task) => sameId(task.list_id, listId)
+      && matchesAssigneeFilter(task)
+      && task.is_completed
+      && !completingTaskIds.some((id) => sameId(id, task.id)));
     const sortGroup = (arr) => {
       const s = [...arr];
       switch (sortBy) {
         case 'importance':
-          s.sort((a, b) => (b.is_important ? 1 : 0) - (a.is_important ? 1 : 0));
+          s.sort((a, b) => {
+            const pa = a.priority ?? 1;
+            const pb = b.priority ?? 1;
+            if (pb !== pa) return pb - pa;
+            return (b.is_important ? 1 : 0) - (a.is_important ? 1 : 0);
+          });
           break;
         case 'due_date':
           s.sort((a, b) => {
@@ -302,46 +600,45 @@ export const CustomListScreen = ({ navigation, route }) => {
   };
 
   // Completed today — shown in collapsible section
-  const completedTodayTasks = tasks.filter(t => {
-    if (t.list_id !== listId) return false;
-    if (!t.is_completed) return false;
-    const completedDate = t.completed_at ? new Date(t.completed_at).toDateString() : null;
+  const completedTodayTasks = tasks.filter((task) => {
+    if (!sameId(task.list_id, listId) || !matchesAssigneeFilter(task)) return false;
+    if (!task.is_completed) return false;
+    const completedDate = task.completed_at ? new Date(task.completed_at).toDateString() : null;
     return completedDate === todayStr;
   });
 
   // Clear completed handler
   const handleClearCompleted = async () => {
     setIsMenuOpen(false);
+    if (isViewer) return;
     const currentTasks = latestTasksRef.current;
-    const completed = currentTasks.filter(t => t.list_id === listId && t.is_completed);
-    if (completed.length === 0) return;
-    // Mark them with a flag so they won't show in Today anymore
-    const updatedTasks = currentTasks.filter(t => !t.is_completed);
-    setTasks(updatedTasks);
-    if (userId) {
-      await cacheTasks(userId, updatedTasks);
-      // Delete from Supabase
-      for (const t of completed) {
-        syncToSupabase('tasks', 'delete', {}, { column: 'id', value: t.id });
-      }
+    const completed = currentTasks.filter((task) => sameId(task.list_id, listId) && task.is_completed);
+    if (completed.length === 0 || !userId) return;
+    // Pass each result into the next deletion so unrelated lists and prior
+    // deletions remain intact in both React state and the shared cache.
+    let evolvingTasks = currentTasks;
+    for (const task of completed) {
+      evolvingTasks = await dmDeleteTask(userId, evolvingTasks, task.id);
     }
+    latestTasksRef.current = evolvingTasks;
+    setTasks(evolvingTasks);
   };
 
   // ─── Print / Share ────────────────────────────────────
   const handlePrintList = async () => {
     setIsMenuOpen(false);
     const today = new Date().toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-    const lines = getSortedTasks().map(t => {
-      const status = t.is_completed ? '✅' : (t.is_important ? '⭐' : '⬜');
-      let line = `${status} ${t.title}`;
-      if (t.due_date)      line += `\n   📅 Due: ${formatDate(t.due_date)}`;
-      if (t.reminder_time) line += `\n   🔔 Remind: ${formatDateTime(t.reminder_time)}`;
-      if (t.repeat_rule)   line += `\n   🔁 Repeat: ${t.repeat_rule}`;
+    const lines = getSortedTasks().map(taskItem => {
+      const status = taskItem.is_completed ? '✅' : (taskItem.is_important ? '⭐' : '⬜');
+      let line = `${status} ${taskItem.title}`;
+      if (taskItem.due_date)      line += `\n   📅 ${t('customList.shareDuePrefix', { date: formatDate(taskItem.due_date) })}`;
+      if (taskItem.reminder_time) line += `\n   🔔 ${t('customList.shareRemindPrefix', { datetime: formatDateTime(taskItem.reminder_time) })}`;
+      if (taskItem.repeat_rule)   line += `\n   🔁 ${t('customList.shareRepeatPrefix', { rule: taskItem.repeat_rule })}`;
       return line;
     });
-    const message = `📋 TODAY — ${today}\n${'─'.repeat(32)}\n\n${lines.join('\n\n')}`;
+    const message = `📋 ${t('customList.shareHeader', { date: today })}\n${'─'.repeat(32)}\n\n${lines.join('\n\n')}`;
     try {
-      await Share.share({ message, title: `Today's Tasks — ${today}` });
+      await Share.share({ message, title: t('customList.shareTitle', { date: today }) });
     } catch (e) {
       console.log('Share error', e);
     }
@@ -349,30 +646,35 @@ export const CustomListScreen = ({ navigation, route }) => {
 
   const SORT_LABELS = {
     created_at: null,
-    importance: 'By importance',
-    due_date: 'By due date',
-    alphabetical: 'A–Z',
+    importance: t('customList.sortByImportance'),
+    due_date: t('customList.sortByDueDate'),
+    alphabetical: t('customList.sortAlphabetical'),
   };
 
   const handleDeleteList = () => {
     setIsMenuOpen(false);
+    if (isViewer || isSharedList) return;
     Alert.alert(
-      "Delete List",
-      `Are you sure you want to delete "${localListName}" and all its tasks?`,
+      t('customList.deleteListAlertTitle'),
+      t('customList.deleteListAlertMessage', { listName: localListName }),
       [
-        { text: "Cancel", style: "cancel" },
+        { text: t('common.cancel'), style: "cancel" },
         { 
-          text: "Delete", 
+          text: t('customList.deleteButton'), 
           style: "destructive",
           onPress: async () => {
             if (userId) {
               const lists = await loadLists(userId);
               await deleteList(userId, lists || [], listId);
-              // Optimistically delete tasks for this list locally/remote
-              const tasksToDelete = latestTasksRef.current.filter(t => t.list_id === listId);
-              for (const t of tasksToDelete) {
-                await dmDeleteTask(userId, latestTasksRef.current, t.id);
+              // Optimistically delete tasks for this list locally/remote. Each
+              // call receives the prior result so the deletion set evolves.
+              const tasksToDelete = latestTasksRef.current.filter((task) => sameId(task.list_id, listId));
+              let evolvingTasks = latestTasksRef.current;
+              for (const task of tasksToDelete) {
+                evolvingTasks = await dmDeleteTask(userId, evolvingTasks, task.id);
               }
+              latestTasksRef.current = evolvingTasks;
+              setTasks(evolvingTasks);
               navigation.replace('Dashboard');
             }
           }
@@ -382,113 +684,140 @@ export const CustomListScreen = ({ navigation, route }) => {
   };
 
   const handleRenameList = async () => {
-    if (!renameText.trim()) {
+    if (isViewer) return;
+    const nextName = renameText.trim();
+    if (!nextName) {
       setShowRenameModal(false);
       return;
     }
     if (userId) {
       const lists = await loadLists(userId);
-      await renameList(userId, lists || [], listId, renameText.trim());
-      setLocalListName(renameText.trim());
+      const renameSource = (lists || []).map((list) => (
+        isSharedList && sameId(list.id, listId)
+          ? { ...list, space_id: list.space_id || resolvedSpaceId }
+          : list
+      ));
+      const updatedLists = await renameList(userId, renameSource, listId, nextName);
+      setCollaboration((previous) => ({ ...previous, lists: updatedLists || previous.lists }));
+      setLocalListName(nextName);
     }
     setShowRenameModal(false);
   };
 
   // ─── CRUD ─────────────────────────────────────────────
   const handleAddTask = async () => {
-    if (!newTaskTitle.trim() || !userId) return;
+    if (!newTaskTitle.trim() || !userId || isViewer) return;
 
     const taskData = {
       title: newTaskTitle.trim(),
       due_date: pendingDueDate ? pendingDueDate.toISOString() : null,
       reminder_time: pendingReminder ? pendingReminder.toISOString() : null,
       repeat_rule: pendingRepeatRule,
+      priority: pendingPriority,
       list_id: listId,
+      ...(isSharedList ? { space_id: resolvedSpaceId } : {}),
     };
 
-    // Optimistic add via DataManager
-    const newTasks = await dmAddTask(userId, tasks, taskData, (synced, realTask) => {
+    // DataManager owns both personal and shared optimistic/cache paths. Shared
+    // tasks are delegated to CollaborationManager and never use direct table sync.
+    const newTasks = await dmAddTask(userId, latestTasksRef.current, taskData, (synced, realTask) => {
+      latestTasksRef.current = synced;
       setTasks(synced);
-      // Schedule push notification with real ID
-      if (realTask.reminder_time) {
+      if (realTask.reminder_time && !realTask.space_id) {
         scheduleTaskReminder(realTask.id, realTask.title, realTask.reminder_time);
       }
     });
-
+    latestTasksRef.current = newTasks;
     setTasks(newTasks);
+
     setNewTaskTitle('');
     setPendingDueDate(null);
     setPendingReminder(null);
     setPendingRepeatRule(null);
+    setPendingPriority(1);
     setActiveToolbarMenu(null);
     setIsAddingTask(false);
   };
 
+  const applyPersonalCompletionRewards = async (task, isCompleting, updatedTasks) => {
+    // Shared completion accounting is server-authoritative, including XP.
+    if (!task || isSharedList || task.space_id) return updatedTasks;
+    const xpAmount = task.xp_awarded != null ? task.xp_awarded : Gamification.xpForTask(task);
+    const rewardedTasks = updatedTasks.map((item) => sameId(item.id, task.id)
+      ? { ...item, xp_awarded: isCompleting ? xpAmount : null }
+      : item);
+    await cacheTasks(userId, rewardedTasks);
+    if (isCompleting) {
+      const oldState = await Gamification.checkStreak(userId);
+      const newState = await Gamification.addXP(userId, xpAmount);
+      if (newState && newState.level > (oldState?.level || 1)) {
+        setLevelUpData({ oldLevel: oldState?.level || 1, newLevel: newState.level });
+      }
+    } else {
+      await Gamification.addXP(userId, -xpAmount);
+    }
+    return rewardedTasks;
+  };
+
   const toggleTask = async (id, currentStatus) => {
+    if (!userId || isViewer) return;
     const isCompleting = !currentStatus;
 
     if (isCompleting) {
-      // 1. Mark as "completing" so scribble animation triggers but task stays in active list
-      setCompletingTaskIds(prev => [...prev, id]);
-
-      // 2. After scribble animation finishes (~800ms), actually move to completed
-      setTimeout(() => {
-        if (userId) {
-          const currentTasks = latestTasksRef.current;
-          const completedAt = new Date().toISOString();
-          const updated = currentTasks.map(t =>
-            t.id === id ? { ...t, is_completed: true, completed_at: completedAt } : t
-          );
-
-          // Update local state and clear animation state together in the same render cycle
-          setTasks(updated);
-          setCompletingTaskIds(prev => prev.filter(tid => tid !== id));
-
-          // Run cache and sync tasks in the background asynchronously
-          cacheTasks(userId, updated);
-          syncToSupabase('tasks', 'update',
-            { is_completed: true, completed_at: completedAt },
-            { column: 'id', value: id }
-          );
-
-          const task = currentTasks.find(t => t.id === id);
-          if (task?.reminder_time) cancelTaskReminder(id);
-          Gamification.addXP(userId, 10);
-        }
-      }, 800);
-    } else {
-      // Un-completing: instant
-      if (userId) {
-        const currentTasks = latestTasksRef.current;
-        const updated = currentTasks.map(t =>
-          t.id === id ? { ...t, is_completed: false, completed_at: null } : t
-        );
-        
-        // Update local state instantly
+      // Preserve the scribble animation, then hand the actual mutation to the
+      // data layer so shared idempotency and completion accounting stay central.
+      setCompletingTaskIds((previous) => [...previous, id]);
+      completingTimeouts.current[id] = setTimeout(async () => {
+        const taskBefore = latestTasksRef.current.find((item) => sameId(item.id, id));
+        let updated = await toggleTaskCompletion(userId, latestTasksRef.current, id, currentStatus);
+        latestTasksRef.current = updated;
         setTasks(updated);
+        updated = await applyPersonalCompletionRewards(taskBefore, true, updated);
+        latestTasksRef.current = updated;
+        setTasks(updated);
+        setCompletingTaskIds((previous) => previous.filter((taskId) => !sameId(taskId, id)));
+        delete completingTimeouts.current[id];
+        const task = updated.find((item) => sameId(item.id, id));
+        if (task?.reminder_time && !task.space_id) cancelTaskReminder(id);
+      }, 800);
+      return;
+    }
 
-        // Run cache and sync tasks in the background asynchronously
-        cacheTasks(userId, updated);
-        syncToSupabase('tasks', 'update',
-          { is_completed: false, completed_at: null },
-          { column: 'id', value: id }
-        );
-
-        const task = currentTasks.find(t => t.id === id);
-        if (task?.reminder_time) scheduleTaskReminder(id, task.title, task.reminder_time);
-        Gamification.addXP(userId, -10);
-      }
+    if (completingTimeouts.current[id]) {
+      clearTimeout(completingTimeouts.current[id]);
+      delete completingTimeouts.current[id];
+      // The completion mutation/XP award had not fired yet, so cancellation is
+      // purely local and must not deduct personal XP or enqueue a false update.
+      setCompletingTaskIds((previous) => previous.filter((taskId) => !sameId(taskId, id)));
+      return;
+    }
+    setCompletingTaskIds((previous) => previous.filter((taskId) => !sameId(taskId, id)));
+    const taskBefore = latestTasksRef.current.find((item) => sameId(item.id, id));
+    let updated = await toggleTaskCompletion(userId, latestTasksRef.current, id, currentStatus);
+    latestTasksRef.current = updated;
+    setTasks(updated);
+    updated = await applyPersonalCompletionRewards(taskBefore, false, updated);
+    latestTasksRef.current = updated;
+    setTasks(updated);
+    const task = updated.find((item) => sameId(item.id, id));
+    if (task?.reminder_time && !task.space_id) {
+      scheduleTaskReminder(id, task.title, task.reminder_time);
     }
   };
 
   const toggleImportant = async (id, currentStatus) => {
+    if (isViewer) return;
     const updated = await toggleTaskImportance(userId, latestTasksRef.current, id, currentStatus);
+    latestTasksRef.current = updated;
     setTasks(updated);
   };
 
   const deleteTaskHandler = async (id) => {
-    cancelTaskReminder(id);
+    if (isViewer) return;
+    const target = latestTasksRef.current.find((task) => sameId(task.id, id));
+    if (!target?.space_id) cancelTaskReminder(id);
     const updated = await dmDeleteTask(userId, latestTasksRef.current, id);
+    latestTasksRef.current = updated;
     setTasks(updated);
   };
 
@@ -567,6 +896,26 @@ export const CustomListScreen = ({ navigation, route }) => {
     );
   };
 
+  // ─── In-list drag/reorder ─────────────────────────────
+  const handleCustomListDragEnd = ({ data }) => {
+    if (isViewer) return;
+    requestAnimationFrame(() => {
+      if (sortBy !== 'custom') setSortBy('custom');
+      const orderMap = new Map(data.map((task, index) => [String(task.id), index]));
+      const mergedTasks = latestTasksRef.current.map((task) => (
+        orderMap.has(String(task.id))
+          ? { ...task, order_index: orderMap.get(String(task.id)) }
+          : task
+      ));
+      latestTasksRef.current = mergedTasks;
+      setTasks(mergedTasks);
+      // Preserve space_id/version metadata so DataManager delegates shared
+      // reorder operations to CollaborationManager instead of personal sync.
+      const changedTasks = data.map((task, index) => ({ ...task, order_index: index }));
+      reorderTasks(userId, mergedTasks, changedTasks);
+    });
+  };
+
   // ─── Render ───────────────────────────────────────────
   const sortedTasks = getSortedActiveTasks();
 
@@ -587,10 +936,10 @@ export const CustomListScreen = ({ navigation, route }) => {
             {isMenuOpen && (
               <View style={[styles.dropdown, { backgroundColor: '#2A2A2A', borderColor: '#444' }]}>
                 {[
-                  { key: 'importance', label: 'Sort by importance' },
-                  { key: 'due_date',   label: 'Sort by due date' },
-                  { key: 'alphabetical', label: 'Sort alphabetically' },
-                  { key: 'created_at', label: 'Sort by creation date' },
+                  { key: 'importance', label: t('customList.menuSortByImportance') },
+                  { key: 'due_date',   label: t('customList.menuSortByDueDate') },
+                  { key: 'alphabetical', label: t('customList.menuSortAlphabetically') },
+                  { key: 'created_at', label: t('customList.menuSortByCreationDate') },
                 ].map(item => (
                   <TouchableOpacity
                     key={item.key}
@@ -605,23 +954,41 @@ export const CustomListScreen = ({ navigation, route }) => {
                 ))}
                 <View style={[styles.divider, { backgroundColor: '#444' }]} />
                 <TouchableOpacity style={styles.dropdownItem} onPress={handlePrintList}>
-                  <Text style={[styles.dropdownText, { color: '#fff' }]}>Share / Print list</Text>
+                  <Text style={[styles.dropdownText, { color: '#fff' }]}>{t('customList.shareOrPrintList')}</Text>
                 </TouchableOpacity>
-                {completedTodayTasks.length > 0 && (
+                {!isSharedList ? (
+                  <TouchableOpacity
+                    style={styles.dropdownItem}
+                    onPress={() => { setIsMenuOpen(false); setShowShareSheet(true); }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Share list with people"
+                  >
+                    <Text style={[styles.dropdownText, { color: '#fff' }]}>Share with people</Text>
+                    <Share2 color="#D4D4D8" size={16} />
+                  </TouchableOpacity>
+                ) : null}
+                {completedTodayTasks.length > 0 && !isViewer && (
                   <>
                     <View style={[styles.divider, { backgroundColor: '#444' }]} />
                     <TouchableOpacity style={styles.dropdownItem} onPress={handleClearCompleted}>
-                      <Text style={[styles.dropdownText, { color: '#ff4b4b' }]}>Clear completed</Text>
+                      <Text style={[styles.dropdownText, { color: '#ff4b4b' }]}>{t('customList.clearCompleted')}</Text>
                     </TouchableOpacity>
                   </>
                 )}
                 <View style={[styles.divider, { backgroundColor: '#444' }]} />
-                <TouchableOpacity style={styles.dropdownItem} onPress={() => { setIsMenuOpen(false); setRenameText(localListName); setShowRenameModal(true); }}>
-                  <Text style={[styles.dropdownText, { color: '#fff' }]}>Rename List</Text>
+                <TouchableOpacity
+                  style={[styles.dropdownItem, isViewer && styles.mutationDisabled]}
+                  disabled={isViewer}
+                  accessibilityState={{ disabled: isViewer }}
+                  onPress={() => { setIsMenuOpen(false); setRenameText(localListName); setShowRenameModal(true); }}
+                >
+                  <Text style={[styles.dropdownText, { color: '#fff' }]}>{t('customList.renameListLabel')}</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.dropdownItem} onPress={handleDeleteList}>
-                  <Text style={[styles.dropdownText, { color: '#EF4444' }]}>Delete List</Text>
-                </TouchableOpacity>
+                {!isSharedList ? (
+                  <TouchableOpacity style={styles.dropdownItem} onPress={handleDeleteList}>
+                    <Text style={[styles.dropdownText, { color: '#FB7185' }]}>{t('customList.deleteListLabel')}</Text>
+                  </TouchableOpacity>
+                ) : null}
               </View>
             )}
           </View>
@@ -646,13 +1013,86 @@ export const CustomListScreen = ({ navigation, route }) => {
           </View>
         </View>
 
+        {isSharedList ? (
+          <View style={styles.sharedPanel}>
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={() => setShowConflictSheet(true)}
+              accessibilityRole="button"
+              accessibilityLabel="Open shared sync details"
+              style={styles.syncStatusButton}
+            >
+              <SyncStatusStrip spaceId={resolvedSpaceId} />
+            </TouchableOpacity>
+            <View style={styles.sharedSummaryRow}>
+              <TouchableOpacity
+                activeOpacity={0.72}
+                onPress={() => setShowShareSheet(true)}
+                accessibilityRole="button"
+                accessibilityLabel={`View members and access. ${sharedMembers.length} member${sharedMembers.length === 1 ? '' : 's'}.`}
+                accessibilityHint={currentRole === 'owner' ? 'View people, roles, invitations, and owner controls.' : 'View everyone in this shared space and what each role can do.'}
+                style={styles.sharedIdentity}
+              >
+                <AvatarStack members={sharedMembers} size={26} max={4} />
+                <Text numberOfLines={1} style={styles.sharedSpaceName}>{currentSpace?.name || 'Shared space'}</Text>
+                {currentRole ? <Text style={styles.roleLabel}>{String(currentRole).toUpperCase()}</Text> : null}
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => setShowShareSheet(true)}
+                accessibilityRole="button"
+                accessibilityLabel={`View members and access. ${sharedMembers.length} member${sharedMembers.length === 1 ? '' : 's'}.`}
+                accessibilityHint={currentRole === 'owner' ? 'You can manage people and invitations.' : 'Member management is available only to the owner.'}
+                style={styles.shareButton}
+              >
+                <Users color="#D4D4D8" size={15} />
+                <Text style={styles.shareButtonText}>People · {sharedMembers.length}</Text>
+              </TouchableOpacity>
+            </View>
+            {isViewer ? (
+              <Text accessibilityRole="text" style={styles.viewerNotice}>Viewer access · task and list changes are disabled</Text>
+            ) : null}
+            <View style={styles.segmentedControl} accessibilityRole="tablist">
+              {['tasks', 'activity'].map((tab) => (
+                <TouchableOpacity
+                  key={tab}
+                  onPress={() => setActiveSharedTab(tab)}
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected: activeSharedTab === tab }}
+                  style={[styles.segment, activeSharedTab === tab && styles.segmentActive]}
+                >
+                  <Text style={[styles.segmentText, activeSharedTab === tab && styles.segmentTextActive]}>{tab === 'tasks' ? 'Tasks' : 'Activity'}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            {activeSharedTab === 'tasks' ? (
+              <View style={styles.filterRow} accessibilityRole="radiogroup">
+                {[['all', 'All'], ['mine', 'Mine'], ['unassigned', 'Unassigned']].map(([value, label]) => (
+                  <TouchableOpacity
+                    key={value}
+                    onPress={() => setAssigneeFilter(value)}
+                    accessibilityRole="radio"
+                    accessibilityState={{ checked: assigneeFilter === value }}
+                    style={[styles.filterChip, assigneeFilter === value && styles.filterChipActive]}
+                  >
+                    <Text style={[styles.filterText, assigneeFilter === value && styles.filterTextActive]}>{label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ) : null}
+          </View>
+        ) : null}
+
         <KeyboardAvoidingView 
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined} 
+          behavior={Platform.OS === 'ios' ? 'padding' : 'padding'} 
           style={styles.container}
         >
 
-          {/* Task List */}
-          {!isCacheLoaded ? (
+          {/* Task list / shared activity */}
+          {isSharedList && activeSharedTab === 'activity' ? (
+            <ScrollView style={styles.activityScroll} contentContainerStyle={styles.activityContent} showsVerticalScrollIndicator={false}>
+              <ActivityTimeline items={activity} members={sharedMembers} />
+            </ScrollView>
+          ) : !isCacheLoaded && !(isSharedList && collaborationCacheResolved) ? (
             <View style={{ marginTop: 16, paddingHorizontal: 16 }}>
               <SkeletonTask />
               <SkeletonTask />
@@ -663,180 +1103,51 @@ export const CustomListScreen = ({ navigation, route }) => {
             <NestableScrollContainer style={{ flex: 1 }}>
               {sortedTasks.length === 0 && completedTodayTasks.length === 0 ? (
                 <View style={styles.emptyState}>
-                  <Text style={[styles.emptyText, { color: theme.textMuted }]}>No tasks yet. Tap + to add one.</Text>
+                  <Text style={[styles.emptyText, { color: theme.textMuted }]}>{t('customList.emptyTasksMessage')}</Text>
                 </View>
               ) : null}
 
               {sortedTasks.length === 0 && completedTodayTasks.length > 0 ? (
                 <View style={[styles.emptyState, { flex: 0, paddingVertical: 40 }]}>
-                  <Text style={[styles.emptyText, { color: theme.textMuted }]}>All caught up for today!</Text>
+                  <Text style={[styles.emptyText, { color: theme.textMuted }]}>{t('customList.allCaughtUp')}</Text>
                 </View>
               ) : null}
 
               {sortedTasks.length > 0 && (
                 <NestableDraggableFlatList
                 data={sortedTasks}
-                keyExtractor={(item) => item.id}
+                keyExtractor={(item) => String(item.id)}
                 showsVerticalScrollIndicator={false}
                 contentContainerStyle={styles.scroll}
                 keyboardShouldPersistTaps="handled"
-                onContainerLayout={() => {}}
-                onDragEnd={({ data }) => {
-                  // Defer state update until after drag animation completes to prevent jitter
-                  requestAnimationFrame(() => {
-                    if (sortBy !== 'custom') setSortBy('custom');
-                    
-                    const orderMap = new Map(data.map((t, i) => [t.id, i]));
-                    
-                    const mergedTasks = latestTasksRef.current.map(t => 
-                      orderMap.has(t.id) ? { ...t, order_index: orderMap.get(t.id) } : t
-                    );
-                    
-                    setTasks(mergedTasks);
-                    
-                    // Background sync via SyncQueue (caching full lists and syncing mappings)
-                    const changedTasks = data.map((t, i) => ({ id: t.id, order_index: i }));
-                    reorderTasks(userId, mergedTasks, changedTasks);
-                  });
-                }}
-                renderItem={({ item: task, drag, isActive }) => {
-                  const hasSubtasks = task.subtasks && task.subtasks.length > 0;
-                  const hasNotes = task.notes && task.notes.trim().length > 0;
-                  const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes;
-                  const todayStart = new Date();
-                  todayStart.setHours(0, 0, 0, 0);
-                  const isOverdue = task.due_date && new Date(task.due_date) < todayStart && !task.is_completed;
-                  const completedSubs = hasSubtasks ? task.subtasks.filter(s => s.is_completed).length : 0;
-                  const totalSubs = hasSubtasks ? task.subtasks.length : 0;
-                  return (
-                    <ScaleDecorator>
-                      <TouchableOpacity
-                        activeOpacity={0.75}
-                        onPress={() => navigation.navigate('TaskDetail', { task, userId })}
-                        onLongPress={drag}
-                        disabled={isActive}
-                        style={[
-                          styles.taskCard,
-                          task.is_important && styles.taskCardImportant,
-                          task.is_completed && styles.taskCardCompleted,
-                          isActive && { backgroundColor: 'rgba(255,255,255,0.08)', elevation: 12 }
-                        ]}>
-                        
-                        <View style={[
-                          styles.cardIndicator,
-                          task.is_important && { backgroundColor: '#FFFFFF' }
-                        ]} />
-
-                        {/* Left: drag handle + checkbox */}
-                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                          {!task.is_completed && !completingTaskIds.includes(task.id) && (
-                            <TouchableOpacity onPressIn={drag} style={{ padding: 4, marginRight: 2 }}>
-                              <GripVertical color="#444" size={20} />
-                            </TouchableOpacity>
-                          )}
-                          <TouchableOpacity 
-                            onPress={() => toggleTask(task.id, task.is_completed)} 
-                            disabled={completingTaskIds.includes(task.id)} 
-                            style={[
-                              styles.checkbox, 
-                              (task.is_completed || completingTaskIds.includes(task.id)) && { marginLeft: 28 }
-                            ]}
-                          >
-                            {(task.is_completed || completingTaskIds.includes(task.id)) ? (
-                              <CheckCircle2 color="#10B981" size={24} />
-                            ) : (
-                              <Circle color={theme.text} size={24} />
-                            )}
-                          </TouchableOpacity>
-                        </View>
-
-                        {/* Center: title + meta */}
-                        <View style={styles.taskContent}>
-                          <ScribbleStrike isCompleted={task.is_completed || completingTaskIds.includes(task.id)} shouldAnimate={completingTaskIds.includes(task.id)} color={theme.textMuted}>
-                            <Text
-                              style={[
-                                styles.taskTitle,
-                                { color: completingTaskIds.includes(task.id) ? '#666' : (task.is_completed ? '#666' : '#fff') },
-                                (task.is_completed || completingTaskIds.includes(task.id)) && styles.taskCompleted,
-                              ]}
-                            >
-                              {task.title}
-                            </Text>
-                          </ScribbleStrike>
-
-                          {hasMeta && (
-                            <View style={styles.taskMetaRow}>
-                              {task.due_date && (
-                                <View style={styles.metaPill}>
-                                  <Calendar color={isOverdue ? '#EF4444' : '#888'} size={11} />
-                                  <Text style={[styles.metaLabel, isOverdue && { color: '#EF4444' }]}>
-                                    {formatDate(task.due_date)}
-                                  </Text>
-                                </View>
-                              )}
-                              {task.reminder_time && (
-                                <View style={styles.metaPill}>
-                                  <Bell color="#888" size={11} />
-                                  <Text style={styles.metaLabel}>
-                                    {formatDateTime(task.reminder_time)}
-                                  </Text>
-                                </View>
-                              )}
-                              {task.repeat_rule && (
-                                <View style={styles.metaPill}>
-                                  <Repeat color="#888" size={11} />
-                                  <Text style={styles.metaLabel}>
-                                    {task.repeat_rule}
-                                  </Text>
-                                </View>
-                              )}
-                              {hasSubtasks && (
-                                <View style={styles.metaPill}>
-                                  <ListChecks color="#888" size={11} />
-                                  <Text style={styles.metaLabel}>
-                                    {completedSubs}/{totalSubs}
-                                  </Text>
-                                </View>
-                              )}
-                              {hasNotes && (
-                                <View style={[styles.metaPill, { paddingHorizontal: 6 }]}>
-                                  <FileText color="#888" size={11} />
-                                </View>
-                              )}
-                            </View>
-                          )}
-                        </View>
-
-                        {/* Right: star + delete + My Day */}
-                        <View style={styles.taskActions}>
-                          <TouchableOpacity 
-                            onPress={async () => {
-                              const updated = await updateTask(userId, latestTasksRef.current, task.id, { added_to_today: !task.added_to_today });
-                              setTasks(updated);
-                            }} 
-                            style={styles.iconButtonSmall}
-                          >
-                            <Sun
-                              color={task.added_to_today ? '#FBBF24' : '#444'}
-                              fill={task.added_to_today ? '#FBBF24' : 'transparent'}
-                              size={18}
-                            />
-                          </TouchableOpacity>
-                          <TouchableOpacity onPress={() => toggleImportant(task.id, task.is_important)} style={styles.iconButtonSmall}>
-                            <Star
-                              color={task.is_important ? '#FFFFFF' : '#444'}
-                              fill={task.is_important ? '#FFFFFF' : 'transparent'}
-                              size={18}
-                            />
-                          </TouchableOpacity>
-                          <TouchableOpacity onPress={() => deleteTaskHandler(task.id)} style={styles.iconButtonSmall}>
-                            <Trash2 color="#444" size={18} />
-                          </TouchableOpacity>
-                        </View>
-                      </TouchableOpacity>
-                    </ScaleDecorator>
-                  );
-                }}
+                activationDistance={8}
+                autoscrollThreshold={60}
+                maxToRenderPerBatch={10}
+                updateCellsBatchingPeriod={50}
+                initialNumToRender={10}
+                windowSize={5}
+                onDragEnd={handleCustomListDragEnd}
+                renderItem={({ item: task, drag, isActive }) => (
+                  <CustomListTaskRow
+                    task={task}
+                    theme={theme}
+                    members={sharedMembers}
+                    isReadOnly={isViewer}
+                    isCompleting={completingTaskIds.some((id) => sameId(id, task.id))}
+                    drag={drag}
+                    isActive={isActive}
+                    onPress={() => navigation.navigate('TaskDetail', { task, userId, readOnly: isViewer })}
+                    onToggle={() => toggleTask(task.id, task.is_completed || completingTaskIds.some((id) => sameId(id, task.id)))}
+                    onToggleToday={async () => {
+                      if (isViewer) return;
+                      const updated = await updateTask(userId, latestTasksRef.current, task.id, { added_to_today: !task.added_to_today });
+                      latestTasksRef.current = updated;
+                      setTasks(updated);
+                    }}
+                    onToggleImportant={() => toggleImportant(task.id, task.is_important)}
+                    onDelete={() => deleteTaskHandler(task.id)}
+                  />
+                )}
               />
               )}
 
@@ -852,42 +1163,53 @@ export const CustomListScreen = ({ navigation, route }) => {
                       ? <ChevronDown color="#888" size={18} />
                       : <ChevronRight color="#888" size={18} />}
                     <Text style={styles.completedHeaderText}>
-                      Completed ({completedTodayTasks.length})
+                      {t('customList.completedCount', { count: completedTodayTasks.length })}
                     </Text>
                   </TouchableOpacity>
 
                   {showCompleted && completedTodayTasks.map(task => {
                     const hasSubtasks = task.subtasks && task.subtasks.length > 0;
                     const hasNotes = task.notes && task.notes.trim().length > 0;
-                    const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes;
+                    const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes || true;
                     const completedSubs = hasSubtasks ? task.subtasks.filter(s => s.is_completed).length : 0;
                     const totalSubs = hasSubtasks ? task.subtasks.length : 0;
+                    const assignee = sharedMembers.find((member) => sameId(memberId(member), task.assigned_to));
+                    const syncText = task._sync_status === 'pending'
+                      ? 'Pending sync'
+                      : (task._sync_status === 'error' || task._sync_status === 'failed')
+                        ? task._sync_error?.message || task.sync_error || 'Sync error'
+                        : null;
 
                     const completedAgo = task.completed_at
                       ? (() => {
                           const diff = Date.now() - new Date(task.completed_at).getTime();
                           const mins = Math.floor(diff / 60000);
-                          if (mins < 1) return 'Just now';
-                          if (mins < 60) return `${mins}m ago`;
+                          if (mins < 1) return t('customList.completedJustNow');
+                          if (mins < 60) return t('customList.completedMinutesAgo', { mins });
                           const hrs = Math.floor(mins / 60);
-                          return `${hrs}h ago`;
+                          return t('customList.completedHoursAgo', { hrs });
                         })()
                       : null;
 
                     return (
-                      <Animated.View key={task.id} entering={FadeIn.duration(300)}>
+                      <Animated.View key={String(task.id)} entering={FadeIn.duration(300)}>
                         <TouchableOpacity
                           activeOpacity={0.75}
-                          onPress={() => navigation.navigate('TaskDetail', { task, userId })}
+                          onPress={() => navigation.navigate('TaskDetail', { task, userId, readOnly: isViewer })}
+                          accessibilityHint={isViewer ? 'Read only. Task changes are disabled.' : 'Opens task details.'}
+                          accessibilityState={{ disabled: isViewer }}
                           style={[styles.taskCard, styles.taskCardCompleted]}
                         >
                           {/* Removed green indicator bar */}
 
                           <TouchableOpacity
                             onPress={() => toggleTask(task.id, task.is_completed)}
+                            disabled={isViewer}
+                            accessibilityRole="checkbox"
+                            accessibilityState={{ checked: true, disabled: isViewer }}
                             style={[styles.checkbox, { marginLeft: 28 }]}
                           >
-                            <CheckCircle2 color="#10B981" size={24} />
+                            <CheckCircle2 color="#34D399" size={24} />
                           </TouchableOpacity>
 
                           <View style={styles.taskContent}>
@@ -901,8 +1223,8 @@ export const CustomListScreen = ({ navigation, route }) => {
                               <View style={styles.taskMetaRow}>
                                 {completedAgo && (
                                   <View style={styles.metaPill}>
-                                    <Check color="#10B981" size={11} />
-                                    <Text style={[styles.metaLabel, { color: '#10B981' }]}>{completedAgo}</Text>
+                                    <Check color="#34D399" size={11} />
+                                    <Text style={[styles.metaLabel, { color: '#34D399' }]}>{completedAgo}</Text>
                                   </View>
                                 )}
                                 {hasSubtasks && (
@@ -916,11 +1238,25 @@ export const CustomListScreen = ({ navigation, route }) => {
                                     <FileText color="#888" size={11} />
                                   </View>
                                 )}
+                                {task.space_id ? (
+                                  <View style={styles.assigneeMeta}>
+                                    <View style={styles.assigneeAvatar}><Text style={styles.assigneeInitials}>{assignee ? memberInitials(assignee) : '—'}</Text></View>
+                                    <Text numberOfLines={1} style={styles.assigneeName}>{assignee ? memberName(assignee) : 'Unassigned'}</Text>
+                                  </View>
+                                ) : null}
+                                {syncText ? <Text style={[styles.taskSyncText, task._sync_status !== 'pending' && styles.taskSyncError]}>{syncText}</Text> : null}
                               </View>
                             )}
                           </View>
 
-                          <TouchableOpacity onPress={() => toggleImportant(task.id, task.is_important)} style={styles.iconButtonSmall}>
+                          <TouchableOpacity
+                            onPress={() => toggleImportant(task.id, task.is_important)}
+                            disabled={isViewer}
+                            accessibilityRole="button"
+                            accessibilityLabel="Toggle important"
+                            accessibilityState={{ disabled: isViewer }}
+                            style={[styles.iconButtonSmall, isViewer && styles.mutationDisabled]}
+                          >
                             <Star 
                               color={task.is_important ? '#FFFFFF' : '#444'} 
                               fill={task.is_important ? '#FFFFFF' : 'transparent'} 
@@ -937,10 +1273,13 @@ export const CustomListScreen = ({ navigation, route }) => {
           )}
 
           {/* ─── Bottom Input Area ────────────────────── */}
-          {isAddingTask ? (
+          {(!isSharedList || activeSharedTab === 'tasks') && (isViewer ? (
+            <View style={[styles.readOnlyFooter, { bottom: Math.max(insets.bottom + 16, 20) }]} accessibilityRole="text">
+              <Text style={styles.readOnlyFooterText}>Viewer access · changes disabled</Text>
+            </View>
+          ) : isAddingTask ? (
             <View style={[styles.bottomInputWrapper, {
-              paddingBottom: Platform.OS === 'android' && androidKeyboardHeight > 0 ? 32 : Math.max(insets.bottom, 16),
-              marginBottom: Platform.OS === 'android' && androidKeyboardHeight > 0 ? androidKeyboardHeight : 0,
+              paddingBottom: Math.max(insets.bottom, 16),
             }]}>
 
               {/* Due Date Pop-up */}
@@ -948,20 +1287,20 @@ export const CustomListScreen = ({ navigation, route }) => {
                 <Animated.View entering={FadeIn.duration(200)} exiting={FadeOut.duration(150)} style={[styles.toolbarMenu, { bottom: 85, left: 16 }]}>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingDueDate(getToday()); setActiveToolbarMenu(null); }}>
                     <Calendar color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Today ({getDayName(new Date())})</Text>
+                    <Text style={styles.toolbarMenuText}>{t('customList.dueDateToday', { day: getDayName(new Date()) })}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingDueDate(getTomorrow()); setActiveToolbarMenu(null); }}>
                     <Calendar color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Tomorrow ({getDayName(getTomorrow())})</Text>
+                    <Text style={styles.toolbarMenuText}>{t('customList.dueDateTomorrow', { day: getDayName(getTomorrow()) })}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingDueDate(getNextMonday()); setActiveToolbarMenu(null); }}>
                     <Calendar color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Next week (Mon)</Text>
+                    <Text style={styles.toolbarMenuText}>{t('customList.dueDateNextWeek')}</Text>
                   </TouchableOpacity>
                   <View style={[styles.divider, { backgroundColor: '#444' }]} />
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setActiveToolbarMenu(null); setShowDatePicker(true); }}>
                     <Calendar color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Pick a date</Text>
+                    <Text style={styles.toolbarMenuText}>{t('customList.pickADate')}</Text>
                   </TouchableOpacity>
                 </Animated.View>
               )}
@@ -971,20 +1310,20 @@ export const CustomListScreen = ({ navigation, route }) => {
                 <Animated.View entering={FadeIn.duration(200)} exiting={FadeOut.duration(150)} style={[styles.toolbarMenu, { bottom: 85, left: 60 }]}>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingReminder(getReminderLaterToday()); setActiveToolbarMenu(null); }}>
                     <Bell color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Later today ({getReminderLaterToday().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })})</Text>
+                    <Text style={styles.toolbarMenuText}>{t('customList.reminderLaterToday', { time: getReminderLaterToday().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) })}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingReminder(getReminderTomorrow()); setActiveToolbarMenu(null); }}>
                     <Bell color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Tomorrow ({getDayName(getTomorrow())} 09:00)</Text>
+                    <Text style={styles.toolbarMenuText}>{t('customList.reminderTomorrow', { day: getDayName(getTomorrow()) })}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingReminder(getReminderNextWeek()); setActiveToolbarMenu(null); }}>
                     <Bell color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Next week (Mon 09:00)</Text>
+                    <Text style={styles.toolbarMenuText}>{t('customList.reminderNextWeek')}</Text>
                   </TouchableOpacity>
                   <View style={[styles.divider, { backgroundColor: '#444' }]} />
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setActiveToolbarMenu(null); setReminderPickerDate(new Date()); setShowReminderDatePicker(true); }}>
                     <Bell color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Pick a date & time</Text>
+                    <Text style={styles.toolbarMenuText}>{t('customList.pickDateTime')}</Text>
                   </TouchableOpacity>
                 </Animated.View>
               )}
@@ -994,29 +1333,42 @@ export const CustomListScreen = ({ navigation, route }) => {
                 <Animated.View entering={FadeIn.duration(200)} exiting={FadeOut.duration(150)} style={[styles.toolbarMenu, { bottom: 85, right: 16 }]}>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingRepeatRule('daily'); setActiveToolbarMenu(null); }}>
                     <Repeat color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Daily</Text>
+                    <Text style={styles.toolbarMenuText}>{t('customList.repeatDaily')}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingRepeatRule('weekdays'); setActiveToolbarMenu(null); }}>
                     <Repeat color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Weekdays</Text>
+                    <Text style={styles.toolbarMenuText}>{t('customList.repeatWeekdays')}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingRepeatRule('weekly'); setActiveToolbarMenu(null); }}>
                     <Repeat color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Weekly</Text>
+                    <Text style={styles.toolbarMenuText}>{t('customList.repeatWeekly')}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingRepeatRule('monthly'); setActiveToolbarMenu(null); }}>
                     <Repeat color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Monthly</Text>
+                    <Text style={styles.toolbarMenuText}>{t('customList.repeatMonthly')}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setPendingRepeatRule('yearly'); setActiveToolbarMenu(null); }}>
                     <Repeat color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Yearly</Text>
+                    <Text style={styles.toolbarMenuText}>{t('customList.repeatYearly')}</Text>
                   </TouchableOpacity>
                   <View style={[styles.divider, { backgroundColor: '#444' }]} />
                   <TouchableOpacity style={styles.toolbarMenuItem} onPress={() => { setActiveToolbarMenu(null); setShowCustomRepeatModal(true); }}>
                     <Repeat color="#fff" size={20} style={styles.toolbarMenuIcon} />
-                    <Text style={styles.toolbarMenuText}>Customised</Text>
+                    <Text style={styles.toolbarMenuText}>{t('customList.repeatCustomised')}</Text>
                   </TouchableOpacity>
+                </Animated.View>
+              )}
+
+              {/* Priority Pop-up */}
+              {activeToolbarMenu === 'priority' && (
+                <Animated.View entering={FadeIn.duration(200)} exiting={FadeOut.duration(150)} style={[styles.toolbarMenu, { bottom: 85, right: 16 }]}>
+                  {Object.entries(PRIORITY_CONFIG).reverse().map(([value, config]) => (
+                    <TouchableOpacity key={value} style={styles.toolbarMenuItem} onPress={() => { setPendingPriority(Number(value)); setActiveToolbarMenu(null); }}>
+                      <Flag color={config.color} size={20} fill={Number(value) !== 1 ? config.color : 'transparent'} style={styles.toolbarMenuIcon} />
+                      <Text style={styles.toolbarMenuText}>{config.label}</Text>
+                      {pendingPriority === Number(value) && <Text style={{ color: '#fff', marginLeft: 'auto' }}>✓</Text>}
+                    </TouchableOpacity>
+                  ))}
                 </Animated.View>
               )}
 
@@ -1030,7 +1382,7 @@ export const CustomListScreen = ({ navigation, route }) => {
                 </TouchableOpacity>
                 <TextInput
                   style={[styles.bottomInput, { color: '#fff' }]}
-                  placeholder="Add a task"
+                  placeholder={t('customList.addTaskPlaceholder')}
                   placeholderTextColor="#666"
                   value={newTaskTitle}
                   onChangeText={setNewTaskTitle}
@@ -1046,15 +1398,19 @@ export const CustomListScreen = ({ navigation, route }) => {
               <View style={styles.toolbarRow}>
                 <TouchableOpacity style={[styles.toolbarButton, pendingDueDate && styles.toolbarButtonActive]} onPress={() => setActiveToolbarMenu(activeToolbarMenu === 'date' ? null : 'date')}>
                   <Calendar color={pendingDueDate ? '#fff' : '#888'} size={18} />
-                  <Text style={[styles.toolbarText, pendingDueDate && { color: '#fff' }]}>Due date</Text>
+                  <Text style={[styles.toolbarText, pendingDueDate && { color: '#fff' }]}>{t('customList.toolbarDueDate')}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={[styles.toolbarButton, pendingReminder && styles.toolbarButtonActive]} onPress={() => setActiveToolbarMenu(activeToolbarMenu === 'reminder' ? null : 'reminder')}>
                   <Bell color={pendingReminder ? '#fff' : '#888'} size={18} />
-                  <Text style={[styles.toolbarText, pendingReminder && { color: '#fff' }]}>Remind me</Text>
+                  <Text style={[styles.toolbarText, pendingReminder && { color: '#fff' }]}>{t('customList.toolbarRemindMe')}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={[styles.toolbarButton, pendingRepeatRule && styles.toolbarButtonActive]} onPress={() => setActiveToolbarMenu(activeToolbarMenu === 'repeat' ? null : 'repeat')}>
                   <Repeat color={pendingRepeatRule ? '#fff' : '#888'} size={18} />
-                  <Text style={[styles.toolbarText, pendingRepeatRule && { color: '#fff' }]}>Repeat</Text>
+                  <Text style={[styles.toolbarText, pendingRepeatRule && { color: '#fff' }]}>{t('customList.toolbarRepeat')}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.toolbarButton, pendingPriority !== 1 && styles.toolbarButtonActive]} onPress={() => setActiveToolbarMenu(activeToolbarMenu === 'priority' ? null : 'priority')}>
+                  <Flag color={pendingPriority !== 1 ? getPriorityColor(pendingPriority) : '#888'} size={18} fill={pendingPriority !== 1 ? getPriorityColor(pendingPriority) : 'transparent'} />
+                  <Text style={[styles.toolbarText, pendingPriority !== 1 && { color: '#fff' }]}>{t('customList.toolbarPriority')}</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -1064,10 +1420,12 @@ export const CustomListScreen = ({ navigation, route }) => {
                 bottom: Math.max(insets.bottom + 16, 20)
               }]}
               onPress={() => setIsAddingTask(true)}
+              accessibilityRole="button"
+              accessibilityLabel="Add task"
             >
               <Plus color="#000000" size={28} />
             </TouchableOpacity>
-          )}
+          ))}
         </KeyboardAvoidingView>
 
         {/* ─── Native Date Picker (Due Date) ────────── */}
@@ -1076,7 +1434,7 @@ export const CustomListScreen = ({ navigation, route }) => {
             <View style={styles.pickerModalOverlay}>
               <View style={styles.pickerModalContent}>
                 <View style={styles.pickerHeader}>
-                  <Text style={styles.pickerTitle}>Pick a due date</Text>
+                  <Text style={styles.pickerTitle}>{t('customList.pickDueDateTitle')}</Text>
                   <TouchableOpacity onPress={() => setShowDatePicker(false)}>
                     <X color="#fff" size={24} />
                   </TouchableOpacity>
@@ -1092,7 +1450,7 @@ export const CustomListScreen = ({ navigation, route }) => {
                 />
                 {Platform.OS === 'ios' && (
                   <TouchableOpacity style={styles.pickerDoneBtn} onPress={() => { setPendingDueDate(pendingDueDate || new Date()); setShowDatePicker(false); }}>
-                    <Text style={styles.pickerDoneText}>Done</Text>
+                    <Text style={styles.pickerDoneText}>{t('customList.doneButton')}</Text>
                   </TouchableOpacity>
                 )}
               </View>
@@ -1106,7 +1464,7 @@ export const CustomListScreen = ({ navigation, route }) => {
             <View style={styles.pickerModalOverlay}>
               <View style={styles.pickerModalContent}>
                 <View style={styles.pickerHeader}>
-                  <Text style={styles.pickerTitle}>Pick date & time</Text>
+                  <Text style={styles.pickerTitle}>{t('customList.pickDateTimeTitle')}</Text>
                   <TouchableOpacity onPress={() => setShowReminderDatePicker(false)}>
                     <X color="#fff" size={24} />
                   </TouchableOpacity>
@@ -1125,7 +1483,7 @@ export const CustomListScreen = ({ navigation, route }) => {
                 />
                 {Platform.OS === 'ios' && (
                   <TouchableOpacity style={styles.pickerDoneBtn} onPress={() => { setPendingReminder(reminderPickerDate); setShowReminderDatePicker(false); }}>
-                    <Text style={styles.pickerDoneText}>Done</Text>
+                    <Text style={styles.pickerDoneText}>{t('customList.doneButton')}</Text>
                   </TouchableOpacity>
                 )}
               </View>
@@ -1148,14 +1506,14 @@ export const CustomListScreen = ({ navigation, route }) => {
           <View style={styles.pickerModalOverlay}>
             <View style={styles.customRepeatModal}>
               <View style={styles.pickerHeader}>
-                <Text style={styles.pickerTitle}>Custom repeat</Text>
+                <Text style={styles.pickerTitle}>{t('customList.customRepeatTitle')}</Text>
                 <TouchableOpacity onPress={() => setShowCustomRepeatModal(false)}>
                   <X color="#fff" size={24} />
                 </TouchableOpacity>
               </View>
 
               {/* Repeat every ___ [unit] */}
-              <Text style={styles.customLabel}>Repeat every</Text>
+              <Text style={styles.customLabel}>{t('customList.repeatEveryLabel')}</Text>
               <View style={styles.customRow}>
                 <TextInput
                   style={styles.customNumberInput}
@@ -1180,7 +1538,7 @@ export const CustomListScreen = ({ navigation, route }) => {
               {/* Day selector (only for weeks) */}
               {customRepeatUnit === 'weeks' && (
                 <>
-                  <Text style={[styles.customLabel, { marginTop: 20 }]}>On these days</Text>
+                  <Text style={[styles.customLabel, { marginTop: 20 }]}>{t('customList.onTheseDaysLabel')}</Text>
                   <View style={styles.dayRow}>
                     {DAY_LABELS.map(day => (
                       <TouchableOpacity
@@ -1196,7 +1554,7 @@ export const CustomListScreen = ({ navigation, route }) => {
               )}
 
               <TouchableOpacity style={[styles.pickerDoneBtn, { marginTop: 24 }]} onPress={saveCustomRepeat}>
-                <Text style={styles.pickerDoneText}>Save</Text>
+                <Text style={styles.pickerDoneText}>{t('common.save')}</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -1222,10 +1580,7 @@ export const CustomListScreen = ({ navigation, route }) => {
         savedPlan={generatedPlan}
         onPlanGenerated={(plan) => {
           setGeneratedPlan(plan);
-          if (userId) {
-            Storage.set(`generated_plan_${userId}`, plan);
-            Storage.set(`generated_plan_date_${userId}`, new Date().toDateString());
-          }
+          savePlanForToday(userId, plan);
         }}
         onToggleTask={toggleTask}
       />
@@ -1234,7 +1589,7 @@ export const CustomListScreen = ({ navigation, route }) => {
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.6)' }}>
           <View style={{ width: '85%', backgroundColor: '#1E1E1E', borderColor: '#333', borderWidth: 1, borderRadius: 16, padding: 20 }}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <Text style={{ color: '#fff', fontSize: 18, fontWeight: '700' }}>Rename List</Text>
+              <Text style={{ color: '#fff', fontSize: 18, fontWeight: '700' }}>{t('customList.renameListLabel')}</Text>
               <TouchableOpacity onPress={() => setShowRenameModal(false)}>
                 <X color="#aaa" size={24} />
               </TouchableOpacity>
@@ -1245,7 +1600,7 @@ export const CustomListScreen = ({ navigation, route }) => {
                 value={renameText}
                 onChangeText={setRenameText}
                 autoFocus
-                placeholder="List Name"
+                placeholder={t('customList.listNamePlaceholder')}
                 placeholderTextColor="#666"
                 selectionColor={COLORS.dark.primary}
                 onSubmitEditing={handleRenameList}
@@ -1254,13 +1609,47 @@ export const CustomListScreen = ({ navigation, route }) => {
                 style={{ backgroundColor: COLORS.dark.primary, padding: 14, borderRadius: 8, alignItems: 'center', marginTop: 16 }} 
                 onPress={handleRenameList}
               >
-                <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700' }}>Rename</Text>
+                <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700' }}>{t('customList.renameButton')}</Text>
               </TouchableOpacity>
             </View>
           </View>
         </KeyboardAvoidingView>
       </Modal>
 
+      <ShareListSheet
+        visible={showShareSheet}
+        onClose={() => setShowShareSheet(false)}
+        userId={userId}
+        space={currentSpace}
+        list={currentList || {
+          id: listId,
+          name: localListName,
+          ...(isSharedList ? { space_id: resolvedSpaceId } : {}),
+        }}
+        members={sharedMembers}
+        onChanged={async (result) => {
+          const changedSpaceId = result?.space_id || resolvedSpaceId;
+          await refreshSharedWorkspace(changedSpaceId);
+          if (changedSpaceId != null) {
+            const cachedActivity = await loadSpaceActivity(userId, changedSpaceId, setActivity);
+            setActivity(cachedActivity || []);
+          }
+        }}
+      />
+
+      <ConflictSheet
+        visible={showConflictSheet}
+        onClose={() => setShowConflictSheet(false)}
+        spaceId={resolvedSpaceId}
+        onRefresh={() => refreshSharedWorkspace(resolvedSpaceId)}
+      />
+
+      <LevelUpModal
+        isVisible={!!levelUpData}
+        oldLevel={levelUpData?.oldLevel || 1}
+        newLevel={levelUpData?.newLevel || 2}
+        onClose={() => setLevelUpData(null)}
+      />
     </BackgroundWrapper>
   );
 };
@@ -1276,8 +1665,11 @@ const styles = StyleSheet.create({
     marginBottom: 12, 
     zIndex: 10,
   },
-  iconButton: { 
-    padding: 6 
+  iconButton: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   dropdown: {
     position: 'absolute', 
@@ -1296,10 +1688,11 @@ const styles = StyleSheet.create({
     zIndex: 100,
   },
   dropdownItem: {
+    minHeight: 44,
     flexDirection: 'row', 
     justifyContent: 'space-between', 
     alignItems: 'center',
-    paddingVertical: 12, 
+    paddingVertical: 10,
     paddingHorizontal: 16,
   },
   dropdownText: { 
@@ -1312,9 +1705,9 @@ const styles = StyleSheet.create({
     width: '100%',
     backgroundColor: '#333' 
   },
-  titleContainer: { 
-    paddingHorizontal: 20, 
-    marginBottom: 24 
+  titleContainer: {
+    paddingHorizontal: 16,
+    marginBottom: 24
   },
   titleRow: { 
     flexDirection: 'row', 
@@ -1353,7 +1746,80 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16, 
     paddingBottom: 100 
   },
-
+  sharedPanel: {
+    marginHorizontal: 16,
+    marginBottom: 14,
+    gap: 10,
+  },
+  syncStatusButton: { minHeight: 44, justifyContent: 'center' },
+  sharedSummaryRow: {
+    minHeight: 34,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  sharedIdentity: {
+    minWidth: 0,
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  sharedSpaceName: { flexShrink: 1, color: '#D4D4D8', fontSize: 12, fontWeight: '400' },
+  roleLabel: { color: '#71717A', fontSize: 9, fontWeight: '600', letterSpacing: 0.8 },
+  shareButton: {
+    minHeight: 44,
+    paddingHorizontal: 11,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#3F3F46',
+    borderRadius: 9,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  shareButtonText: { color: '#D4D4D8', fontSize: 12, fontWeight: '400' },
+  viewerNotice: { color: '#A1A1AA', fontSize: 11, fontWeight: '300' },
+  segmentedControl: {
+    minHeight: 44,
+    padding: 2,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#3F3F46',
+    borderRadius: 10,
+    flexDirection: 'row',
+  },
+  segment: { flex: 1, alignItems: 'center', justifyContent: 'center', borderRadius: 8 },
+  segmentActive: { backgroundColor: '#27272A' },
+  segmentText: { color: '#71717A', fontSize: 12, fontWeight: '400' },
+  segmentTextActive: { color: '#F4F4F5' },
+  filterRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
+  filterChip: {
+    minHeight: 44,
+    paddingHorizontal: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#3F3F46',
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  filterChipActive: { borderColor: '#A1A1AA', backgroundColor: '#18181B' },
+  filterText: { color: '#71717A', fontSize: 11, fontWeight: '400' },
+  filterTextActive: { color: '#E4E4E7' },
+  activityScroll: { flex: 1 },
+  activityContent: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 100 },
+  readOnlyFooter: {
+    position: 'absolute',
+    alignSelf: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#3F3F46',
+    borderRadius: 18,
+    backgroundColor: '#18181B',
+  },
+  readOnlyFooterText: { color: '#A1A1AA', fontSize: 11, fontWeight: '400' },
+  mutationDisabled: { opacity: 0.35 },
   // Completed Section
   completedHeader: {
     flexDirection: 'row',
@@ -1430,11 +1896,12 @@ const styles = StyleSheet.create({
 
   // Meta Row (inline, single line)
   taskMetaRow: {
-    flexDirection: 'row', 
-    alignItems: 'center', 
+    flexDirection: 'row',
+    alignItems: 'center',
     flexWrap: 'wrap',
-    marginTop: 4, 
-    gap: 6,
+    marginTop: 5,
+    rowGap: 4,
+    columnGap: 6,
   },
   metaPill: { 
     flexDirection: 'row', 
@@ -1450,16 +1917,41 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: '#888',
   },
+  assigneeMeta: {
+    flexBasis: '100%',
+    maxWidth: '100%',
+    marginTop: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  assigneeAvatar: {
+    width: 17,
+    height: 17,
+    borderRadius: 9,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#52525B',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#18181B',
+  },
+  assigneeInitials: { color: '#A1A1AA', fontSize: 7, fontWeight: '500' },
+  assigneeName: { flexShrink: 1, color: '#A1A1AA', fontSize: 10, fontWeight: '400' },
+  taskSyncText: { color: '#71717A', fontSize: 10, fontWeight: '400' },
+  taskSyncError: { color: '#FCA5A5' },
 
   // Right Actions Column
-  taskActions: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    gap: 12,
-    marginTop: 2,
+  taskActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    marginTop: 0,
   },
-  iconButtonSmall: { 
-    padding: 4,
+  iconButtonSmall: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 
   emptyState: { 

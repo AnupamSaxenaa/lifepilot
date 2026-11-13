@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "LifePilot Beta",
+    "name": "LifePilot",
     "slug": "lifepilot",
-    "version": "1.0.4",
+    "version": "2.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": [
@@ -14,7 +14,7 @@
     "ios": {
       "icon": "./assets/expo.icon",
       "bundleIdentifier": "com.anupam.lp",
-      "buildNumber": "6",
+      "buildNumber": "10",
       "infoPlist": {
         "NSSpeechRecognitionUsageDescription": "Allow $(PRODUCT_NAME) to securely transcribe your voice commands using native speech recognition.",
         "NSMicrophoneUsageDescription": "Allow $(PRODUCT_NAME) to access your microphone so you can speak to the AI assistant.",
@@ -23,13 +23,18 @@
     },
     "android": {
       "package": "com.anupam.lp",
-      "versionCode": 6,
+      "versionCode": 25,
       "permissions": [
-        "RECORD_AUDIO",
+        "android.permission.RECORD_AUDIO",
         "android.permission.READ_CALENDAR",
         "android.permission.WRITE_CALENDAR",
         "android.permission.POST_NOTIFICATIONS",
+        "android.permission.SCHEDULE_EXACT_ALARM",
+        "android.permission.USE_EXACT_ALARM",
         "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
         "android.permission.SYSTEM_ALERT_WINDOW",
         "android.permission.USE_FULL_SCREEN_INTENT",
         "android.permission.VIBRATE",
@@ -61,15 +66,47 @@
       ],
       "expo-font",
       "expo-web-browser",
+      "expo-localization",
+      [
+        "react-native-google-mobile-ads",
+        {
+          "androidAppId": "ca-app-pub-5159407135439148~2996583987",
+          "delayAppMeasurementInit": true,
+          "optimizeInitialization": true,
+          "optimizeAdLoading": true
+        }
+      ],
       "@react-native-community/datetimepicker",
       [
         "expo-notifications",
         {
-          "icon": "./assets/images/icon.png",
-          "color": "#ffffff"
+          "icon": "./assets/images/notification-icon.png",
+          "color": "#A78BFA",
+          "sounds": [
+            "./assets/sounds/custom_alert.wav"
+          ]
         }
       ],
       "expo-secure-store",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "LifePilot uses your approximate location to show weather on your alarm and morning focus screens."
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "LifePilot uses the camera for QR code, barcode, and photo dismiss challenges you set up on your alarms."
+        }
+      ],
+      [
+        "react-native-nfc-manager",
+        {
+          "nfcPermission": "LifePilot uses NFC to let you dismiss alarms by tapping a registered NFC tag.",
+          "selectIdentifiers": []
+        }
+      ],
       [
         "expo-build-properties",
         {
@@ -82,6 +119,8 @@
       "./plugins/withFullScreenAlarm",
       "./plugins/withNotifeeRepo",
       "./plugins/withWidgetExported",
+      "./plugins/withAppBlocker",
+      "./plugins/withAppIconVariants",
       "expo-speech-recognition",
       "expo-image",
       [
@@ -93,15 +132,31 @@
               "label": "Today Tasks",
               "minWidth": "110dp",
               "minHeight": "110dp",
+              "targetCellWidth": 4,
+              "targetCellHeight": 3,
+              "maxResizeWidth": "640dp",
+              "maxResizeHeight": "640dp",
               "resizeMode": "horizontal|vertical",
               "description": "View today's tasks from LifePilot",
+              "updatePeriodMillis": 3600000
+            },
+            {
+              "name": "PlannerWidget",
+              "label": "Today's Plan",
+              "minWidth": "110dp",
+              "minHeight": "110dp",
+              "targetCellWidth": 4,
+              "targetCellHeight": 3,
+              "maxResizeWidth": "640dp",
+              "maxResizeHeight": "640dp",
+              "resizeMode": "horizontal|vertical",
+              "description": "Your Aura schedule for today, tickable from the home screen",
               "updatePeriodMillis": 3600000
             }
           ]
         }
       ]
     ],
-    "jsEngine": "hermes",
     "experiments": {
       "reactCompiler": false
     },
