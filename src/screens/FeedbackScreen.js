@@ -28,7 +28,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { GlassSidebar } from '../components/GlassSidebar';
 import { useTheme } from '../context/ThemeContext';
-import { loadProfile } from '../lib/dataManager';
+import { getCurrentUserId, loadProfile } from '../lib/dataManager';
 import { FEEDBACK_SEVERITIES, loadFeedbackHistory, submitFeedback } from '../lib/feedback';
 import { supabase } from '../lib/supabase';
 
@@ -47,7 +47,11 @@ const STATUS_META = {
 export const FeedbackScreen = ({ navigation }) => {
   const insets = useSafeAreaInsets();
   const { t } = useTranslation();
-  const ACCENT = useTheme().theme.accent;
+  const { theme } = useTheme();
+  const ACCENT = theme.accent;
+  // `styles` here is a module-level StyleSheet, so accent-dependent colours have
+  // to be applied inline rather than baked in.
+  const ON_ACCENT = theme.onAccent || '#0B0B0D';
 
   const [userId, setUserId] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -78,18 +82,18 @@ export const FeedbackScreen = ({ navigation }) => {
 
   useEffect(() => {
     const init = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
-      setUserId(session.user.id);
+      const resolvedUserId = await getCurrentUserId();
+      if (!resolvedUserId) return;
+      setUserId(resolvedUserId);
 
-      const cachedProfile = await loadProfile(session.user.id, setProfile);
+      const cachedProfile = await loadProfile(resolvedUserId, setProfile);
       if (cachedProfile) setProfile(cachedProfile);
 
-      const cachedHistory = await loadFeedbackHistory(session.user.id, (fresh) => {
-        setHistory(fresh);
+      const cachedHistory = await loadFeedbackHistory(resolvedUserId, (fresh) => {
+        setHistory(Array.isArray(fresh) ? fresh : []);
         setHistoryLoading(false);
       });
-      setHistory(cachedHistory);
+      setHistory(Array.isArray(cachedHistory) ? cachedHistory : []);
       setHistoryLoading(false);
     };
     init();
@@ -171,8 +175,10 @@ export const FeedbackScreen = ({ navigation }) => {
     resetForm();
 
     // Refresh the local history view so the new submission shows up.
-    const fresh = await loadFeedbackHistory(userId, setHistory);
-    setHistory(fresh);
+    const fresh = await loadFeedbackHistory(userId, (refreshed) => {
+      setHistory(Array.isArray(refreshed) ? refreshed : []);
+    });
+    setHistory(Array.isArray(fresh) ? fresh : []);
 
     Alert.alert(
       t('feedback.thankYouTitle'),
@@ -293,7 +299,7 @@ export const FeedbackScreen = ({ navigation }) => {
                         style={[styles.severityChip, selected && { backgroundColor: ACCENT, borderColor: ACCENT }]}
                         onPress={() => setSeverity(s)}
                       >
-                        <Text style={[styles.severityChipText, selected && { color: '#000', fontWeight: '700' }]}>
+                        <Text style={[styles.severityChipText, selected && { color: ON_ACCENT, fontWeight: '700' }]}>
                           {t(`feedback.severity_${s}`)}
                         </Text>
                       </TouchableOpacity>
@@ -377,11 +383,11 @@ export const FeedbackScreen = ({ navigation }) => {
               activeOpacity={0.85}
             >
               {submitting ? (
-                <ActivityIndicator color="#000" />
+                <ActivityIndicator color={ON_ACCENT} />
               ) : (
                 <>
-                  <Send color="#000" size={18} />
-                  <Text style={styles.submitBtnText}>{t('feedback.submitButton')}</Text>
+                  <Send color={ON_ACCENT} size={18} />
+                  <Text style={[styles.submitBtnText, { color: ON_ACCENT }]}>{t('feedback.submitButton')}</Text>
                 </>
               )}
             </TouchableOpacity>

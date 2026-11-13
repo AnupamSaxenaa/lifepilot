@@ -71,9 +71,18 @@ export async function widgetTaskHandler(props) {
           // doesn't overwrite us with stale Supabase data while it's open.
           // One multiSet rather than two sequential writes — the user is waiting
           // on this before the widget can redraw.
+          //
+          // `last_widget_write_time` is separate from `last_local_write_time` on
+          // purpose. The app bumps the latter on its own writes too, so a shared
+          // stamp meant the app's widget-sync poll fired on changes the app had
+          // just made itself: pointless re-renders, and a real risk of replacing
+          // the user's in-flight edit with the cache mid-interaction. Only the
+          // widget ever writes this key, so reacting to it is unambiguous.
+          const writeStamp = Date.now().toString();
           await Storage.setBatch([
             [`tasks_${userId}`, updatedTasks],
-            ['last_local_write_time', Date.now().toString()],
+            ['last_local_write_time', writeStamp],
+            ['last_widget_write_time', writeStamp],
           ]);
 
           // --- STEP 2: INSTANT REDRAW ---
@@ -108,10 +117,13 @@ export async function widgetTaskHandler(props) {
             return { ...t, subtasks: nextSubtasks };
           });
 
-          // One multiSet rather than two sequential writes (see TOGGLE_TASK).
+          // One multiSet rather than two sequential writes (see TOGGLE_TASK),
+          // and the widget-specific stamp so the app knows this came from here.
+          const subWriteStamp = Date.now().toString();
           await Storage.setBatch([
             [`tasks_${userId}`, updatedTasks],
-            ['last_local_write_time', Date.now().toString()],
+            ['last_local_write_time', subWriteStamp],
+            ['last_widget_write_time', subWriteStamp],
           ]);
 
           await redraw(props);

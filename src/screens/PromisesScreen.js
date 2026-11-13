@@ -5,7 +5,7 @@ import { ScrollView, StyleSheet, Switch, Text, TextInput, TouchableOpacity, View
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BackgroundWrapper } from '../components/BackgroundWrapper';
 import { GlassSidebar } from '../components/GlassSidebar';
-import { loadProfile } from '../lib/dataManager';
+import { getCurrentUserId, loadProfile } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
 import { Storage } from '../utils/storage';
 
@@ -21,10 +21,8 @@ export const PromisesScreen = ({ navigation }) => {
 
   useEffect(() => {
     const loadConfig = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
-      
-      const uid = session.user.id;
+      const uid = await getCurrentUserId();
+      if (!uid) return;
       setUserId(uid);
 
       const cachedProfile = await loadProfile(uid, (fresh) => setProfile(fresh));
@@ -33,7 +31,7 @@ export const PromisesScreen = ({ navigation }) => {
       const config = await Storage.get(`promisesConfig_${uid}`);
       if (config) {
         setIsEnabled(config.enabled ?? true);
-        setPromises(config.promises || []);
+        setPromises(Array.isArray(config.promises) ? config.promises : []);
       } else {
         // Default promise if empty
         const defaultPromise = t('promises.defaultPromise');

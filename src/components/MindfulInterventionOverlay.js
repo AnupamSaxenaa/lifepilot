@@ -13,19 +13,19 @@ import { BrainCircuit, Heart, Sparkles, X } from 'lucide-react-native';
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  ActivityIndicator,
-  Dimensions,
-  FlatList, Image,
-  KeyboardAvoidingView,
-  Modal,
-  NativeModules,
-  Platform,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View
+    ActivityIndicator,
+    Dimensions,
+    FlatList, Image,
+    KeyboardAvoidingView,
+    Modal,
+    NativeModules,
+    Platform,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View
 } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { useTheme } from '../context/ThemeContext';
@@ -33,23 +33,38 @@ import { chatWithCoach } from '../lib/AIEngine';
 import { loadTasks } from '../lib/dataManager';
 import { Gamification } from '../utils/gamification';
 import {
-  addLogEntry,
-  getApps,
-  getEffectiveBlockingMode,
-  getProfile,
-  getReplacementActivity,
-  getTodayStats,
-  grantTempAllowance,
-  logUsage
+    addLogEntry,
+    getApps,
+    getEffectiveBlockingMode,
+    getProfile,
+    getReplacementActivity,
+    getTodayStats,
+    grantTempAllowance,
+    logUsage
 } from '../utils/mindfulLock';
 import { BreathingExercise } from './BreathingExercise';
 
 const { width } = Dimensions.get('window');
 
-export const MindfulInterventionOverlay = ({ isVisible, onClose, userId, initialApp }) => {
-  const ACCENT = useTheme().theme.accent;
+/** Prepare the coach response without mutating component state. */
+const prepareCoachResponse = async ({ userId, app, profile, tasks, usage }) => {
+  const stats = await getTodayStats(userId);
+  const contextData = { tasks, usage, stats, profile, appName: app.name };
+  const firstMessage = await chatWithCoach([], contextData);
+  return { firstMessage, replacement: getReplacementActivity() };
+};
+
+/**
+ * One mounted intervention session. The public wrapper below unmounts this whole
+ * component whenever the overlay closes, so every opening starts with clean hook
+ * state instead of synchronously resetting eleven values from an effect.
+ */
+const MindfulInterventionSession = ({ onClose, userId, initialApp }) => {
+  const { theme } = useTheme();
+  const ACCENT = theme.accent;
+  const ON_ACCENT = theme.onAccent || '#0B0B0D';
   const { t } = useTranslation();
-  const styles = useMemo(() => makeStyles(ACCENT), [ACCENT]);
+  const styles = useMemo(() => makeStyles(ACCENT, ON_ACCENT), [ACCENT, ON_ACCENT]);
 
   const REASONS = [
     { label: t('mindfulIntervention.reasonBored'), value: 'bored' },
@@ -65,13 +80,13 @@ export const MindfulInterventionOverlay = ({ isVisible, onClose, userId, initial
     { label: t('mindfulIntervention.duration30Min'), value: 30 },
     { label: t('mindfulIntervention.duration1Hr'), value: 60 },
   ];
-  const [stage, setStage] = useState(1);
+  const [stage, setStage] = useState(() => (initialApp ? 2 : 1));
   const [apps, setApps] = useState([]);
-  const [selectedApp, setSelectedApp] = useState(null);
+  const [selectedApp, setSelectedApp] = useState(() => initialApp || null);
   const [chatMessages, setChatMessages] = useState([]);
   const [inputText, setInputText] = useState('');
   const [replacement, setReplacement] = useState('');
-  const [loadingAI, setLoadingAI] = useState(false);
+  const [loadingAI, setLoadingAI] = useState(() => !!initialApp);
   const [selectedReason, setSelectedReason] = useState(null);
   const [selectedDuration, setSelectedDuration] = useState(null);
   const [showCelebration, setShowCelebration] = useState(false);
@@ -79,75 +94,88 @@ export const MindfulInterventionOverlay = ({ isVisible, onClose, userId, initial
   const [todayTasks, setTodayTasks] = useState([]);
 
   useEffect(() => {
-    if (isVisible) {
-      loadData();
-      if (initialApp) {
-        setStage(2);
-        setSelectedApp(initialApp);
-        setChatMessages([{ role: 'system', content: 'You are a mindful coach.' }]); // Basic setup, will be initialized properly later
-        // Note: The handleSelectApp logic is slightly different, but since we are mocking handleSelectApp's behavior:
-      } else {
-        setStage(1);
-        setSelectedApp(null);
+    let active = true;
+
+    (async () => {
+      const [appList, loadedProfile] = await Promise.all([
+        getApps(userId),
+        getProfile(userId),
+      ]);
+
+      let appsWithUsage = appList;
+      if (Platform.OS === 'android' && NativeModules.AppBlocker?.getUsageToday) {
+        appsWithUsage = await Promise.all(
+          appList.map(async (app) => {
+            const ms = await NativeModules.AppBlocker.getUsageToday(
+              app.packageName || app.name.toLowerCase(),
+            );
+            return { ...app, usageToday: Math.floor(ms / 60000) };
+          }),
+        );
       }
-      setChatMessages([]);
-      setInputText('');
-      setReplacement('');
-      setSelectedReason(null);
-      setSelectedDuration(null);
-      setShowCelebration(false);
-    }
-  }, [isVisible, initialApp]);
 
-  const loadData = async () => {
-    const [appList, prof] = await Promise.all([
-      getApps(userId),
-      getProfile(userId),
-    ]);
-    
-    let appsWithUsage = appList;
-    if (Platform.OS === 'android' && NativeModules.AppBlocker?.getUsageToday) {
-      appsWithUsage = await Promise.all(
-        appList.map(async (app) => {
-          const ms = await NativeModules.AppBlocker.getUsageToday(app.packageName || app.name.toLowerCase());
-          return { ...app, usageToday: Math.floor(ms / 60000) };
-        })
-      );
-    }
-    
-    setApps(appsWithUsage);
-    setProfile(prof);
+      const tasks = await loadTasks(userId, () => {});
+      const dateStr = new Date().toISOString().split('T')[0];
+      const todays = tasks.filter((task) => (
+        !task.is_deleted
+        && task.status !== 'completed'
+        && ((task.planned_date && task.planned_date.startsWith(dateStr))
+          || (task.due_date && task.due_date.startsWith(dateStr)))
+      ));
+      const autoSelectedApp = initialApp || (appsWithUsage.length === 1 ? appsWithUsage[0] : null);
 
-    const tasks = await loadTasks(userId, () => {});
-    const dateStr = new Date().toISOString().split('T')[0];
-    const todays = tasks.filter(t => 
-      !t.is_deleted && t.status !== 'completed' && 
-      ((t.planned_date && t.planned_date.startsWith(dateStr)) || (t.due_date && t.due_date.startsWith(dateStr)))
-    );
-    setTodayTasks(todays);
+      if (!active) return;
+      setApps(appsWithUsage);
+      setProfile(loadedProfile);
+      setTodayTasks(todays);
 
-    if (initialApp) {
-      handleSelectApp(initialApp, prof, todays);
-    } else if (appsWithUsage.length === 1) {
-      handleSelectApp(appsWithUsage[0], prof, todays);
-    } else {
-      setStage(1);
-    }
-  };
+      if (!autoSelectedApp) {
+        setStage(1);
+        return;
+      }
+
+      setSelectedApp(autoSelectedApp);
+      setStage(2);
+      setLoadingAI(true);
+      const coach = await prepareCoachResponse({
+        userId,
+        app: autoSelectedApp,
+        profile: loadedProfile,
+        tasks: todays,
+        usage: appsWithUsage,
+      });
+      if (!active) return;
+      setChatMessages([{ role: 'assistant', content: coach.firstMessage }]);
+      setReplacement(coach.replacement);
+      setLoadingAI(false);
+    })().catch((error) => {
+      if (active) {
+        console.warn('[MindfulIntervention] Could not initialize:', error?.message || error);
+        setLoadingAI(false);
+      }
+    });
+
+    return () => { active = false; };
+  }, [initialApp, userId]);
 
   const handleSelectApp = async (app, overrideProfile = profile, overrideTasks = todayTasks) => {
     setSelectedApp(app);
     setStage(2);
     setLoadingAI(true);
 
-    const stats = await getTodayStats(userId);
-    const contextData = { tasks: overrideTasks, usage: apps, stats, profile: overrideProfile, appName: app.name };
-    
-    const firstMsg = await chatWithCoach([], contextData);
-    
-    setChatMessages([{ role: 'assistant', content: firstMsg }]);
-    setReplacement(getReplacementActivity());
-    setLoadingAI(false);
+    try {
+      const coach = await prepareCoachResponse({
+        userId,
+        app,
+        profile: overrideProfile,
+        tasks: overrideTasks,
+        usage: apps,
+      });
+      setChatMessages([{ role: 'assistant', content: coach.firstMessage }]);
+      setReplacement(coach.replacement);
+    } finally {
+      setLoadingAI(false);
+    }
   };
 
   const handleSendMessage = async () => {
@@ -220,15 +248,13 @@ export const MindfulInterventionOverlay = ({ isVisible, onClose, userId, initial
     onClose();
   };
 
-  if (!isVisible) return null;
-
   // When the effective mode is strict (manual toggle OR an active schedule),
   // there is NO bypass — no coach negotiation, no allowance. The override
   // stage becomes a hard wall.
   const isStrict = getEffectiveBlockingMode(profile) === 'strict';
 
   return (
-    <Modal visible={isVisible} animationType="fade" transparent={false}>
+    <Modal visible animationType="fade" transparent={false}>
       <View style={styles.container}>
         {/* Close button */}
         <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
@@ -486,7 +512,23 @@ export const MindfulInterventionOverlay = ({ isVisible, onClose, userId, initial
   );
 };
 
-const makeStyles = (ACCENT) => StyleSheet.create({
+/**
+ * Visibility is a mount boundary, not state to synchronize. Closing unmounts the
+ * session; reopening creates fresh state and restarts initialization exactly once.
+ */
+export const MindfulInterventionOverlay = (props) => {
+  if (!props.isVisible) return null;
+  return (
+    <MindfulInterventionSession
+      key={`${props.userId || 'anonymous'}:${props.initialApp?.id || props.initialApp?.packageName || 'picker'}`}
+      onClose={props.onClose}
+      userId={props.userId}
+      initialApp={props.initialApp}
+    />
+  );
+};
+
+const makeStyles = (ACCENT, ON_ACCENT) => StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#050505',
@@ -799,7 +841,7 @@ const makeStyles = (ACCENT) => StyleSheet.create({
     paddingHorizontal: 40,
   },
   celebrationBtnText: {
-    color: '#ffffff',
+    color: ON_ACCENT,
     fontSize: 16,
     fontWeight: '700',
   },
@@ -865,7 +907,7 @@ const makeStyles = (ACCENT) => StyleSheet.create({
     alignItems: 'center',
   },
   chatSendBtnText: {
-    color: '#fff',
+    color: ON_ACCENT,
     fontWeight: '700',
     fontSize: 15,
   },

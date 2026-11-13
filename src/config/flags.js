@@ -42,7 +42,18 @@ export const ALARMS_ENABLED = parseBooleanFlag(
   false,
 );
 
+// Hustlers (friends + global leaderboard) depends on migration
+// 0017_hustlers_core.sql. Until that migration is applied the tables and RPCs
+// do not exist, so the entry point stays hidden and no requests are made.
+// Flip on AFTER deploying the migration:
+//   EXPO_PUBLIC_HUSTLERS_ENABLED=true
+export const HUSTLERS_ENABLED = parseBooleanFlag(
+  process.env.EXPO_PUBLIC_HUSTLERS_ENABLED,
+  false,
+);
+
 export const FLAGS = {
   PLAYSTORE_MODE,
   ALARMS_ENABLED,
+  HUSTLERS_ENABLED,
 };

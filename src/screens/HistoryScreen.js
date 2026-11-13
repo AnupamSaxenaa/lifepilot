@@ -25,10 +25,9 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { GlassSidebar } from '../components/GlassSidebar';
-import { cacheTasks, loadProfile, loadTasks } from '../lib/dataManager';
+import { clearCompletedTasks, getCurrentUserId, loadProfile, loadTasks, toggleTaskCompletion } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
-import { syncToSupabase } from '../lib/syncQueue';
-import { Storage } from '../utils/storage';
+import { Gamification } from '../utils/gamification';
 
 const THEME_COLOR = '#FFFFFF';
 
@@ -46,20 +45,20 @@ export const HistoryScreen = ({ navigation }) => {
 
   useEffect(() => {
     const init = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
-      setUserId(session.user.id);
+      const resolvedUserId = await getCurrentUserId();
+      if (!resolvedUserId) return;
+      setUserId(resolvedUserId);
       
       const [cachedProfile, cachedTasks] = await Promise.all([
-        loadProfile(session.user.id, setProfile),
-        loadTasks(session.user.id, (fresh) => {
-          setTasks(fresh);
+        loadProfile(resolvedUserId, setProfile),
+        loadTasks(resolvedUserId, (fresh) => {
+          setTasks(Array.isArray(fresh) ? fresh : []);
           setLoading(false);
         })
       ]);
 
       if (cachedProfile) setProfile(cachedProfile);
-      if (cachedTasks) {
+      if (Array.isArray(cachedTasks)) {
         setTasks(cachedTasks);
         setLoading(false);
       }
@@ -68,22 +67,26 @@ export const HistoryScreen = ({ navigation }) => {
   }, []);
 
   const handleRestoreTask = async (task) => {
-    // ✅ FIX: Load fresh tasks, un-complete this specific task
-    const latestTasks = await Storage.get(`tasks_${userId}`) || [];
-    const updated = latestTasks.map(t =>
-      t.id === task.id 
-        ? { ...t, is_completed: false, completed_at: null }
-        : t
-    );
-    
-    await cacheTasks(userId, updated);
-    
-    syncToSupabase('tasks', 'update',
-      { is_completed: false, completed_at: null },
-      { column: 'id', value: task.id }
-    );
-    
+    const updated = await toggleTaskCompletion(userId, tasks, task.id, true);
     setTasks(updated);
+
+    // Restoring a task un-completes it, so the XP granted for completing it must
+    // come back out. Without this, completing and restoring in a loop minted
+    // unlimited XP — `toggleTaskCompletion` only moves completion state and
+    // never touches gamification.
+    //
+    // Deduct the EXACT amount that was awarded (stored on the task at
+    // completion time), not a recomputed value: if the task's priority changed
+    // in between, recomputing would refund the wrong figure and drift the total.
+    if (!userId) return;
+    const awarded = task?.xp_awarded != null
+      ? Number(task.xp_awarded)
+      : Gamification.xpForTask(task);
+    if (Number.isFinite(awarded) && awarded > 0) {
+      // addXP clamps at zero, decrements today's task count, emits the XP toast,
+      // and queues the daily-rollup delta, so the leaderboard follows too.
+      await Gamification.addXP(userId, -awarded);
+    }
   };
 
   const handleLogout = async () => {
@@ -95,11 +98,9 @@ export const HistoryScreen = ({ navigation }) => {
     Alert.alert(t('history.clearHistoryTitle'), t('history.clearHistoryMessage'), [
       { text: t('common.cancel'), style: 'cancel' },
       { text: t('history.deleteButton'), style: 'destructive', onPress: async () => {
-        setTasks(prev => prev.filter(t => !t.is_completed));
-        const latestTasks = await Storage.get(`tasks_${userId}`) || [];
-        const uncompleted = latestTasks.filter(t => !t.is_completed);
-        await cacheTasks(userId, uncompleted);
-        await supabase.from('tasks').delete().eq('is_completed', true);
+        setTasks((current) => current.filter((task) => !task.is_completed));
+        const updated = await clearCompletedTasks(userId, tasks);
+        setTasks(updated);
       }}
     ]);
   };
@@ -262,7 +263,9 @@ export const HistoryScreen = ({ navigation }) => {
           </View>
         </View>
 
-        {loading ? (
+        {/* Spin only with nothing cached to show; otherwise cached history
+            paints immediately instead of flashing a spinner on every visit. */}
+        {loading && tasks.length === 0 ? (
           <View style={styles.centerContainer}>
             <ActivityIndicator size="large" color={THEME_COLOR} />
           </View>

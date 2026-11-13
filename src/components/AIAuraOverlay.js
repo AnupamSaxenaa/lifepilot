@@ -1,6 +1,7 @@
 /* eslint-disable react-hooks/immutability, react-hooks/set-state-in-effect */
 import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
-import { Calendar, CheckCircle2, Circle, LayoutGrid, Mic, Send, Share2, Sparkles, X, Zap } from 'lucide-react-native';
+import i18n from 'i18next';
+import { Calendar, Check, CheckCircle2, Circle, Flame, Languages, LayoutGrid, Mic, Send, Share2, Sparkles, X, Zap } from 'lucide-react-native';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -30,6 +31,7 @@ import Animated, {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { PLAYSTORE_MODE } from '../config/flags';
 import { getPriorityLabel, shouldShowFlag } from '../config/priorityConfig';
+import { DEFAULT_LANGUAGE_CODE, SUPPORTED_LANGUAGES } from '../i18n/languages';
 import { chatWithAura, generatePlan } from '../lib/AIEngine';
 import { buildAuraContext } from '../lib/auraContext';
 import { loadMemory, mergeMemory } from '../lib/auraMemory';
@@ -213,6 +215,13 @@ export const AIAuraOverlay = ({ visible, onClose, tasks, savedPlan, onPlanGenera
   const [userMemory, setUserMemory] = useState('');
   const [creditsLeft, setCreditsLeft] = useState(20);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
+  // Frank Mode is an explicit, adult opt-in. It persists per user until it is
+  // switched off, and consent is only asked for once per account.
+  const [frankMode, setFrankMode] = useState(false);
+  // Aura's reply language follows the app locale until the user overrides it
+  // here; the override is then remembered per account.
+  const [auraLanguage, setAuraLanguage] = useState(null);
+  const [isLanguagePickerOpen, setIsLanguagePickerOpen] = useState(false);
   const insets = useSafeAreaInsets();
 
   // Live window size. The planner card used to be sized from a module-scope
@@ -350,6 +359,18 @@ export const AIAuraOverlay = ({ visible, onClose, tasks, savedPlan, onPlanGenera
           if (mem) setUserMemory(mem);
         }
 
+        // Restore the persisted Frank Mode choice before the first message so
+        // the tone never silently resets between sessions.
+        const savedFrankMode = await Storage.get(getScopedKey('aura_frank_mode', userId));
+        setFrankMode(savedFrankMode === true || savedFrankMode === 'true');
+
+        // Null means "follow the app language", so changing the app locale keeps
+        // Aura in sync until the user deliberately pins a different language.
+        const savedLanguage = await Storage.get(getScopedKey('aura_language', userId));
+        setAuraLanguage(
+          SUPPORTED_LANGUAGES.some((item) => item.code === savedLanguage) ? savedLanguage : null,
+        );
+
         // AI tokens are server-authoritative and ALWAYS metered (no unlimited).
         // Show cached value instantly, then confirm the real balance with the server.
         const localCredits = await Storage.get(`aicredits_${userId}`);
@@ -460,6 +481,61 @@ export const AIAuraOverlay = ({ visible, onClose, tasks, savedPlan, onPlanGenera
     return newCredits;
   };
 
+  const handleSelectLanguage = async (code) => {
+    setAuraLanguage(code);
+    setIsLanguagePickerOpen(false);
+    await Storage.set(getScopedKey('aura_language', userId), code);
+  };
+
+  const handleFollowAppLanguage = async () => {
+    setAuraLanguage(null);
+    setIsLanguagePickerOpen(false);
+    await Storage.remove(getScopedKey('aura_language', userId));
+  };
+
+  const resolvedLanguageCode = auraLanguage || i18n.language || DEFAULT_LANGUAGE_CODE;
+  const activeLanguage = SUPPORTED_LANGUAGES.find((item) => item.code === resolvedLanguageCode)
+    || SUPPORTED_LANGUAGES.find((item) => item.code === resolvedLanguageCode.split('-')[0])
+    || SUPPORTED_LANGUAGES[0];
+
+  const applyFrankMode = async (enabled) => {
+    setFrankMode(enabled);
+    await Storage.set(getScopedKey('aura_frank_mode', userId), enabled);
+  };
+
+  const handleToggleFrankMode = async () => {
+    if (frankMode) {
+      await applyFrankMode(false);
+      return;
+    }
+
+    const consentKey = getScopedKey('aura_frank_mode_consent', userId);
+    const consented = await Storage.get(consentKey);
+    if (consented === true || consented === 'true') {
+      await applyFrankMode(true);
+      return;
+    }
+
+    Alert.alert(
+      t('auraChat.frankModeConsentTitle', { defaultValue: 'Frank Mode · 18+' }),
+      t('auraChat.frankModeConsentBody', {
+        defaultValue:
+          'Aura stops being nice. Expect blunt orders, strong profanity, dark humour, and zero motivational padding.\n\nIt will never use slurs, threaten you, or encourage self-harm. Stays on until you turn it off.',
+      }),
+      [
+        { text: t('common.cancel', { defaultValue: 'Cancel' }), style: 'cancel' },
+        {
+          text: t('auraChat.frankModeConsentAccept', { defaultValue: "I'm 18+, turn it on" }),
+          style: 'destructive',
+          onPress: async () => {
+            await Storage.set(consentKey, true);
+            await applyFrankMode(true);
+          },
+        },
+      ],
+    );
+  };
+
   const handleSend = async () => {
     if (!inputText.trim() || isProcessing) return;
 
@@ -504,7 +580,11 @@ WORKSPACE SNAPSHOT:
 ${taskContext}${calendarContext}`
       };
 
-      const responseJson = await chatWithAura([chatSysPrompt, ...newMessages], userMemory);
+      const responseJson = await chatWithAura([chatSysPrompt, ...newMessages], userMemory, {
+        frankMode,
+        languageCode: activeLanguage.code,
+        languageName: activeLanguage.label,
+      });
 
       // Merge rather than overwrite: facts the model restates win, facts it
       // simply didn't mention this turn survive. That's what stops Aura from
@@ -839,6 +919,50 @@ ${taskContext}${calendarContext}`
 
                 {/* Chat Input Pushed to Bottom */}
                 <View style={styles.inputWrapper}>
+                  <View style={styles.modeRow}>
+                    <TouchableOpacity
+                      style={[styles.frankToggle, frankMode && styles.frankToggleActive]}
+                      onPress={handleToggleFrankMode}
+                      activeOpacity={0.82}
+                      accessibilityRole="switch"
+                      accessibilityState={{ checked: frankMode }}
+                      accessibilityLabel={t('auraChat.frankModeToggleLabel', { defaultValue: 'Frank Mode' })}
+                      accessibilityHint={t('auraChat.frankModeToggleHint', {
+                        defaultValue: 'Adult mode. Blunt, profane coaching that stays on until you turn it off.',
+                      })}
+                    >
+                      <View style={[styles.frankIndicator, frankMode && styles.frankIndicatorActive]}>
+                        <Flame color={frankMode ? '#0B0B0C' : '#8E8E93'} size={13} strokeWidth={2.1} />
+                      </View>
+                      <View style={styles.frankCopy}>
+                        <Text style={[styles.frankTitle, frankMode && styles.frankTitleActive]} numberOfLines={1}>
+                          {t('auraChat.frankModeToggleLabel', { defaultValue: 'Frank Mode' })}
+                        </Text>
+                        <Text style={styles.frankCaption} numberOfLines={1}>
+                          {frankMode
+                            ? t('auraChat.frankModeOnCaption', { defaultValue: 'No filter · tap to stop' })
+                            : t('auraChat.frankModeOffCaption', { defaultValue: '18+ · brutal coaching' })}
+                        </Text>
+                      </View>
+                      <View style={[styles.frankDot, frankMode && styles.frankDotActive]} />
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.languageChip}
+                      onPress={() => setIsLanguagePickerOpen(true)}
+                      activeOpacity={0.82}
+                      accessibilityRole="button"
+                      accessibilityLabel={t('auraChat.languageButtonLabel', {
+                        language: activeLanguage.label,
+                        defaultValue: `Aura language: ${activeLanguage.label}`,
+                      })}
+                    >
+                      <Languages color="#A1A1AA" size={14} strokeWidth={1.9} />
+                      <Text style={styles.languageChipText} numberOfLines={1}>
+                        {activeLanguage.nativeLabel}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
                   <View style={styles.inputBox}>
                     <TouchableOpacity 
                       style={[styles.micBtn, isListening && { backgroundColor: 'rgba(255, 255, 255, 0.2)' }]} 
@@ -986,6 +1110,70 @@ ${taskContext}${calendarContext}`
           </KeyboardAvoidingView>
           </View>
         </SafeAreaView>
+
+        <Modal
+          transparent
+          visible={isLanguagePickerOpen}
+          animationType="fade"
+          statusBarTranslucent
+          onRequestClose={() => setIsLanguagePickerOpen(false)}
+        >
+          <View style={[styles.langBackdrop, { paddingTop: Math.max(insets.top, 16), paddingBottom: Math.max(insets.bottom, 16) }]}>
+            <View style={[styles.langSheet, { maxHeight: winH * 0.72 }]} accessibilityViewIsModal>
+              <View style={styles.langHeader}>
+                <View>
+                  <Text style={styles.langTitle}>
+                    {t('auraChat.languageSheetTitle', { defaultValue: 'Aura speaks' })}
+                  </Text>
+                  <Text style={styles.langSubtitle}>
+                    {t('auraChat.languageSheetSubtitle', { defaultValue: 'Applies to Aura only, not the app' })}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  onPress={() => setIsLanguagePickerOpen(false)}
+                  style={styles.langClose}
+                  accessibilityRole="button"
+                  accessibilityLabel={t('common.close', { defaultValue: 'Close' })}
+                >
+                  <X color="#8E8E93" size={19} />
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
+                <TouchableOpacity
+                  style={styles.langRow}
+                  onPress={handleFollowAppLanguage}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: !auraLanguage }}
+                >
+                  <View style={styles.langRowCopy}>
+                    <Text style={styles.langRowLabel}>
+                      {t('auraChat.languageFollowApp', { defaultValue: 'Match app language' })}
+                    </Text>
+                    <Text style={styles.langRowMeta}>{activeLanguage.nativeLabel}</Text>
+                  </View>
+                  {!auraLanguage ? <Check color="#F4F4F5" size={17} /> : null}
+                </TouchableOpacity>
+
+                {SUPPORTED_LANGUAGES.map((item) => (
+                  <TouchableOpacity
+                    key={item.code}
+                    style={styles.langRow}
+                    onPress={() => handleSelectLanguage(item.code)}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: auraLanguage === item.code }}
+                  >
+                    <View style={styles.langRowCopy}>
+                      <Text style={styles.langRowLabel}>{item.nativeLabel}</Text>
+                      <Text style={styles.langRowMeta}>{item.label}</Text>
+                    </View>
+                    {auraLanguage === item.code ? <Check color="#F4F4F5" size={17} /> : null}
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          </View>
+        </Modal>
       </Animated.View>
     </Modal>
   );
@@ -1049,6 +1237,100 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingBottom: Platform.OS === 'ios' ? 20 : 40,
   },
+  modeRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: 8,
+    marginBottom: 10,
+  },
+  frankToggle: {
+    flex: 1,
+    minHeight: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.18)',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+  },
+  frankToggleActive: {
+    borderColor: 'rgba(244,244,245,0.85)',
+    backgroundColor: 'rgba(244,244,245,0.12)',
+  },
+  frankIndicator: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.22)',
+  },
+  frankIndicatorActive: { backgroundColor: '#F4F4F5', borderColor: '#F4F4F5' },
+  frankCopy: { flex: 1, minWidth: 0 },
+  frankTitle: { color: '#D4D4D8', fontSize: 13, fontWeight: '500', letterSpacing: -0.1 },
+  frankTitleActive: { color: '#FFFFFF' },
+  frankCaption: { color: '#71717A', fontSize: 10, fontWeight: '500', letterSpacing: 0.2, marginTop: 2 },
+  frankDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+  },
+  frankDotActive: { backgroundColor: '#F4F4F5' },
+  languageChip: {
+    minHeight: 48,
+    maxWidth: 132,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.18)',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+  },
+  languageChipText: { color: '#D4D4D8', fontSize: 12, fontWeight: '500', flexShrink: 1 },
+  langBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.72)',
+    justifyContent: 'center',
+    paddingHorizontal: 18,
+  },
+  langSheet: {
+    borderRadius: 22,
+    backgroundColor: '#0D0D0F',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.14)',
+    overflow: 'hidden',
+  },
+  langHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingLeft: 18,
+    paddingRight: 10,
+    paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255,255,255,0.12)',
+  },
+  langTitle: { color: '#F4F4F5', fontSize: 16, fontWeight: '400', letterSpacing: -0.3 },
+  langSubtitle: { color: '#71717A', fontSize: 11, marginTop: 2 },
+  langClose: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
+  langRow: {
+    minHeight: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 18,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255,255,255,0.08)',
+  },
+  langRowCopy: { flex: 1, minWidth: 0 },
+  langRowLabel: { color: '#E4E4E7', fontSize: 14, fontWeight: '400' },
+  langRowMeta: { color: '#71717A', fontSize: 10.5, marginTop: 2 },
   inputBox: {
     flexDirection: 'row',
     width: '100%',

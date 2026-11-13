@@ -3,7 +3,7 @@
 // Self-contained so the app-wide import formatter can't strip its deps.
 
 import { ChevronRight, Store } from 'lucide-react-native';
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Animated, Easing, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useTheme } from '../context/ThemeContext';
@@ -11,7 +11,10 @@ import { withAlpha } from '../utils/color';
 
 export const MarketplaceButton = ({ onPress }) => {
   const { t } = useTranslation();
-  const glow = useRef(new Animated.Value(0)).current;
+  // Animated.Value is imperative mutable state. Lazy React state gives it one
+  // stable owner without reading ref.current during render (unsafe under the
+  // React 19 compiler model).
+  const [glow] = useState(() => new Animated.Value(0));
   const ACCENT = useTheme().theme.accent;
   const styles = useMemo(() => makeStyles(ACCENT), [ACCENT]);
 

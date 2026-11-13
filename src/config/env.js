@@ -16,6 +16,26 @@ export const AI_CONFIG = {
     || process.env.EXPO_PUBLIC_REQUIRE_AI_PROXY === '1',
 };
 
+const trimTrailingSlash = (value = '') => value.replace(/\/+$/, '');
+
+export const COLLABORATION_CONFIG = Object.freeze({
+  INVITE_LANDING_URL: trimTrailingSlash(
+    process.env.EXPO_PUBLIC_INVITE_LANDING_URL
+      || (process.env.EXPO_PUBLIC_SUPABASE_URL
+        ? `${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/invite`
+        : ''),
+  ),
+});
+
+// Raw invite secrets remain in memory only and are placed in the fragment so
+// browsers never send them to the landing endpoint, access logs, or referrers.
+export const buildInviteShareUrl = (rawToken) => {
+  const token = typeof rawToken === 'string' ? rawToken.trim() : '';
+  const base = COLLABORATION_CONFIG.INVITE_LANDING_URL;
+  if (!/^[a-f0-9]{64}$/i.test(token) || !base.startsWith('https://')) return '';
+  return `${base}#token=${encodeURIComponent(token)}`;
+};
+
 /**
  * Calendar OAuth Configuration
  * Replace these with your actual Client IDs from Google Cloud and Microsoft Entra

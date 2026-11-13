@@ -3,11 +3,71 @@ import * as Calendar from 'expo-calendar';
 import * as IntentLauncher from 'expo-intent-launcher';
 import { ExpoSpeechRecognitionModule } from 'expo-speech-recognition';
 import { ArrowLeft, Bell, Calendar as CalendarIcon, CheckCircle2, Mic, Settings, Shield, XCircle } from 'lucide-react-native';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert, AppState, Linking, NativeModules, PermissionsAndroid, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 const { AppBlocker } = NativeModules;
+
+const INITIAL_PERMISSIONS = Object.freeze({
+  notifications: false,
+  calendar: false,
+  microphone: false,
+  fullScreenIntent: true,
+  accessibility: false,
+});
+
+/**
+ * Read the operating-system permission snapshot without touching React state.
+ * Keeping this external synchronization separate lets both mount and button
+ * handlers reuse it, while late native responses can be ignored after unmount.
+ */
+const readPermissionSnapshot = async () => {
+  // 1. Notifications
+  const notifSettings = await notifee.getNotificationSettings();
+  const hasNotifications = notifSettings.authorizationStatus === 1;
+  console.log('[Permissions] Notifications:', hasNotifications, notifSettings);
+
+  // 2. Calendar
+  let hasCalendar = false;
+  try {
+    const { status } = await Calendar.getCalendarPermissions();
+    hasCalendar = status === 'granted';
+    console.log('[Permissions] Calendar:', hasCalendar);
+  } catch (error) {
+    console.log('[Permissions] Calendar check error:', error.message);
+  }
+
+  // 3. Microphone
+  const micStatus = await ExpoSpeechRecognitionModule.getPermissionsAsync();
+  const hasMic = micStatus.granted;
+  console.log('[Permissions] Microphone:', hasMic, micStatus);
+
+  // 4. Full Screen Intent (Android alarms)
+  let hasFullScreen = true;
+  if (Platform.OS === 'android') {
+    const settings = await notifee.getNotificationSettings();
+    hasFullScreen = settings.android?.canUseFullScreenIntent !== false;
+    console.log('[Permissions] Full Screen:', hasFullScreen);
+  }
+
+  // 5. Accessibility
+  let hasAccessibility = false;
+  if (Platform.OS === 'android' && AppBlocker) {
+    hasAccessibility = await AppBlocker.isAccessibilityServiceEnabled();
+    console.log('[Permissions] Accessibility:', hasAccessibility);
+  }
+
+  const snapshot = {
+    notifications: hasNotifications,
+    calendar: hasCalendar,
+    microphone: hasMic,
+    fullScreenIntent: hasFullScreen,
+    accessibility: hasAccessibility,
+  };
+  console.log('[Permissions] Final state:', snapshot);
+  return snapshot;
+};
 
 const PermissionItem = ({ title, description, icon: Icon, isGranted, onRequest, isAndroidOnly }) => {
   const { t } = useTranslation();
@@ -54,82 +114,38 @@ const PermissionItem = ({ title, description, icon: Icon, isGranted, onRequest, 
 };
 export const PermissionsScreen = ({ navigation }) => {
   const { t } = useTranslation();
-  const [permissions, setPermissions] = useState({
-    notifications: false,
-    calendar: false,
-    microphone: false,
-    fullScreenIntent: true, // Android only
-    accessibility: false,
-  });
+  const [permissions, setPermissions] = useState(INITIAL_PERMISSIONS);
 
-  const checkPermissions = async () => {
+  // Event-facing refresh used after permission prompts and AppState changes.
+  const checkPermissions = useCallback(async () => {
     try {
-      // 1. Notifications
-      const notifSettings = await notifee.getNotificationSettings();
-      const hasNotifications = notifSettings.authorizationStatus === 1; // AUTHORIZED
-      console.log('[Permissions] Notifications:', hasNotifications, notifSettings);
-
-      // 2. Calendar (new API - non-deprecated)
-      let hasCalendar = false;
-      try {
-        const { status } = await Calendar.getCalendarPermissions();
-        hasCalendar = status === 'granted';
-        console.log('[Permissions] Calendar:', hasCalendar);
-      } catch (e) {
-        hasCalendar = false;
-        console.log('[Permissions] Calendar check error:', e.message);
-      }
-
-      // 3. Microphone
-      const micStatus = await ExpoSpeechRecognitionModule.getPermissionsAsync();
-      const hasMic = micStatus.granted;
-      console.log('[Permissions] Microphone:', hasMic, micStatus);
-
-      // 4. Full Screen Intent (Android Alarms)
-      let hasFullScreen = true;
-      if (Platform.OS === 'android') {
-        const settings = await notifee.getNotificationSettings();
-        hasFullScreen = settings.android?.canUseFullScreenIntent !== false;
-        console.log('[Permissions] Full Screen:', hasFullScreen);
-      }
-
-      // 5. Accessibility
-      let hasAccessibility = false;
-      if (Platform.OS === 'android' && AppBlocker) {
-        hasAccessibility = await AppBlocker.isAccessibilityServiceEnabled();
-        console.log('[Permissions] Accessibility:', hasAccessibility);
-      }
-
-      setPermissions({
-        notifications: hasNotifications,
-        calendar: hasCalendar,
-        microphone: hasMic,
-        fullScreenIntent: hasFullScreen,
-        accessibility: hasAccessibility,
-      });
-      
-      console.log('[Permissions] Final state:', {
-        notifications: hasNotifications,
-        calendar: hasCalendar,
-        microphone: hasMic,
-        fullScreenIntent: hasFullScreen,
-        accessibility: hasAccessibility,
-      });
-    } catch (e) {
-      console.error('[Permissions] Error checking permissions:', e);
+      setPermissions(await readPermissionSnapshot());
+    } catch (error) {
+      console.error('[Permissions] Error checking permissions:', error);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    checkPermissions();
-    // Re-check when app comes back to foreground (user might have changed settings)
-    const subscription = AppState.addEventListener('change', nextAppState => {
-      if (nextAppState === 'active') {
-        checkPermissions();
-      }
+    let active = true;
+
+    // The commit is visibly behind a native async boundary, and an answer that
+    // arrives after unmount is ignored.
+    readPermissionSnapshot().then((snapshot) => {
+      if (active) setPermissions(snapshot);
+    }).catch((error) => {
+      console.error('[Permissions] Error checking permissions:', error);
     });
-    return () => subscription.remove();
-  }, []);
+
+    // Re-check when the app returns from system settings.
+    const subscription = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState === 'active') checkPermissions();
+    });
+
+    return () => {
+      active = false;
+      subscription.remove();
+    };
+  }, [checkPermissions]);
 
   const handleRequestNotification = async () => {
     try {

@@ -12,7 +12,8 @@ export const UpdatesModal = ({ isVisible, onClose, updateData, isLoading }) => {
   useAppTheme().themeVersion;
   const theme = colorScheme === 'dark' ? COLORS.dark : COLORS.light;
   const ACCENT = theme.accent;
-  const styles = useMemo(() => makeStyles(ACCENT), [ACCENT]);
+  const ON_ACCENT = theme.onAccent || '#0B0B0D';
+  const styles = useMemo(() => makeStyles(ACCENT, ON_ACCENT), [ACCENT, ON_ACCENT]);
 
   const [fadeAnim] = useState(() => new Animated.Value(0));
   const [scaleAnim] = useState(() => new Animated.Value(0.95));
@@ -133,7 +134,7 @@ export const UpdatesModal = ({ isVisible, onClose, updateData, isLoading }) => {
   );
 };
 
-const makeStyles = (ACCENT) => StyleSheet.create({
+const makeStyles = (ACCENT, ON_ACCENT) => StyleSheet.create({
   overlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0, 0, 0, 0.65)',
@@ -194,7 +195,7 @@ const makeStyles = (ACCENT) => StyleSheet.create({
     marginBottom: 20,
   },
   versionText: {
-    color: '#FFF',
+    color: ON_ACCENT,
     fontSize: 13,
     fontWeight: '700',
     letterSpacing: 0.5,
@@ -253,7 +254,7 @@ const makeStyles = (ACCENT) => StyleSheet.create({
     elevation: 4,
   },
   primaryBtnText: {
-    color: '#FFF',
+    color: ON_ACCENT,
     fontSize: 16,
     fontWeight: '700',
     letterSpacing: 0.5,

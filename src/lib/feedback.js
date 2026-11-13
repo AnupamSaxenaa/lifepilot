@@ -67,9 +67,17 @@ export const getAppVersion = () => {
 
 /**
  * Upload a single screenshot (local file URI) to the feedback-attachments
- * bucket, scoped to `<userId>/<random>.<ext>`. Returns the public URL, or
+ * bucket, scoped to `<userId>/<random>.<ext>`. Returns the STORAGE PATH, or
  * null on failure (upload failures never block the feedback submission
  * itself — the report matters more than the picture).
+ *
+ * WHY A PATH AND NOT A PUBLIC URL
+ *   This used to return getPublicUrl(). A bug-report screenshot is whatever the
+ *   user happened to have on screen, so a permanent unauthenticated link to it
+ *   is the wrong default — once that URL is seen by anyone, it works forever.
+ *   The bucket is private and `feedback-notify` mints a short-lived signed URL
+ *   when it posts to Discord, so triage still shows the image while the link
+ *   expires on its own.
  */
 const uploadScreenshot = async (userId, localUri) => {
   try {
@@ -97,8 +105,8 @@ const uploadScreenshot = async (userId, localUri) => {
       return null;
     }
 
-    const { data: urlData } = supabase.storage.from('feedback-attachments').getPublicUrl(fileName);
-    return urlData.publicUrl;
+    // The path, not a URL. See the note above.
+    return fileName;
   } catch (e) {
     console.warn('[Feedback] Screenshot upload error:', e?.message || e);
     return null;
@@ -140,6 +148,9 @@ export const submitFeedback = async (userId, params) => {
   const uploadResults = await Promise.all(
     urisToUpload.map((uri) => uploadScreenshot(userId, uri))
   );
+  // Storage paths, not public URLs. The column keeps its `screenshot_urls` name
+  // so no migration is needed, and rows written before this change still hold
+  // full URLs — feedback-notify handles both shapes.
   const screenshotUrls = uploadResults.filter(Boolean);
 
   const feedbackId = generateUUID();

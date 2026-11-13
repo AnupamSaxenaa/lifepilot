@@ -212,7 +212,13 @@ function seed() {
   check('ticking a step still enqueues durably', calls.includes('enqueue'));
   check('the step is ticked locally first', store.get(`tasks_${USER}`)[0].subtasks[0].is_completed === true);
   check('the sync enqueue happens AFTER the redraw', calls.indexOf('enqueue') > calls.lastIndexOf('getBatch:3'), calls.join(','));
-  check('the local write is one batched set, not two', calls.filter((c) => c.startsWith('set')).length === 1 && calls.includes('setBatch:2'), calls.filter((c) => c.startsWith('set')).join(','));
+  // setBatch:3, not :2 — the tasks array plus TWO stamps. `last_local_write_time`
+  // tells dataManager not to clobber this write with stale server data, and
+  // `last_widget_write_time` is what useWidgetTaskSync watches. They are separate
+  // because the app bumps the former on its own writes too, so a shared stamp made
+  // the app react to changes it had just made itself. What this check actually
+  // guards is unchanged: ONE batched write rather than a sequence of sets.
+  check('the local write is one batched set, not two', calls.filter((c) => c.startsWith('set')).length === 1 && calls.includes('setBatch:3'), calls.filter((c) => c.startsWith('set')).join(','));
   check('a step tick is 5 storage round-trips', calls.filter((c) => c !== 'enqueue').length === 5, `${calls.filter((c) => c !== 'enqueue').length}: ${calls.join(',')}`);
 
   console.log(failures === 0 ? '\nAll widget latency budgets hold.\n' : `\n${failures} check(s) failed.\n`);

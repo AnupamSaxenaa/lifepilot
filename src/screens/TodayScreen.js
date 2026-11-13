@@ -15,7 +15,7 @@ import { ScribbleStrike } from '../components/ScribbleStrike';
 import { getPriorityColor, PRIORITY_CONFIG, shouldShowFlag } from '../config/priorityConfig';
 import { useTheme as useAppTheme } from '../context/ThemeContext';
 import { useWidgetTaskSync } from '../hooks/useWidgetTaskSync';
-import { cacheTasks, addTask as dmAddTask, deleteTask as dmDeleteTask, loadProfile, loadTasks, reorderTasks, toggleTaskImportance } from '../lib/dataManager';
+import { cacheTasks, addTask as dmAddTask, deleteTask as dmDeleteTask, getCurrentUserId, getCurrentUserIdSync, getTasksSync, loadProfile, loadTasks, reorderTasks, toggleTaskImportance } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
 import { syncToSupabase } from '../lib/syncQueue';
 import { COLORS } from '../theme/theme';
@@ -213,7 +213,7 @@ export const TodayScreen = ({ navigation, route }) => {
   const insets = useSafeAreaInsets();
 
   // ─── Core State ───────────────────────────────────────
-  const [tasks, setTasks] = useState([]);
+  const [tasks, setTasks] = useState(() => getTasksSync(getCurrentUserIdSync()) || []);
   const latestTasksRef = useRef(tasks);
   useEffect(() => {
     latestTasksRef.current = tasks;
@@ -228,10 +228,16 @@ export const TodayScreen = ({ navigation, route }) => {
 
   // Widget → app sync: reflect widget task toggles the moment we return to the
   // foreground (or near-instantly while foregrounded).
-  useWidgetTaskSync(userId, (freshTasks) => setTasks(freshTasks));
+  useWidgetTaskSync(userId, (freshTasks) => {
+    setTasks(Array.isArray(freshTasks) ? freshTasks : []);
+  });
   const [showAura, setShowAura] = useState(false);
   const [generatedPlan, setGeneratedPlan] = useState(null);
-  const [isAddingTask, setIsAddingTask] = useState(false);
+  // NEW_TASK is a mount-time navigation action. Derive the first frame from it
+  // instead of rendering closed and opening from an effect one frame later.
+  const [isAddingTask, setIsAddingTask] = useState(
+    () => route?.params?.action === 'NEW_TASK',
+  );
   const [activeToolbarMenu, setActiveToolbarMenu] = useState(null);
   const [levelUpData, setLevelUpData] = useState(null);
   const [showCompleted, setShowCompleted] = useState(true);
@@ -266,25 +272,27 @@ export const TodayScreen = ({ navigation, route }) => {
   const todayDate = new Date().toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long' });
 
   // ─── Init & Fetch ─────────────────────────────────────
-  const [isCacheLoaded, setIsCacheLoaded] = useState(false);
+  // Seeded from the synchronous warm cache: a returning navigation has real
+  // rows on the first frame, so the skeletons no longer flash before content.
+  const [isCacheLoaded, setIsCacheLoaded] = useState(() => !!getTasksSync(getCurrentUserIdSync()));
   
   useEffect(() => {
     const init = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
-      setUserId(session.user.id);
+      const resolvedUserId = await getCurrentUserId();
+      if (!resolvedUserId) return;
+      setUserId(resolvedUserId);
 
       // Load Profile, Sort Preference, Tasks, and Saved Plan concurrently
       const [cachedProfile, cachedSort, cachedTasks, cachedPlan, cachedPlanDate] = await Promise.all([
-        loadProfile(session.user.id, (fresh) => setProfile(fresh)),
+        loadProfile(resolvedUserId, (fresh) => setProfile(fresh)),
         Storage.get('sortBy_today'),
-        loadTasks(session.user.id, (fresh) => {
-          setTasks(fresh);
+        loadTasks(resolvedUserId, (fresh) => {
+          setTasks(Array.isArray(fresh) ? fresh : []);
           setLoading(false);
           setIsCacheLoaded(true);
         }),
-        Storage.get(`generated_plan_${session.user.id}`),
-        Storage.get(`generated_plan_date_${session.user.id}`)
+        Storage.get(`generated_plan_${resolvedUserId}`),
+        Storage.get(`generated_plan_date_${resolvedUserId}`)
       ]);
 
       if (cachedProfile) setProfile(cachedProfile);
@@ -296,11 +304,11 @@ export const TodayScreen = ({ navigation, route }) => {
       if (cachedPlan && cachedPlanDate === todayString) {
         setGeneratedPlan(cachedPlan);
       } else if (cachedPlan) {
-        Storage.remove(`generated_plan_${session.user.id}`);
-        Storage.remove(`generated_plan_date_${session.user.id}`);
+        Storage.remove(`generated_plan_${resolvedUserId}`);
+        Storage.remove(`generated_plan_date_${resolvedUserId}`);
       }
       
-      if (cachedTasks) {
+      if (Array.isArray(cachedTasks)) {
         setTasks(cachedTasks);
         setLoading(false);
         setIsCacheLoaded(true);
@@ -310,8 +318,8 @@ export const TodayScreen = ({ navigation, route }) => {
 
     // Check for deep link actions
     if (route?.params?.action === 'NEW_TASK') {
-      setIsAddingTask(true);
-      // Clear the param so it doesn't trigger again on subsequent renders
+      // Local state was initialized from this mount-time action above. The
+      // effect only consumes the external navigation parameter once.
       navigation.setParams({ action: null });
     }
 
@@ -370,7 +378,7 @@ export const TodayScreen = ({ navigation, route }) => {
       if (!userId) return;
       const refreshFromCache = async () => {
         const cached = await Storage.get(`tasks_${userId}`);
-        if (cached) setTasks(cached);
+        if (Array.isArray(cached)) setTasks(cached);
       };
       refreshFromCache();
     }, [userId])
@@ -379,7 +387,7 @@ export const TodayScreen = ({ navigation, route }) => {
   const fetchTasks = async (uid) => {
     // Refresh from Supabase via dataManager
     await loadTasks(uid, (fresh) => {
-      setTasks(fresh);
+      setTasks(Array.isArray(fresh) ? fresh : []);
       setLoading(false);
     });
   };

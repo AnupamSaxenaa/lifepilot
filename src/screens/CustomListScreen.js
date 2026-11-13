@@ -1,7 +1,7 @@
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
-import { ArrowUp, Bell, Calendar, Check, CheckCircle2, ChevronDown, ChevronRight, Circle, FileText, Flag, GripVertical, ListChecks, Menu, MoreVertical, Plus, Repeat, Star, Sun, Trash2, X } from 'lucide-react-native';
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { ArrowUp, Bell, Calendar, Check, CheckCircle2, ChevronDown, ChevronRight, Circle, FileText, Flag, GripVertical, ListChecks, Menu, MoreVertical, Plus, Repeat, Share2, Star, Sun, Trash2, Users, X } from 'lucide-react-native';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert, BackHandler, Keyboard, KeyboardAvoidingView, Modal, Platform, ScrollView, Share, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { NestableDraggableFlatList, NestableScrollContainer, ScaleDecorator } from 'react-native-draggable-flatlist';
@@ -12,12 +12,13 @@ import { BackgroundWrapper } from '../components/BackgroundWrapper';
 import { GlassSidebar } from '../components/GlassSidebar';
 import { LevelUpModal } from '../components/LevelUpModal';
 import { ScribbleStrike } from '../components/ScribbleStrike';
+import { ActivityTimeline, AvatarStack, ConflictSheet, ShareListSheet, SyncStatusStrip } from '../components/collaboration';
 import { getPriorityColor, PRIORITY_CONFIG, shouldShowFlag } from '../config/priorityConfig';
 import { useTheme as useAppTheme } from '../context/ThemeContext';
 import { useWidgetTaskSync } from '../hooks/useWidgetTaskSync';
-import { cacheTasks, deleteList, addTask as dmAddTask, deleteTask as dmDeleteTask, loadLists, loadProfile, loadTasks, renameList, reorderTasks, toggleTaskImportance, updateTask } from '../lib/dataManager';
+import { loadCollaboration, loadSpaceActivity, loadSpaceDetail, refreshCollaboration } from '../lib/collaborationManager';
+import { addTask as dmAddTask, cacheTasks, deleteList, deleteTask as dmDeleteTask, getCurrentUserId, getCurrentUserIdSync, getTasksSync, loadLists, loadProfile, loadTasks, renameList, reorderTasks, toggleTaskCompletion, toggleTaskImportance, updateTask } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
-import { syncToSupabase } from '../lib/syncQueue';
 import { COLORS } from '../theme/theme';
 import { Gamification } from '../utils/gamification';
 import { cancelTaskReminder, scheduleTaskReminder } from '../utils/notifications';
@@ -46,12 +47,13 @@ const formatDateTime = (d) => {
 
 const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const UNIT_OPTIONS = ['days', 'weeks', 'months', 'years'];
+const sameId = (left, right) => left != null && right != null && String(left) === String(right);
 
 const SkeletonTask = () => {
   const opacity = useSharedValue(0.3);
   useEffect(() => {
     opacity.value = withRepeat(withTiming(0.7, { duration: 800, easing: Easing.inOut(Easing.ease) }), -1, true);
-  }, []);
+  }, [opacity]);
   const style = useAnimatedStyle(() => ({ opacity: opacity.value }));
 
   return (
@@ -66,12 +68,26 @@ const SkeletonTask = () => {
 };
 
 
+const memberIdentity = (member = {}) => member.profile || member.profiles || member;
+const memberId = (member) => member?.user_id || member?.id;
+const memberName = (member) => {
+  const identity = memberIdentity(member);
+  return identity.display_name || identity.displayName || identity.username || identity.email || 'Member';
+};
+const memberInitials = (member) => memberName(member)
+  .trim().split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase() || '?';
+
 // Extracted + memoized so dragging/toggling one row doesn't force React to
 // rebuild every other row's JSX tree from scratch on each render.
-const CustomListTaskRow = memo(function CustomListTaskRow({ task, theme, isCompleting, drag, isActive, onPress, onToggle, onToggleToday, onToggleImportant, onDelete }) {
+const CustomListTaskRow = memo(function CustomListTaskRow({ task, theme, members = [], isReadOnly = false, isCompleting, drag, isActive, onPress, onToggle, onToggleToday, onToggleImportant, onDelete }) {
   const hasSubtasks = task.subtasks && task.subtasks.length > 0;
   const hasNotes = task.notes && task.notes.trim().length > 0;
-  const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes || true;
+  const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes || task.space_id;
+  const assignee = members.find((member) => sameId(memberId(member), task.assigned_to));
+  const syncError = task._sync_status === 'error' || task._sync_status === 'failed'
+    ? task._sync_error?.message || task.sync_error || task.error || 'Sync error'
+    : null;
+  const syncText = task._sync_status === 'pending' ? 'Pending sync' : syncError;
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
   const isOverdue = task.due_date && new Date(task.due_date) < todayStart && !task.is_completed;
@@ -83,8 +99,12 @@ const CustomListTaskRow = memo(function CustomListTaskRow({ task, theme, isCompl
       <TouchableOpacity
         activeOpacity={0.75}
         onPress={onPress}
-        onLongPress={drag}
+        onLongPress={isReadOnly ? undefined : drag}
         disabled={isActive}
+        accessibilityRole="button"
+        accessibilityLabel={`${task.title}${isReadOnly ? ', read only' : ''}`}
+        accessibilityHint={isReadOnly ? 'Task changes are disabled for viewers.' : 'Opens task details.'}
+        accessibilityState={{ disabled: isReadOnly, busy: isCompleting }}
         style={[
           styles.taskCard,
           theme?.surface && { backgroundColor: theme.surface },
@@ -95,17 +115,20 @@ const CustomListTaskRow = memo(function CustomListTaskRow({ task, theme, isCompl
 
         {/* Left: drag handle + checkbox */}
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-          {!task.is_completed && !isCompleting && (
-            <TouchableOpacity onPressIn={drag} style={{ padding: 4, marginRight: 2 }}>
-              <GripVertical color="#444" size={20} />
+          {!task.is_completed && !isCompleting && !isReadOnly && (
+            <TouchableOpacity onPressIn={drag} style={{ padding: 4, marginRight: 2 }} accessibilityLabel="Reorder task">
+              <GripVertical color="#71717A" size={20} />
             </TouchableOpacity>
           )}
           <TouchableOpacity
             onPress={onToggle}
-            disabled={isCompleting}
+            disabled={isCompleting || isReadOnly}
+            accessibilityRole="checkbox"
+            accessibilityLabel={`${task.is_completed ? 'Mark incomplete' : 'Mark complete'}: ${task.title}`}
+            accessibilityState={{ checked: Boolean(task.is_completed), disabled: isReadOnly, busy: isCompleting }}
             style={[
               styles.checkbox,
-              (task.is_completed || isCompleting) && { marginLeft: 28 }
+              (task.is_completed || isCompleting || isReadOnly) && { marginLeft: 28 }
             ]}
           >
             {(task.is_completed || isCompleting) ? (
@@ -174,28 +197,39 @@ const CustomListTaskRow = memo(function CustomListTaskRow({ task, theme, isCompl
                   <FileText color="#888" size={11} />
                 </View>
               )}
+              {task.space_id && (
+                <View style={styles.assigneeMeta} accessibilityLabel={task.assigned_to ? `Assigned to ${assignee ? memberName(assignee) : 'member'}` : 'Unassigned'}>
+                  <View style={styles.assigneeAvatar}>
+                    <Text style={styles.assigneeInitials}>{assignee ? memberInitials(assignee) : '—'}</Text>
+                  </View>
+                  <Text numberOfLines={1} style={styles.assigneeName}>{assignee ? memberName(assignee) : 'Unassigned'}</Text>
+                </View>
+              )}
+              {syncText ? (
+                <Text accessibilityLiveRegion="polite" style={[styles.taskSyncText, syncError && styles.taskSyncError]}>{syncText}</Text>
+              ) : null}
             </View>
           )}
         </View>
 
         {/* Right: star + delete + My Day */}
         <View style={styles.taskActions}>
-          <TouchableOpacity onPress={onToggleToday} style={styles.iconButtonSmall}>
+          <TouchableOpacity onPress={onToggleToday} disabled={isReadOnly} accessibilityRole="button" accessibilityLabel="Toggle My Day" accessibilityState={{ disabled: isReadOnly }} style={[styles.iconButtonSmall, isReadOnly && styles.mutationDisabled]}>
             <Sun
-              color={task.added_to_today ? '#FBBF24' : '#444'}
+              color={task.added_to_today ? '#FBBF24' : '#71717A'}
               fill={task.added_to_today ? '#FBBF24' : 'transparent'}
               size={18}
             />
           </TouchableOpacity>
-          <TouchableOpacity onPress={onToggleImportant} style={styles.iconButtonSmall}>
+          <TouchableOpacity onPress={onToggleImportant} disabled={isReadOnly} accessibilityRole="button" accessibilityLabel="Toggle important" accessibilityState={{ disabled: isReadOnly }} style={[styles.iconButtonSmall, isReadOnly && styles.mutationDisabled]}>
             <Star
-              color={task.is_important ? '#FFFFFF' : '#444'}
+              color={task.is_important ? '#FFFFFF' : '#71717A'}
               fill={task.is_important ? '#FFFFFF' : 'transparent'}
               size={18}
             />
           </TouchableOpacity>
-          <TouchableOpacity onPress={onDelete} style={styles.iconButtonSmall}>
-            <Trash2 color="#444" size={18} />
+          <TouchableOpacity onPress={onDelete} disabled={isReadOnly} accessibilityRole="button" accessibilityLabel="Delete task" accessibilityState={{ disabled: isReadOnly }} style={[styles.iconButtonSmall, isReadOnly && styles.mutationDisabled]}>
+            <Trash2 color="#71717A" size={18} />
           </TouchableOpacity>
         </View>
       </TouchableOpacity>
@@ -205,37 +239,87 @@ const CustomListTaskRow = memo(function CustomListTaskRow({ task, theme, isCompl
 
 export const CustomListScreen = ({ navigation, route }) => {
   const { t } = useTranslation();
-  const { listId, listName } = route?.params || {};
+  const { listId, listName, spaceId: routeSpaceId } = route?.params || {};
 
   const [localListName, setLocalListName] = useState(listName || t('customList.defaultListName'));
   const [showRenameModal, setShowRenameModal] = useState(false);
   const [renameText, setRenameText] = useState(listName || '');
 
-  useAppTheme().themeVersion;
+  useAppTheme();
   // Force dark theme only
   const theme = COLORS.dark;
   const insets = useSafeAreaInsets();
 
   // ─── Core State ───────────────────────────────────────
-  const [tasks, setTasks] = useState([]);
+  const [userId, setUserId] = useState(null);
+  const [tasks, setTasks] = useState(() => getTasksSync(getCurrentUserIdSync()) || []);
   const latestTasksRef = useRef(tasks);
   useEffect(() => {
     latestTasksRef.current = tasks;
   }, [tasks]);
 
   const [newTaskTitle, setNewTaskTitle] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [userId, setUserId] = useState(null);
   const [profile, setProfile] = useState(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [showAura, setShowAura] = useState(false);
   const [generatedPlan, setGeneratedPlan] = useState(null);
   const [isAddingTask, setIsAddingTask] = useState(false);
+  const [activeToolbarMenu, setActiveToolbarMenu] = useState(null);
+
+  const [collaboration, setCollaboration] = useState({ spaces: [], members: {}, lists: [] });
+  const [activity, setActivity] = useState([]);
+  const [collaborationCacheResolved, setCollaborationCacheResolved] = useState(false);
+  const [activeSharedTab, setActiveSharedTab] = useState('tasks');
+  const [assigneeFilter, setAssigneeFilter] = useState('all');
+  const [showShareSheet, setShowShareSheet] = useState(false);
+  const [showConflictSheet, setShowConflictSheet] = useState(false);
+
+  const currentList = useMemo(
+    () => (collaboration.lists || []).find((list) => sameId(list?.id, listId)) || null,
+    [collaboration.lists, listId],
+  );
+  const resolvedSpaceId = routeSpaceId || currentList?.space_id
+    || tasks.find((task) => sameId(task?.list_id, listId) && task?.space_id)?.space_id
+    || null;
+  const isSharedList = resolvedSpaceId != null && String(resolvedSpaceId).length > 0;
+  const currentSpace = useMemo(
+    () => (collaboration.spaces || []).find((space) => sameId(space?.id, resolvedSpaceId))
+      || (isSharedList ? { id: resolvedSpaceId, name: 'Shared space' } : null),
+    [collaboration.spaces, isSharedList, resolvedSpaceId],
+  );
+  const sharedMembers = useMemo(
+    () => (isSharedList ? collaboration.members?.[String(resolvedSpaceId)] || [] : []),
+    [collaboration.members, isSharedList, resolvedSpaceId],
+  );
+  const currentMembership = sharedMembers.find((member) => sameId(memberId(member), userId));
+  const currentRole = String(currentMembership?.role || '').toLowerCase();
+  // Shared mutations are enabled only from the cached/server member directory.
+  // Route params can be stale or crafted and therefore never grant write access.
+  const isViewer = isSharedList && !['owner', 'editor'].includes(currentRole);
+
+  const applyCollaboration = useCallback((incoming) => {
+    if (!incoming || typeof incoming !== 'object') return;
+    const incomingLists = Array.isArray(incoming.lists) ? incoming.lists : [];
+    const sharedList = incomingLists.find((list) => sameId(list?.id, listId));
+    const candidateSpaceId = routeSpaceId || sharedList?.space_id || null;
+    setCollaboration((previous) => ({
+      spaces: Array.isArray(incoming.spaces) ? incoming.spaces : previous.spaces,
+      members: incoming.members && typeof incoming.members === 'object' ? incoming.members : previous.members,
+      lists: incomingLists.length ? incomingLists : previous.lists,
+    }));
+    if (sharedList?.name) setLocalListName(sharedList.name);
+    if (candidateSpaceId && Array.isArray(incoming.tasks)) {
+      setTasks(incoming.tasks);
+    }
+    if (candidateSpaceId && incoming.activity && typeof incoming.activity === 'object') {
+      setActivity(incoming.activity[String(candidateSpaceId)] || []);
+    }
+    setCollaborationCacheResolved(true);
+  }, [listId, routeSpaceId]);
 
   // Widget → app sync: reflect widget task toggles on resume / while foregrounded.
   useWidgetTaskSync(userId, (fresh) => setTasks(fresh));
-  const [activeToolbarMenu, setActiveToolbarMenu] = useState(null);
   const [levelUpData, setLevelUpData] = useState(null);
   const completingTimeouts = useRef({});
   const [showCompleted, setShowCompleted] = useState(true);
@@ -248,7 +332,7 @@ export const CustomListScreen = ({ navigation, route }) => {
   const [pendingPriority, setPendingPriority] = useState(1);
 
   // ─── Keyboard state for Android fallback ──────────────
-  const [androidKeyboardHeight, setAndroidKeyboardHeight] = useState(0);
+  const [, setAndroidKeyboardHeight] = useState(0);
 
   // ─── Native Picker State ──────────────────────────────
   const [showDatePicker, setShowDatePicker] = useState(false);
@@ -269,26 +353,31 @@ export const CustomListScreen = ({ navigation, route }) => {
   const todayDate = new Date().toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long' });
 
   // ─── Init & Fetch ─────────────────────────────────────
-  const [isCacheLoaded, setIsCacheLoaded] = useState(false);
+  // Seeded from the synchronous warm cache: a returning navigation has real
+  // rows on the first frame, so the skeletons no longer flash before content.
+  const [isCacheLoaded, setIsCacheLoaded] = useState(() => !!getTasksSync(getCurrentUserIdSync()));
   
   useEffect(() => {
     const init = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
-      setUserId(session.user.id);
+      const resolvedUserId = await getCurrentUserId();
+      if (!resolvedUserId) return;
+      setUserId(resolvedUserId);
 
-      // Load Profile, this list's Sort Preference, Tasks, and Saved Plan concurrently.
-      const [cachedProfile, cachedSort, cachedTasks, cachedPlan, cachedPlanDate] = await Promise.all([
-        loadProfile(session.user.id, (fresh) => setProfile(fresh)),
+      // Load collaboration and personal caches concurrently. Collaboration owns
+      // shared list/space/member/task I/O and refreshes silently in the background.
+      const [cachedProfile, cachedSort, cachedTasks, cachedPlan, cachedPlanDate, cachedCollaboration] = await Promise.all([
+        loadProfile(resolvedUserId, (fresh) => setProfile(fresh)),
         Storage.get(`sortBy_custom_${listId}`),
-        loadTasks(session.user.id, (fresh) => {
-          setTasks(fresh);
-          setLoading(false);
+        loadTasks(resolvedUserId, (fresh) => {
+          if (Array.isArray(fresh)) setTasks(fresh);
           setIsCacheLoaded(true);
         }),
-        Storage.get(`generated_plan_${session.user.id}`),
-        Storage.get(`generated_plan_date_${session.user.id}`)
+        Storage.get(`generated_plan_${resolvedUserId}`),
+        Storage.get(`generated_plan_date_${resolvedUserId}`),
+        loadCollaboration(resolvedUserId, applyCollaboration),
       ]);
+
+      applyCollaboration(cachedCollaboration);
 
       if (cachedProfile) setProfile(cachedProfile);
       if (cachedSort) setSortBy(cachedSort);
@@ -299,13 +388,12 @@ export const CustomListScreen = ({ navigation, route }) => {
       if (cachedPlan && cachedPlanDate === todayString) {
         setGeneratedPlan(cachedPlan);
       } else if (cachedPlan) {
-        Storage.remove(`generated_plan_${session.user.id}`);
-        Storage.remove(`generated_plan_date_${session.user.id}`);
+        Storage.remove(`generated_plan_${resolvedUserId}`);
+        Storage.remove(`generated_plan_date_${resolvedUserId}`);
       }
       
       if (cachedTasks) {
         setTasks(cachedTasks);
-        setLoading(false);
         setIsCacheLoaded(true);
       }
     };
@@ -318,7 +406,52 @@ export const CustomListScreen = ({ navigation, route }) => {
     return () => {
       kShow.remove();
     };
-  }, []);
+  }, [applyCollaboration, listId]);
+
+  useEffect(() => {
+    if (!userId || !isSharedList || resolvedSpaceId == null) return undefined;
+    let active = true;
+    const applyDetail = (detail) => {
+      if (!active || !detail) return;
+      setCollaboration((previous) => ({
+        spaces: detail.space
+          ? [detail.space, ...previous.spaces.filter((space) => String(space?.id) !== String(detail.space.id))]
+          : previous.spaces,
+        members: { ...previous.members, [String(resolvedSpaceId)]: detail.members || [] },
+        lists: Array.isArray(detail.lists)
+          ? [...previous.lists.filter((list) => String(list?.space_id) !== String(resolvedSpaceId)), ...detail.lists]
+          : previous.lists,
+      }));
+      if (Array.isArray(detail.tasks)) {
+        setTasks((previous) => [
+          ...previous.filter((task) => String(task?.space_id) !== String(resolvedSpaceId)),
+          ...detail.tasks,
+        ]);
+        setIsCacheLoaded(true);
+      }
+      const detailList = detail.lists?.find((list) => sameId(list?.id, listId));
+      if (detailList?.name) setLocalListName(detailList.name);
+    };
+    loadSpaceDetail(userId, resolvedSpaceId, applyDetail).then(applyDetail).catch(() => {});
+    loadSpaceActivity(userId, resolvedSpaceId, (fresh) => {
+      if (active) setActivity(fresh || []);
+    }).then((cached) => {
+      if (active) setActivity(cached || []);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [isSharedList, listId, resolvedSpaceId, userId]);
+
+  const refreshSharedWorkspace = useCallback(async (spaceIdOverride = null) => {
+    if (!userId) return null;
+    const fresh = await refreshCollaboration(userId);
+    applyCollaboration(fresh);
+    const refreshedList = (fresh?.lists || []).find((list) => sameId(list?.id, listId));
+    const targetSpaceId = spaceIdOverride || routeSpaceId || refreshedList?.space_id || resolvedSpaceId;
+    if (targetSpaceId != null) {
+      setActivity(fresh?.activity?.[String(targetSpaceId)] || []);
+    }
+    return fresh;
+  }, [applyCollaboration, listId, resolvedSpaceId, routeSpaceId, userId]);
 
   // Handle keyboard hide to close input if no menu is active
   useEffect(() => {
@@ -372,20 +505,20 @@ export const CustomListScreen = ({ navigation, route }) => {
     }, [userId])
   );
 
-  const fetchTasks = async (uid) => {
-    // Refresh from Supabase via dataManager
-    await loadTasks(uid, (fresh) => {
-      setTasks(fresh);
-      setLoading(false);
-    });
+  const matchesAssigneeFilter = (task) => {
+    if (!isSharedList || assigneeFilter === 'all') return true;
+    if (assigneeFilter === 'mine') return sameId(task.assigned_to, userId);
+    return task.assigned_to == null || task.assigned_to === '';
   };
 
   // ─── Sorting — only active tasks for draggable list ──
   const todayStr = new Date().toDateString();
 
   const getSortedActiveTasks = () => {
-    // Keep task in active list while its scribble animation is playing
-    const active = tasks.filter(t => t.list_id === listId && (!t.is_completed || completingTaskIds.includes(t.id)));
+    // Keep task in active list while its scribble animation is playing.
+    const active = tasks.filter((task) => sameId(task.list_id, listId)
+      && matchesAssigneeFilter(task)
+      && (!task.is_completed || completingTaskIds.some((id) => sameId(id, task.id))));
     const sortGroup = (arr) => {
       const s = [...arr];
       switch (sortBy) {
@@ -423,8 +556,13 @@ export const CustomListScreen = ({ navigation, route }) => {
   };
 
   const getSortedTasks = () => {
-    const active = tasks.filter(t => t.list_id === listId && (!t.is_completed || completingTaskIds.includes(t.id)));
-    const completed = tasks.filter(t => t.list_id === listId && t.is_completed && !completingTaskIds.includes(t.id));
+    const active = tasks.filter((task) => sameId(task.list_id, listId)
+      && matchesAssigneeFilter(task)
+      && (!task.is_completed || completingTaskIds.some((id) => sameId(id, task.id))));
+    const completed = tasks.filter((task) => sameId(task.list_id, listId)
+      && matchesAssigneeFilter(task)
+      && task.is_completed
+      && !completingTaskIds.some((id) => sameId(id, task.id)));
     const sortGroup = (arr) => {
       const s = [...arr];
       switch (sortBy) {
@@ -462,29 +600,28 @@ export const CustomListScreen = ({ navigation, route }) => {
   };
 
   // Completed today — shown in collapsible section
-  const completedTodayTasks = tasks.filter(t => {
-    if (t.list_id !== listId) return false;
-    if (!t.is_completed) return false;
-    const completedDate = t.completed_at ? new Date(t.completed_at).toDateString() : null;
+  const completedTodayTasks = tasks.filter((task) => {
+    if (!sameId(task.list_id, listId) || !matchesAssigneeFilter(task)) return false;
+    if (!task.is_completed) return false;
+    const completedDate = task.completed_at ? new Date(task.completed_at).toDateString() : null;
     return completedDate === todayStr;
   });
 
   // Clear completed handler
   const handleClearCompleted = async () => {
     setIsMenuOpen(false);
+    if (isViewer) return;
     const currentTasks = latestTasksRef.current;
-    const completed = currentTasks.filter(t => t.list_id === listId && t.is_completed);
-    if (completed.length === 0) return;
-    // Mark them with a flag so they won't show in Today anymore
-    const updatedTasks = currentTasks.filter(t => !t.is_completed);
-    setTasks(updatedTasks);
-    if (userId) {
-      await cacheTasks(userId, updatedTasks);
-      // Delete from Supabase
-      for (const t of completed) {
-        syncToSupabase('tasks', 'delete', {}, { column: 'id', value: t.id });
-      }
+    const completed = currentTasks.filter((task) => sameId(task.list_id, listId) && task.is_completed);
+    if (completed.length === 0 || !userId) return;
+    // Pass each result into the next deletion so unrelated lists and prior
+    // deletions remain intact in both React state and the shared cache.
+    let evolvingTasks = currentTasks;
+    for (const task of completed) {
+      evolvingTasks = await dmDeleteTask(userId, evolvingTasks, task.id);
     }
+    latestTasksRef.current = evolvingTasks;
+    setTasks(evolvingTasks);
   };
 
   // ─── Print / Share ────────────────────────────────────
@@ -516,6 +653,7 @@ export const CustomListScreen = ({ navigation, route }) => {
 
   const handleDeleteList = () => {
     setIsMenuOpen(false);
+    if (isViewer || isSharedList) return;
     Alert.alert(
       t('customList.deleteListAlertTitle'),
       t('customList.deleteListAlertMessage', { listName: localListName }),
@@ -528,11 +666,15 @@ export const CustomListScreen = ({ navigation, route }) => {
             if (userId) {
               const lists = await loadLists(userId);
               await deleteList(userId, lists || [], listId);
-              // Optimistically delete tasks for this list locally/remote
-              const tasksToDelete = latestTasksRef.current.filter(t => t.list_id === listId);
-              for (const t of tasksToDelete) {
-                await dmDeleteTask(userId, latestTasksRef.current, t.id);
+              // Optimistically delete tasks for this list locally/remote. Each
+              // call receives the prior result so the deletion set evolves.
+              const tasksToDelete = latestTasksRef.current.filter((task) => sameId(task.list_id, listId));
+              let evolvingTasks = latestTasksRef.current;
+              for (const task of tasksToDelete) {
+                evolvingTasks = await dmDeleteTask(userId, evolvingTasks, task.id);
               }
+              latestTasksRef.current = evolvingTasks;
+              setTasks(evolvingTasks);
               navigation.replace('Dashboard');
             }
           }
@@ -542,21 +684,29 @@ export const CustomListScreen = ({ navigation, route }) => {
   };
 
   const handleRenameList = async () => {
-    if (!renameText.trim()) {
+    if (isViewer) return;
+    const nextName = renameText.trim();
+    if (!nextName) {
       setShowRenameModal(false);
       return;
     }
     if (userId) {
       const lists = await loadLists(userId);
-      await renameList(userId, lists || [], listId, renameText.trim());
-      setLocalListName(renameText.trim());
+      const renameSource = (lists || []).map((list) => (
+        isSharedList && sameId(list.id, listId)
+          ? { ...list, space_id: list.space_id || resolvedSpaceId }
+          : list
+      ));
+      const updatedLists = await renameList(userId, renameSource, listId, nextName);
+      setCollaboration((previous) => ({ ...previous, lists: updatedLists || previous.lists }));
+      setLocalListName(nextName);
     }
     setShowRenameModal(false);
   };
 
   // ─── CRUD ─────────────────────────────────────────────
   const handleAddTask = async () => {
-    if (!newTaskTitle.trim() || !userId) return;
+    if (!newTaskTitle.trim() || !userId || isViewer) return;
 
     const taskData = {
       title: newTaskTitle.trim(),
@@ -565,18 +715,21 @@ export const CustomListScreen = ({ navigation, route }) => {
       repeat_rule: pendingRepeatRule,
       priority: pendingPriority,
       list_id: listId,
+      ...(isSharedList ? { space_id: resolvedSpaceId } : {}),
     };
 
-    // Optimistic add via DataManager
-    const newTasks = await dmAddTask(userId, tasks, taskData, (synced, realTask) => {
+    // DataManager owns both personal and shared optimistic/cache paths. Shared
+    // tasks are delegated to CollaborationManager and never use direct table sync.
+    const newTasks = await dmAddTask(userId, latestTasksRef.current, taskData, (synced, realTask) => {
+      latestTasksRef.current = synced;
       setTasks(synced);
-      // Schedule push notification with real ID
-      if (realTask.reminder_time) {
+      if (realTask.reminder_time && !realTask.space_id) {
         scheduleTaskReminder(realTask.id, realTask.title, realTask.reminder_time);
       }
     });
-
+    latestTasksRef.current = newTasks;
     setTasks(newTasks);
+
     setNewTaskTitle('');
     setPendingDueDate(null);
     setPendingReminder(null);
@@ -586,96 +739,85 @@ export const CustomListScreen = ({ navigation, route }) => {
     setIsAddingTask(false);
   };
 
+  const applyPersonalCompletionRewards = async (task, isCompleting, updatedTasks) => {
+    // Shared completion accounting is server-authoritative, including XP.
+    if (!task || isSharedList || task.space_id) return updatedTasks;
+    const xpAmount = task.xp_awarded != null ? task.xp_awarded : Gamification.xpForTask(task);
+    const rewardedTasks = updatedTasks.map((item) => sameId(item.id, task.id)
+      ? { ...item, xp_awarded: isCompleting ? xpAmount : null }
+      : item);
+    await cacheTasks(userId, rewardedTasks);
+    if (isCompleting) {
+      const oldState = await Gamification.checkStreak(userId);
+      const newState = await Gamification.addXP(userId, xpAmount);
+      if (newState && newState.level > (oldState?.level || 1)) {
+        setLevelUpData({ oldLevel: oldState?.level || 1, newLevel: newState.level });
+      }
+    } else {
+      await Gamification.addXP(userId, -xpAmount);
+    }
+    return rewardedTasks;
+  };
+
   const toggleTask = async (id, currentStatus) => {
+    if (!userId || isViewer) return;
     const isCompleting = !currentStatus;
 
     if (isCompleting) {
-      // 1. Mark as "completing" so scribble animation triggers but task stays in active list
-      setCompletingTaskIds(prev => [...prev, id]);
-
-      // 2. After scribble animation finishes (~800ms), actually move to completed
+      // Preserve the scribble animation, then hand the actual mutation to the
+      // data layer so shared idempotency and completion accounting stay central.
+      setCompletingTaskIds((previous) => [...previous, id]);
       completingTimeouts.current[id] = setTimeout(async () => {
-        if (userId) {
-          const completedAt = new Date().toISOString();
-          
-          const freshTasks = await Storage.get(`tasks_${userId}`) || [];
-          const task = freshTasks.find(t => t.id === id);
-          const xpAmount = Gamification.xpForTask(task);
-
-          const updated = freshTasks.map(t =>
-            t.id === id ? { ...t, is_completed: true, completed_at: completedAt, xp_awarded: xpAmount } : t
-          );
-
-          // Update local state and clear animation state together in the same render cycle
-          setTasks(updated);
-          setCompletingTaskIds(prev => prev.filter(tid => tid !== id));
-          delete completingTimeouts.current[id];
-
-          // Run cache and sync tasks in the background asynchronously
-          cacheTasks(userId, updated);
-          syncToSupabase('tasks', 'update',
-            { is_completed: true, completed_at: completedAt },
-            { column: 'id', value: id }
-          );
-
-          if (task?.reminder_time) cancelTaskReminder(id);
-
-          const oldState = await Gamification.checkStreak(userId);
-          const prevLevel = oldState?.level || 1;
-          
-          const newState = await Gamification.addXP(userId, xpAmount);
-          
-          if (newState && newState.level > prevLevel) {
-            setLevelUpData({ oldLevel: prevLevel, newLevel: newState.level });
-          }
-        }
-      }, 800);
-    } else {
-      // Un-completing: instant
-      let shouldSubtractXP = true;
-      if (completingTimeouts.current[id]) {
-        clearTimeout(completingTimeouts.current[id]);
-        delete completingTimeouts.current[id];
-        shouldSubtractXP = false; // Cancelled before the 800ms XP award fired
-      }
-      setCompletingTaskIds(prev => prev.filter(tid => tid !== id));
-
-      if (userId) {
-        const freshTasks = await Storage.get(`tasks_${userId}`) || [];
-        const task = freshTasks.find(t => t.id === id);
-        const xpAmount = (task && task.xp_awarded != null) ? task.xp_awarded : Gamification.xpForTask(task);
-
-        const updated = freshTasks.map(t =>
-          t.id === id ? { ...t, is_completed: false, completed_at: null, xp_awarded: null } : t
-        );
-        
-        // Update local state instantly
+        const taskBefore = latestTasksRef.current.find((item) => sameId(item.id, id));
+        let updated = await toggleTaskCompletion(userId, latestTasksRef.current, id, currentStatus);
+        latestTasksRef.current = updated;
         setTasks(updated);
+        updated = await applyPersonalCompletionRewards(taskBefore, true, updated);
+        latestTasksRef.current = updated;
+        setTasks(updated);
+        setCompletingTaskIds((previous) => previous.filter((taskId) => !sameId(taskId, id)));
+        delete completingTimeouts.current[id];
+        const task = updated.find((item) => sameId(item.id, id));
+        if (task?.reminder_time && !task.space_id) cancelTaskReminder(id);
+      }, 800);
+      return;
+    }
 
-        // Run cache and sync tasks in the background asynchronously
-        cacheTasks(userId, updated);
-        syncToSupabase('tasks', 'update',
-          { is_completed: false, completed_at: null },
-          { column: 'id', value: id }
-        );
-
-        if (task?.reminder_time) scheduleTaskReminder(id, task.title, task.reminder_time);
-
-        if (shouldSubtractXP) {
-          await Gamification.addXP(userId, -xpAmount);
-        }
-      }
+    if (completingTimeouts.current[id]) {
+      clearTimeout(completingTimeouts.current[id]);
+      delete completingTimeouts.current[id];
+      // The completion mutation/XP award had not fired yet, so cancellation is
+      // purely local and must not deduct personal XP or enqueue a false update.
+      setCompletingTaskIds((previous) => previous.filter((taskId) => !sameId(taskId, id)));
+      return;
+    }
+    setCompletingTaskIds((previous) => previous.filter((taskId) => !sameId(taskId, id)));
+    const taskBefore = latestTasksRef.current.find((item) => sameId(item.id, id));
+    let updated = await toggleTaskCompletion(userId, latestTasksRef.current, id, currentStatus);
+    latestTasksRef.current = updated;
+    setTasks(updated);
+    updated = await applyPersonalCompletionRewards(taskBefore, false, updated);
+    latestTasksRef.current = updated;
+    setTasks(updated);
+    const task = updated.find((item) => sameId(item.id, id));
+    if (task?.reminder_time && !task.space_id) {
+      scheduleTaskReminder(id, task.title, task.reminder_time);
     }
   };
 
   const toggleImportant = async (id, currentStatus) => {
+    if (isViewer) return;
     const updated = await toggleTaskImportance(userId, latestTasksRef.current, id, currentStatus);
+    latestTasksRef.current = updated;
     setTasks(updated);
   };
 
   const deleteTaskHandler = async (id) => {
-    cancelTaskReminder(id);
+    if (isViewer) return;
+    const target = latestTasksRef.current.find((task) => sameId(task.id, id));
+    if (!target?.space_id) cancelTaskReminder(id);
     const updated = await dmDeleteTask(userId, latestTasksRef.current, id);
+    latestTasksRef.current = updated;
     setTasks(updated);
   };
 
@@ -756,15 +898,20 @@ export const CustomListScreen = ({ navigation, route }) => {
 
   // ─── In-list drag/reorder ─────────────────────────────
   const handleCustomListDragEnd = ({ data }) => {
+    if (isViewer) return;
     requestAnimationFrame(() => {
       if (sortBy !== 'custom') setSortBy('custom');
-      const orderMap = new Map(data.map((task, index) => [task.id, index]));
-      const mergedTasks = latestTasksRef.current.map((task) =>
-        orderMap.has(task.id) ? { ...task, order_index: orderMap.get(task.id) } : task
-      );
+      const orderMap = new Map(data.map((task, index) => [String(task.id), index]));
+      const mergedTasks = latestTasksRef.current.map((task) => (
+        orderMap.has(String(task.id))
+          ? { ...task, order_index: orderMap.get(String(task.id)) }
+          : task
+      ));
       latestTasksRef.current = mergedTasks;
       setTasks(mergedTasks);
-      const changedTasks = data.map((task, index) => ({ id: task.id, order_index: index }));
+      // Preserve space_id/version metadata so DataManager delegates shared
+      // reorder operations to CollaborationManager instead of personal sync.
+      const changedTasks = data.map((task, index) => ({ ...task, order_index: index }));
       reorderTasks(userId, mergedTasks, changedTasks);
     });
   };
@@ -809,7 +956,18 @@ export const CustomListScreen = ({ navigation, route }) => {
                 <TouchableOpacity style={styles.dropdownItem} onPress={handlePrintList}>
                   <Text style={[styles.dropdownText, { color: '#fff' }]}>{t('customList.shareOrPrintList')}</Text>
                 </TouchableOpacity>
-                {completedTodayTasks.length > 0 && (
+                {!isSharedList ? (
+                  <TouchableOpacity
+                    style={styles.dropdownItem}
+                    onPress={() => { setIsMenuOpen(false); setShowShareSheet(true); }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Share list with people"
+                  >
+                    <Text style={[styles.dropdownText, { color: '#fff' }]}>Share with people</Text>
+                    <Share2 color="#D4D4D8" size={16} />
+                  </TouchableOpacity>
+                ) : null}
+                {completedTodayTasks.length > 0 && !isViewer && (
                   <>
                     <View style={[styles.divider, { backgroundColor: '#444' }]} />
                     <TouchableOpacity style={styles.dropdownItem} onPress={handleClearCompleted}>
@@ -818,12 +976,19 @@ export const CustomListScreen = ({ navigation, route }) => {
                   </>
                 )}
                 <View style={[styles.divider, { backgroundColor: '#444' }]} />
-                <TouchableOpacity style={styles.dropdownItem} onPress={() => { setIsMenuOpen(false); setRenameText(localListName); setShowRenameModal(true); }}>
+                <TouchableOpacity
+                  style={[styles.dropdownItem, isViewer && styles.mutationDisabled]}
+                  disabled={isViewer}
+                  accessibilityState={{ disabled: isViewer }}
+                  onPress={() => { setIsMenuOpen(false); setRenameText(localListName); setShowRenameModal(true); }}
+                >
                   <Text style={[styles.dropdownText, { color: '#fff' }]}>{t('customList.renameListLabel')}</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.dropdownItem} onPress={handleDeleteList}>
-                  <Text style={[styles.dropdownText, { color: '#FB7185' }]}>{t('customList.deleteListLabel')}</Text>
-                </TouchableOpacity>
+                {!isSharedList ? (
+                  <TouchableOpacity style={styles.dropdownItem} onPress={handleDeleteList}>
+                    <Text style={[styles.dropdownText, { color: '#FB7185' }]}>{t('customList.deleteListLabel')}</Text>
+                  </TouchableOpacity>
+                ) : null}
               </View>
             )}
           </View>
@@ -848,13 +1013,86 @@ export const CustomListScreen = ({ navigation, route }) => {
           </View>
         </View>
 
+        {isSharedList ? (
+          <View style={styles.sharedPanel}>
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={() => setShowConflictSheet(true)}
+              accessibilityRole="button"
+              accessibilityLabel="Open shared sync details"
+              style={styles.syncStatusButton}
+            >
+              <SyncStatusStrip spaceId={resolvedSpaceId} />
+            </TouchableOpacity>
+            <View style={styles.sharedSummaryRow}>
+              <TouchableOpacity
+                activeOpacity={0.72}
+                onPress={() => setShowShareSheet(true)}
+                accessibilityRole="button"
+                accessibilityLabel={`View members and access. ${sharedMembers.length} member${sharedMembers.length === 1 ? '' : 's'}.`}
+                accessibilityHint={currentRole === 'owner' ? 'View people, roles, invitations, and owner controls.' : 'View everyone in this shared space and what each role can do.'}
+                style={styles.sharedIdentity}
+              >
+                <AvatarStack members={sharedMembers} size={26} max={4} />
+                <Text numberOfLines={1} style={styles.sharedSpaceName}>{currentSpace?.name || 'Shared space'}</Text>
+                {currentRole ? <Text style={styles.roleLabel}>{String(currentRole).toUpperCase()}</Text> : null}
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => setShowShareSheet(true)}
+                accessibilityRole="button"
+                accessibilityLabel={`View members and access. ${sharedMembers.length} member${sharedMembers.length === 1 ? '' : 's'}.`}
+                accessibilityHint={currentRole === 'owner' ? 'You can manage people and invitations.' : 'Member management is available only to the owner.'}
+                style={styles.shareButton}
+              >
+                <Users color="#D4D4D8" size={15} />
+                <Text style={styles.shareButtonText}>People · {sharedMembers.length}</Text>
+              </TouchableOpacity>
+            </View>
+            {isViewer ? (
+              <Text accessibilityRole="text" style={styles.viewerNotice}>Viewer access · task and list changes are disabled</Text>
+            ) : null}
+            <View style={styles.segmentedControl} accessibilityRole="tablist">
+              {['tasks', 'activity'].map((tab) => (
+                <TouchableOpacity
+                  key={tab}
+                  onPress={() => setActiveSharedTab(tab)}
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected: activeSharedTab === tab }}
+                  style={[styles.segment, activeSharedTab === tab && styles.segmentActive]}
+                >
+                  <Text style={[styles.segmentText, activeSharedTab === tab && styles.segmentTextActive]}>{tab === 'tasks' ? 'Tasks' : 'Activity'}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            {activeSharedTab === 'tasks' ? (
+              <View style={styles.filterRow} accessibilityRole="radiogroup">
+                {[['all', 'All'], ['mine', 'Mine'], ['unassigned', 'Unassigned']].map(([value, label]) => (
+                  <TouchableOpacity
+                    key={value}
+                    onPress={() => setAssigneeFilter(value)}
+                    accessibilityRole="radio"
+                    accessibilityState={{ checked: assigneeFilter === value }}
+                    style={[styles.filterChip, assigneeFilter === value && styles.filterChipActive]}
+                  >
+                    <Text style={[styles.filterText, assigneeFilter === value && styles.filterTextActive]}>{label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ) : null}
+          </View>
+        ) : null}
+
         <KeyboardAvoidingView 
           behavior={Platform.OS === 'ios' ? 'padding' : 'padding'} 
           style={styles.container}
         >
 
-          {/* Task List */}
-          {!isCacheLoaded ? (
+          {/* Task list / shared activity */}
+          {isSharedList && activeSharedTab === 'activity' ? (
+            <ScrollView style={styles.activityScroll} contentContainerStyle={styles.activityContent} showsVerticalScrollIndicator={false}>
+              <ActivityTimeline items={activity} members={sharedMembers} />
+            </ScrollView>
+          ) : !isCacheLoaded && !(isSharedList && collaborationCacheResolved) ? (
             <View style={{ marginTop: 16, paddingHorizontal: 16 }}>
               <SkeletonTask />
               <SkeletonTask />
@@ -878,7 +1116,7 @@ export const CustomListScreen = ({ navigation, route }) => {
               {sortedTasks.length > 0 && (
                 <NestableDraggableFlatList
                 data={sortedTasks}
-                keyExtractor={(item) => item.id}
+                keyExtractor={(item) => String(item.id)}
                 showsVerticalScrollIndicator={false}
                 contentContainerStyle={styles.scroll}
                 keyboardShouldPersistTaps="handled"
@@ -893,13 +1131,17 @@ export const CustomListScreen = ({ navigation, route }) => {
                   <CustomListTaskRow
                     task={task}
                     theme={theme}
-                    isCompleting={completingTaskIds.includes(task.id)}
+                    members={sharedMembers}
+                    isReadOnly={isViewer}
+                    isCompleting={completingTaskIds.some((id) => sameId(id, task.id))}
                     drag={drag}
                     isActive={isActive}
-                    onPress={() => navigation.navigate('TaskDetail', { task, userId })}
-                    onToggle={() => toggleTask(task.id, task.is_completed || completingTaskIds.includes(task.id))}
+                    onPress={() => navigation.navigate('TaskDetail', { task, userId, readOnly: isViewer })}
+                    onToggle={() => toggleTask(task.id, task.is_completed || completingTaskIds.some((id) => sameId(id, task.id)))}
                     onToggleToday={async () => {
+                      if (isViewer) return;
                       const updated = await updateTask(userId, latestTasksRef.current, task.id, { added_to_today: !task.added_to_today });
+                      latestTasksRef.current = updated;
                       setTasks(updated);
                     }}
                     onToggleImportant={() => toggleImportant(task.id, task.is_important)}
@@ -931,6 +1173,12 @@ export const CustomListScreen = ({ navigation, route }) => {
                     const hasMeta = task.due_date || task.reminder_time || task.repeat_rule || hasSubtasks || hasNotes || true;
                     const completedSubs = hasSubtasks ? task.subtasks.filter(s => s.is_completed).length : 0;
                     const totalSubs = hasSubtasks ? task.subtasks.length : 0;
+                    const assignee = sharedMembers.find((member) => sameId(memberId(member), task.assigned_to));
+                    const syncText = task._sync_status === 'pending'
+                      ? 'Pending sync'
+                      : (task._sync_status === 'error' || task._sync_status === 'failed')
+                        ? task._sync_error?.message || task.sync_error || 'Sync error'
+                        : null;
 
                     const completedAgo = task.completed_at
                       ? (() => {
@@ -944,16 +1192,21 @@ export const CustomListScreen = ({ navigation, route }) => {
                       : null;
 
                     return (
-                      <Animated.View key={task.id} entering={FadeIn.duration(300)}>
+                      <Animated.View key={String(task.id)} entering={FadeIn.duration(300)}>
                         <TouchableOpacity
                           activeOpacity={0.75}
-                          onPress={() => navigation.navigate('TaskDetail', { task, userId })}
+                          onPress={() => navigation.navigate('TaskDetail', { task, userId, readOnly: isViewer })}
+                          accessibilityHint={isViewer ? 'Read only. Task changes are disabled.' : 'Opens task details.'}
+                          accessibilityState={{ disabled: isViewer }}
                           style={[styles.taskCard, styles.taskCardCompleted]}
                         >
                           {/* Removed green indicator bar */}
 
                           <TouchableOpacity
                             onPress={() => toggleTask(task.id, task.is_completed)}
+                            disabled={isViewer}
+                            accessibilityRole="checkbox"
+                            accessibilityState={{ checked: true, disabled: isViewer }}
                             style={[styles.checkbox, { marginLeft: 28 }]}
                           >
                             <CheckCircle2 color="#34D399" size={24} />
@@ -985,11 +1238,25 @@ export const CustomListScreen = ({ navigation, route }) => {
                                     <FileText color="#888" size={11} />
                                   </View>
                                 )}
+                                {task.space_id ? (
+                                  <View style={styles.assigneeMeta}>
+                                    <View style={styles.assigneeAvatar}><Text style={styles.assigneeInitials}>{assignee ? memberInitials(assignee) : '—'}</Text></View>
+                                    <Text numberOfLines={1} style={styles.assigneeName}>{assignee ? memberName(assignee) : 'Unassigned'}</Text>
+                                  </View>
+                                ) : null}
+                                {syncText ? <Text style={[styles.taskSyncText, task._sync_status !== 'pending' && styles.taskSyncError]}>{syncText}</Text> : null}
                               </View>
                             )}
                           </View>
 
-                          <TouchableOpacity onPress={() => toggleImportant(task.id, task.is_important)} style={styles.iconButtonSmall}>
+                          <TouchableOpacity
+                            onPress={() => toggleImportant(task.id, task.is_important)}
+                            disabled={isViewer}
+                            accessibilityRole="button"
+                            accessibilityLabel="Toggle important"
+                            accessibilityState={{ disabled: isViewer }}
+                            style={[styles.iconButtonSmall, isViewer && styles.mutationDisabled]}
+                          >
                             <Star 
                               color={task.is_important ? '#FFFFFF' : '#444'} 
                               fill={task.is_important ? '#FFFFFF' : 'transparent'} 
@@ -1006,7 +1273,11 @@ export const CustomListScreen = ({ navigation, route }) => {
           )}
 
           {/* ─── Bottom Input Area ────────────────────── */}
-          {isAddingTask ? (
+          {(!isSharedList || activeSharedTab === 'tasks') && (isViewer ? (
+            <View style={[styles.readOnlyFooter, { bottom: Math.max(insets.bottom + 16, 20) }]} accessibilityRole="text">
+              <Text style={styles.readOnlyFooterText}>Viewer access · changes disabled</Text>
+            </View>
+          ) : isAddingTask ? (
             <View style={[styles.bottomInputWrapper, {
               paddingBottom: Math.max(insets.bottom, 16),
             }]}>
@@ -1149,10 +1420,12 @@ export const CustomListScreen = ({ navigation, route }) => {
                 bottom: Math.max(insets.bottom + 16, 20)
               }]}
               onPress={() => setIsAddingTask(true)}
+              accessibilityRole="button"
+              accessibilityLabel="Add task"
             >
               <Plus color="#000000" size={28} />
             </TouchableOpacity>
-          )}
+          ))}
         </KeyboardAvoidingView>
 
         {/* ─── Native Date Picker (Due Date) ────────── */}
@@ -1343,6 +1616,34 @@ export const CustomListScreen = ({ navigation, route }) => {
         </KeyboardAvoidingView>
       </Modal>
 
+      <ShareListSheet
+        visible={showShareSheet}
+        onClose={() => setShowShareSheet(false)}
+        userId={userId}
+        space={currentSpace}
+        list={currentList || {
+          id: listId,
+          name: localListName,
+          ...(isSharedList ? { space_id: resolvedSpaceId } : {}),
+        }}
+        members={sharedMembers}
+        onChanged={async (result) => {
+          const changedSpaceId = result?.space_id || resolvedSpaceId;
+          await refreshSharedWorkspace(changedSpaceId);
+          if (changedSpaceId != null) {
+            const cachedActivity = await loadSpaceActivity(userId, changedSpaceId, setActivity);
+            setActivity(cachedActivity || []);
+          }
+        }}
+      />
+
+      <ConflictSheet
+        visible={showConflictSheet}
+        onClose={() => setShowConflictSheet(false)}
+        spaceId={resolvedSpaceId}
+        onRefresh={() => refreshSharedWorkspace(resolvedSpaceId)}
+      />
+
       <LevelUpModal
         isVisible={!!levelUpData}
         oldLevel={levelUpData?.oldLevel || 1}
@@ -1364,8 +1665,11 @@ const styles = StyleSheet.create({
     marginBottom: 12, 
     zIndex: 10,
   },
-  iconButton: { 
-    padding: 6 
+  iconButton: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   dropdown: {
     position: 'absolute', 
@@ -1384,10 +1688,11 @@ const styles = StyleSheet.create({
     zIndex: 100,
   },
   dropdownItem: {
+    minHeight: 44,
     flexDirection: 'row', 
     justifyContent: 'space-between', 
     alignItems: 'center',
-    paddingVertical: 12, 
+    paddingVertical: 10,
     paddingHorizontal: 16,
   },
   dropdownText: { 
@@ -1400,9 +1705,9 @@ const styles = StyleSheet.create({
     width: '100%',
     backgroundColor: '#333' 
   },
-  titleContainer: { 
-    paddingHorizontal: 20, 
-    marginBottom: 24 
+  titleContainer: {
+    paddingHorizontal: 16,
+    marginBottom: 24
   },
   titleRow: { 
     flexDirection: 'row', 
@@ -1441,6 +1746,80 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16, 
     paddingBottom: 100 
   },
+  sharedPanel: {
+    marginHorizontal: 16,
+    marginBottom: 14,
+    gap: 10,
+  },
+  syncStatusButton: { minHeight: 44, justifyContent: 'center' },
+  sharedSummaryRow: {
+    minHeight: 34,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  sharedIdentity: {
+    minWidth: 0,
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  sharedSpaceName: { flexShrink: 1, color: '#D4D4D8', fontSize: 12, fontWeight: '400' },
+  roleLabel: { color: '#71717A', fontSize: 9, fontWeight: '600', letterSpacing: 0.8 },
+  shareButton: {
+    minHeight: 44,
+    paddingHorizontal: 11,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#3F3F46',
+    borderRadius: 9,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  shareButtonText: { color: '#D4D4D8', fontSize: 12, fontWeight: '400' },
+  viewerNotice: { color: '#A1A1AA', fontSize: 11, fontWeight: '300' },
+  segmentedControl: {
+    minHeight: 44,
+    padding: 2,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#3F3F46',
+    borderRadius: 10,
+    flexDirection: 'row',
+  },
+  segment: { flex: 1, alignItems: 'center', justifyContent: 'center', borderRadius: 8 },
+  segmentActive: { backgroundColor: '#27272A' },
+  segmentText: { color: '#71717A', fontSize: 12, fontWeight: '400' },
+  segmentTextActive: { color: '#F4F4F5' },
+  filterRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
+  filterChip: {
+    minHeight: 44,
+    paddingHorizontal: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#3F3F46',
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  filterChipActive: { borderColor: '#A1A1AA', backgroundColor: '#18181B' },
+  filterText: { color: '#71717A', fontSize: 11, fontWeight: '400' },
+  filterTextActive: { color: '#E4E4E7' },
+  activityScroll: { flex: 1 },
+  activityContent: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 100 },
+  readOnlyFooter: {
+    position: 'absolute',
+    alignSelf: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#3F3F46',
+    borderRadius: 18,
+    backgroundColor: '#18181B',
+  },
+  readOnlyFooterText: { color: '#A1A1AA', fontSize: 11, fontWeight: '400' },
+  mutationDisabled: { opacity: 0.35 },
   // Completed Section
   completedHeader: {
     flexDirection: 'row',
@@ -1517,11 +1896,12 @@ const styles = StyleSheet.create({
 
   // Meta Row (inline, single line)
   taskMetaRow: {
-    flexDirection: 'row', 
-    alignItems: 'center', 
+    flexDirection: 'row',
+    alignItems: 'center',
     flexWrap: 'wrap',
-    marginTop: 4, 
-    gap: 6,
+    marginTop: 5,
+    rowGap: 4,
+    columnGap: 6,
   },
   metaPill: { 
     flexDirection: 'row', 
@@ -1537,16 +1917,41 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: '#888',
   },
+  assigneeMeta: {
+    flexBasis: '100%',
+    maxWidth: '100%',
+    marginTop: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  assigneeAvatar: {
+    width: 17,
+    height: 17,
+    borderRadius: 9,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#52525B',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#18181B',
+  },
+  assigneeInitials: { color: '#A1A1AA', fontSize: 7, fontWeight: '500' },
+  assigneeName: { flexShrink: 1, color: '#A1A1AA', fontSize: 10, fontWeight: '400' },
+  taskSyncText: { color: '#71717A', fontSize: 10, fontWeight: '400' },
+  taskSyncError: { color: '#FCA5A5' },
 
   // Right Actions Column
-  taskActions: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    gap: 12,
-    marginTop: 2,
+  taskActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    marginTop: 0,
   },
-  iconButtonSmall: { 
-    padding: 4,
+  iconButtonSmall: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 
   emptyState: { 

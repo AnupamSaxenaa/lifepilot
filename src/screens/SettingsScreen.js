@@ -4,21 +4,7 @@ import Constants from 'expo-constants';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import * as Updates from 'expo-updates';
-import {
-    Calendar,
-    Camera,
-    CheckCircle2,
-    ChevronRight,
-    CloudOff,
-    Globe,
-    ImagePlus, KeyRound, LayoutGrid, LogOut, Mail, Menu,
-    MessageSquare,
-    RefreshCw,
-    Rocket,
-    Shield,
-    Trash2, User, UserCog, X,
-    Zap
-} from 'lucide-react-native';
+import { Calendar, Camera, CheckCircle2, ChevronRight, CloudOff, EyeOff, Globe, ImagePlus, KeyRound, LayoutGrid, LogOut, Mail, Menu, MessageSquare, RefreshCw, Rocket, Shield, Sparkles, Trash2, Trophy, User, UserCog, X, Zap } from 'lucide-react-native';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -29,15 +15,25 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { GlassSidebar } from '../components/GlassSidebar';
+import { JasperTribute } from '../components/JasperTribute';
 import { LanguagePickerModal } from '../components/LanguagePickerModal';
 import { MarketplaceButton } from '../components/MarketplaceButton';
-import { PLAYSTORE_MODE } from '../config/flags';
+import { HUSTLERS_ENABLED, PLAYSTORE_MODE } from '../config/flags';
 import { useTheme } from '../context/ThemeContext';
 import { getCurrentLanguage, setAppLanguage } from '../i18n';
 import { SUPPORTED_LANGUAGES } from '../i18n/languages';
-import { deleteUserAccountData, loadProfile, updateProfile } from '../lib/dataManager';
+import { isRewardedAdAvailable } from '../lib/adRewards';
+import { deleteUserAccountData, getCurrentUserId, loadProfile, signOutCurrentUser, updateProfile } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
-import { clearDeadLetters, drainSyncQueue, getDeadLetters, getPendingCount } from '../lib/syncQueue';
+import {
+    clearConflict,
+    clearDeadLetters,
+    drainSyncQueue,
+    getConflicts,
+    getDeadLetters,
+    getPendingCount,
+    subscribeSyncState
+} from '../lib/syncQueue';
 import { Storage } from '../utils/storage';
 import { UpdateManager } from '../utils/updateManager';
 
@@ -49,6 +45,17 @@ const BORDER_COLOR = '#1A1A1A';
 const MAX_AVATAR_SIZE_MB = 2;
 const MAX_AVATAR_SIZE_BYTES = MAX_AVATAR_SIZE_MB * 1024 * 1024;
 
+const readAccountSyncStatus = async (userId) => {
+  if (!userId) return { pending: 0, deadLetters: [], conflicts: [] };
+  const scope = { actorUserId: String(userId), includeUnscoped: true };
+  const [pending, deadLetters, conflicts] = await Promise.all([
+    getPendingCount(scope),
+    getDeadLetters(scope),
+    getConflicts(scope),
+  ]);
+  return { pending, deadLetters, conflicts };
+};
+
 // Deterministic snowflake icon (no lucide dependency) for the Streak Freeze toggle
 const SnowIcon = ({ size = 18 }) => (
   <Text style={{ fontSize: size, lineHeight: size + 2 }}>❄️</Text>
@@ -57,6 +64,7 @@ const SnowIcon = ({ size = 18 }) => (
 export const SettingsScreen = ({ navigation }) => {
   const insets = useSafeAreaInsets();
   const ACCENT = useTheme().theme.accent;
+  const ON_ACCENT = useTheme().theme.onAccent || '#0B0B0D';
   const { t } = useTranslation();
   const [showLanguageModal, setShowLanguageModal] = useState(false);
   const [currentLanguage, setCurrentLanguage] = useState(getCurrentLanguage());
@@ -68,9 +76,11 @@ export const SettingsScreen = ({ navigation }) => {
     if (code === currentLanguage) return;
     const { needsReload } = await setAppLanguage(code);
     setCurrentLanguage(code);
-    // Persist to profile so the choice follows the user to other devices.
+    // Persist locally first; dataManager durably queues cross-device sync.
     if (userId) {
-      supabase.from('profiles').update({ preferred_language: code }).eq('id', userId).then(() => {}, () => {});
+      updateProfile(userId, profile || { id: userId }, { preferred_language: code })
+        .then((updated) => setProfile(updated))
+        .catch(() => {});
     }
     if (needsReload) {
       // RTL direction changed (e.g. switching to/from Arabic/Urdu) — RN can't
@@ -90,6 +100,8 @@ export const SettingsScreen = ({ navigation }) => {
   const [loading, setLoading] = useState(true);
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [streakFreezeEnabled, setStreakFreezeEnabled] = useState(false);
+  const [leaderboardOptIn, setLeaderboardOptIn] = useState(false);
+  const [ghostMode, setGhostMode] = useState(false);
 
   // ─── Modal States ─────────────────────────────────────
   const [showNameModal, setShowNameModal] = useState(false);
@@ -109,58 +121,117 @@ export const SettingsScreen = ({ navigation }) => {
   const [formError, setFormError] = useState('');
 
   // ─── Sync Status ──────────────────────────────────────
-  // Surfaces the offline mutation queue instead of leaving sync failures
-  // completely invisible. `deadLetterCount` is the number of edits that were
-  // permanently given up on (see syncQueue.js) — data loss the user can now
-  // actually see instead of it silently vanishing.
+  // Sync state is live and account-scoped. Legacy unscoped entries are included
+  // for the current account so older offline work can still drain, while entries
+  // explicitly owned by another account never create a permanent false warning.
   const [pendingSyncCount, setPendingSyncCount] = useState(0);
   const [deadLetterCount, setDeadLetterCount] = useState(0);
+  const [conflictCount, setConflictCount] = useState(0);
+  const [syncConnectivity, setSyncConnectivity] = useState({
+    online: false,
+    connectivityKnown: false,
+  });
   const [syncing, setSyncing] = useState(false);
+  const syncIssueCount = deadLetterCount + conflictCount;
+
+  const applySyncStatus = (status) => {
+    setPendingSyncCount(status.pending);
+    setDeadLetterCount(status.deadLetters.length);
+    setConflictCount(status.conflicts.length);
+  };
 
   const refreshSyncStatus = async () => {
-    try {
-      const [pending, letters] = await Promise.all([getPendingCount(), getDeadLetters()]);
-      setPendingSyncCount(pending);
-      setDeadLetterCount(letters.length);
-    } catch (_e) {}
+    const status = await readAccountSyncStatus(userId);
+    applySyncStatus(status);
+    return status;
   };
 
   useEffect(() => {
     let cancelled = false;
-    const tick = () => { if (!cancelled) refreshSyncStatus(); };
-    // Deferred rather than called inline so the first poll doesn't set state
-    // synchronously inside the effect body.
-    const firstRun = setTimeout(tick, 0);
-    const interval = setInterval(tick, 10000);
+    const unsubscribe = subscribeSyncState((state) => {
+      if (cancelled) return;
+      setSyncConnectivity({
+        online: state.online === true,
+        connectivityKnown: state.connectivityKnown === true,
+      });
+      readAccountSyncStatus(userId).then((status) => {
+        if (!cancelled) {
+          setPendingSyncCount(status.pending);
+          setDeadLetterCount(status.deadLetters.length);
+          setConflictCount(status.conflicts.length);
+        }
+      }).catch(() => {});
+    });
     return () => {
       cancelled = true;
-      clearTimeout(firstRun);
-      clearInterval(interval);
+      unsubscribe();
     };
-  }, []);
+  }, [userId]);
 
-  const handleSyncNow = async () => {
-    setSyncing(true);
-    try {
-      await drainSyncQueue();
-    } catch (_e) {}
+  const clearCurrentSyncIssues = async () => {
+    if (!userId) return;
+    const scope = { actorUserId: String(userId), includeUnscoped: true };
+    const conflicts = await getConflicts(scope);
+    await Promise.all([
+      clearDeadLetters(scope),
+      ...conflicts.map((conflict) => clearConflict(conflict.id)),
+    ]);
     await refreshSyncStatus();
-    setSyncing(false);
   };
 
-  const handleViewSyncIssues = () => {
-    if (deadLetterCount === 0) {
+  const handleViewSyncIssues = async (knownStatus = null) => {
+    const status = knownStatus || await refreshSyncStatus();
+    const issueCount = status.deadLetters.length + status.conflicts.length;
+    if (issueCount === 0) {
       Alert.alert(t('settings.allSyncedTitle'), t('settings.allSyncedMessage'));
       return;
     }
     Alert.alert(
       t('settings.syncIssuesTitle'),
-      t(deadLetterCount === 1 ? 'settings.syncIssuesMessage_one' : 'settings.syncIssuesMessage_other', { count: deadLetterCount }),
+      t(issueCount === 1 ? 'settings.syncIssuesMessage_one' : 'settings.syncIssuesMessage_other', { count: issueCount }),
       [
         { text: t('settings.dismiss'), style: 'cancel' },
-        { text: t('settings.clearLog'), style: 'destructive', onPress: async () => { await clearDeadLetters(); await refreshSyncStatus(); } },
-      ]
+        {
+          text: t('settings.clearLog'),
+          style: 'destructive',
+          onPress: () => { clearCurrentSyncIssues().catch(() => {}); },
+        },
+      ],
     );
+  };
+
+  const handleSyncNow = async () => {
+    if (syncing) return;
+    setSyncing(true);
+    try {
+      const result = await drainSyncQueue();
+      const status = await refreshSyncStatus();
+      if (result.offline) {
+        Alert.alert(
+          t('settings.syncPausedTitle', { defaultValue: 'Sync paused' }),
+          t('settings.syncOfflineMessage', { defaultValue: 'LifePilot cannot verify an internet connection yet. Your changes are safe on this device and will sync automatically when you reconnect.' }),
+        );
+      } else if (status.pending > 0) {
+        Alert.alert(
+          t('settings.syncPendingTitle', { defaultValue: 'Still waiting to sync' }),
+          t('settings.syncPendingMessage', {
+            count: status.pending,
+            defaultValue: '{{count}} change is still safely queued. The server could not accept it yet; LifePilot will retry automatically.',
+          }),
+        );
+      } else if (status.deadLetters.length + status.conflicts.length > 0) {
+        await handleViewSyncIssues(status);
+      } else {
+        Alert.alert(t('settings.allSyncedTitle'), t('settings.allSyncedMessage'));
+      }
+    } catch (error) {
+      Alert.alert(
+        t('settings.syncIssuesTitle'),
+        error?.message || t('settings.syncRetryFailed', { defaultValue: 'Sync could not finish. Your changes remain safely queued.' }),
+      );
+    } finally {
+      setSyncing(false);
+    }
   };
 
   // ─── OTA Update States ────────────────────────────────
@@ -185,19 +256,31 @@ export const SettingsScreen = ({ navigation }) => {
   // ─── Init ─────────────────────────────────────────────
   useEffect(() => {
     const init = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
-      setUserId(session.user.id);
-      setEmail(session.user.email);
+      const resolvedUserId = await getCurrentUserId();
+      if (!resolvedUserId) return;
+      setUserId(resolvedUserId);
+
+      // Email is needed for online account operations, but resolving it must
+      // not delay cached settings/profile rendering while offline.
+      supabase.auth.getSession().then(({ data: { session } }) => {
+        if (session?.user?.id === resolvedUserId) setEmail(session.user.email || '');
+      }).catch(() => {});
 
       // Load the opt-in streak-protection preference. Missing means OFF, so XP
       // cannot be deducted until the user explicitly enables the setting.
-      const freezePref = await Storage.get(`streak_freeze_enabled_${session.user.id}`);
+      const [boardPref, ghostPref] = await Promise.all([
+        Storage.get(`leaderboard_opt_in_${resolvedUserId}`),
+        Storage.get(`ghost_mode_${resolvedUserId}`),
+      ]);
+      setLeaderboardOptIn(boardPref === true || boardPref === 'true');
+      setGhostMode(ghostPref === true || ghostPref === 'true');
+
+      const freezePref = await Storage.get(`streak_freeze_enabled_${resolvedUserId}`);
       setStreakFreezeEnabled(freezePref === true || freezePref === 'true');
 
       // Load profile: cache first → Supabase background
       // Force fresh load to ensure avatar_url is current (especially after reinstall)
-      const cached = await loadProfile(session.user.id, (fresh) => {
+      const cached = await loadProfile(resolvedUserId, (fresh) => {
         setProfile(fresh);
         setLoading(false);
       });
@@ -219,33 +302,25 @@ export const SettingsScreen = ({ navigation }) => {
 
   // ─── Avatar Upload ────────────────────────────────────
   const handlePickAvatar = async () => {
-    console.log('[Settings] Requesting media permissions...');
-    let granted = false;
-    
-    if (Platform.OS === 'android') {
-      const { PermissionsAndroid } = require('react-native');
-      const apiLevel = Platform.Version;
-      const perm = apiLevel >= 33 
-        ? PermissionsAndroid.PERMISSIONS.READ_MEDIA_IMAGES 
-        : PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE;
-        
-      let status = await PermissionsAndroid.check(perm);
-      if (!status) {
-        const req = await PermissionsAndroid.request(perm);
-        status = req === PermissionsAndroid.RESULTS.GRANTED;
-      }
-      granted = status;
-    } else {
+    // ── Android: no permission request, deliberately ──
+    // We used to request READ_MEDIA_IMAGES (or READ_EXTERNAL_STORAGE below
+    // API 33), which grants access to the WHOLE photo library. Google's Photo
+    // and Video Permissions policy expects the system photo picker instead,
+    // which returns just the single image the user taps and needs no permission
+    // at all. `launchImageLibraryAsync` uses that picker, so asking for the
+    // broad permission was both unnecessary and a policy problem — the store
+    // build now blocks READ_MEDIA_IMAGES outright.
+    //
+    // iOS still uses its own permission model, so it keeps the request.
+    if (Platform.OS !== 'android') {
       let perm = await ImagePicker.getMediaLibraryPermissionsAsync();
       if (perm.status !== 'granted') {
         perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
       }
-      granted = perm.status === 'granted';
-    }
-
-    if (!granted) {
-      Alert.alert(t('settings.permissionRequiredTitle'), t('settings.permissionRequiredMessage'));
-      return;
+      if (perm.status !== 'granted') {
+        Alert.alert(t('settings.permissionRequiredTitle'), t('settings.permissionRequiredMessage'));
+        return;
+      }
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -307,21 +382,11 @@ export const SettingsScreen = ({ navigation }) => {
         .from('avatar')
         .getPublicUrl(fileName);
 
-      const publicUrl = urlData.publicUrl + `?t=${Date.now()}`;
+      const publicUrl = `${urlData.publicUrl}?v=${base64.length}`;
 
-      const { error: updateError } = await supabase
-        .from('profiles')
-        .update({ avatar_url: publicUrl })
-        .eq('id', userId);
-
-      if (updateError) {
-        Alert.alert(t('settings.errorTitle'), updateError.message);
-      } else {
-        const updated = { ...profile, avatar_url: publicUrl };
-        setProfile(updated);
-        Storage.set(`profile_${userId}`, updated);
-        Alert.alert(t('settings.successTitle'), t('settings.avatarUpdated'));
-      }
+      const updated = await updateProfile(userId, profile, { avatar_url: publicUrl });
+      setProfile(updated);
+      Alert.alert(t('settings.successTitle'), t('settings.avatarUpdated'));
     } catch (e) {
       console.log('Avatar upload error:', e?.message || e);
       Alert.alert(t('settings.uploadErrorTitle'), e?.message || t('settings.uploadErrorMessage'));
@@ -334,16 +399,18 @@ export const SettingsScreen = ({ navigation }) => {
     setShowAvatarOptions(false);
     setAvatarUploading(true);
 
-    await supabase.storage.from('avatar').remove([`${userId}/avatar.jpg`, `${userId}/avatar.png`, `${userId}/avatar.jpeg`]);
-
-    const seed = Math.random().toString(36).substring(7);
-    await supabase.from('profiles').update({ avatar_url: null, avatar_seed: seed }).eq('id', userId);
-
-    const updated = { ...profile, avatar_url: null, avatar_seed: seed };
+    const seed = `${userId}-avatar`;
+    const updated = await updateProfile(userId, profile, { avatar_url: null, avatar_seed: seed });
     setProfile(updated);
-    Storage.set(`profile_${userId}`, updated);
     setAvatarUploading(false);
     Alert.alert(t('settings.doneTitle'), t('settings.avatarRemoved'));
+
+    // Blob cleanup is best-effort and online-only; the visible profile change
+    // is already cached and durably queued above.
+    supabase.storage
+      .from('avatar')
+      .remove([`${userId}/avatar.jpg`, `${userId}/avatar.png`, `${userId}/avatar.jpeg`])
+      .catch(() => {});
   };
 
   // ─── Check for OTA Updates ────────────────────────────
@@ -529,14 +596,59 @@ export const SettingsScreen = ({ navigation }) => {
   };
 
   // ─── Delete Account ───────────────────────────────────
+  // Deletion is server-side and irreversible. If it fails we must keep the user
+  // signed in and say so — the old flow signed out and navigated away regardless,
+  // which told people their account was gone while it was still live.
   const handleDeleteAccount = async () => {
     if (deleteConfirmText !== 'DELETE') { setFormError(t('settings.deleteConfirmError')); return; }
     setFormLoading(true); setFormError('');
 
-    await deleteUserAccountData(userId);
-    await supabase.auth.signOut();
-    await Storage.clear();
-    navigation.replace('Onboarding');
+    try {
+      await deleteUserAccountData(userId);
+    } catch (error) {
+      setFormLoading(false);
+      setFormError(
+        error?.message === 'not_authenticated'
+          ? t('settings.deleteSignedOutError')
+          : t('settings.deleteFailedError'),
+      );
+      return;
+    }
+
+    // The account is definitely gone at this point. Local cleanup is best-effort:
+    // it must never be able to strand the user on a screen for an account that no
+    // longer exists, which is exactly what a missing Storage.clear() used to do.
+    try {
+      await supabase.auth.signOut();
+    } catch (_e) { /* session is already invalid server-side */ }
+    try {
+      await Storage.clear();
+    } catch (_e) { /* stale local cache is harmless next launch */ }
+
+    setFormLoading(false);
+    setShowDeleteModal(false);
+    navigation.reset({ index: 0, routes: [{ name: 'Onboarding' }] });
+  };
+
+  // ─── Hustlers privacy (opt-in ranking + ghost mode) ───
+  // Both default OFF. A global leaderboard exposes your username, photo and
+  // activity to strangers, so appearing there is a deliberate choice, and the
+  // RLS policy in 0017 enforces it server-side too — not just in this UI.
+  const handleToggleLeaderboard = async (value) => {
+    setLeaderboardOptIn(value);
+    if (!userId) return;
+    await Storage.set(`leaderboard_opt_in_${userId}`, Boolean(value));
+    // updateProfile is (userId, currentProfile, fields). Passing the fields as
+    // the 2nd argument silently sent `undefined` to the server, so the opt-in
+    // never persisted and the user stayed off the leaderboard.
+    updateProfile(userId, profile, { leaderboard_opted_in: Boolean(value) }).catch(() => {});
+  };
+
+  const handleToggleGhost = async (value) => {
+    setGhostMode(value);
+    if (!userId) return;
+    await Storage.set(`ghost_mode_${userId}`, Boolean(value));
+    updateProfile(userId, profile, { ghost_mode: Boolean(value) }).catch(() => {});
   };
 
   // ─── Streak Freeze Toggle ─────────────────────────────
@@ -550,11 +662,21 @@ export const SettingsScreen = ({ navigation }) => {
 
   // ─── Logout ───────────────────────────────────────────
   const handleLogout = async () => {
-    navigation.reset({ index: 0, routes: [{ name: 'Onboarding' }] });
-    supabase.auth.signOut();
+    try {
+      await signOutCurrentUser();
+      navigation.reset({ index: 0, routes: [{ name: 'Onboarding' }] });
+    } catch (error) {
+      Alert.alert(
+        t('common.error', { defaultValue: 'Could not sign out' }),
+        error?.message || t('common.tryAgain', { defaultValue: 'Please try again.' }),
+      );
+    }
   };
 
-  if (loading) {
+  // Only ever spin when there is genuinely nothing cached to show. Replacing the
+  // whole screen with a spinner on every visit violated the offline-first rule
+  // that cached data must paint immediately.
+  if (loading && !profile) {
     return (
       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
         <ActivityIndicator size="large" color="#fff" />
@@ -594,7 +716,7 @@ export const SettingsScreen = ({ navigation }) => {
               <Image source={getAvatarSource()} style={styles.avatar} />
             )}
             <View style={[styles.cameraBadge, { backgroundColor: ACCENT }]}>
-              <Camera color="#000" size={11} />
+              <Camera color={ON_ACCENT} size={11} />
             </View>
           </View>
           <View style={styles.profileInfo}>
@@ -622,6 +744,31 @@ export const SettingsScreen = ({ navigation }) => {
             </View>
             <ChevronRight color={ACCENT} size={17} />
           </TouchableOpacity>
+        )}
+
+        {/* ── AI credits ──
+              Reachable when EITHER purchases or rewarded ads are available.
+              This was gated on PLAYSTORE_MODE alone, which hid the FREE
+              "watch an ad for credits" feature behind billing readiness even
+              though the two are unrelated — the screen existed but nothing in
+              the app could reach it. Purchase packs are gated separately,
+              inside CreditStoreScreen. ── */}
+        {(PLAYSTORE_MODE || isRewardedAdAvailable()) && (
+          <>
+            <SettingsSection label={t('settings.sectionAiCredits')} />
+            <View style={styles.settingGroup}>
+              <SettingRow
+                icon={Zap}
+                iconColor="#FFFFFF"
+                label={t('settings.creditStoreLabel')}
+                value={PLAYSTORE_MODE
+                  ? t('settings.creditStoreValue')
+                  : t('settings.creditStoreValueFree')}
+                onPress={() => navigation.navigate('CreditStore')}
+                isLast
+              />
+            </View>
+          </>
         )}
 
         {/* ── Account ── */}
@@ -701,27 +848,73 @@ export const SettingsScreen = ({ navigation }) => {
         <Text style={styles.prefHint}>
           {streakFreezeEnabled
             ? t('settings.streakFreezeSafeHint', {
-              defaultValue: 'Uses up to 500 XP per missed day from XP earned in your current level. Your level and stones stay safe.',
+              defaultValue: 'Costs exactly 500 safe XP per missed day and activates only when the whole gap is affordable. Your level and stones never drop.',
             })
             : t('settings.streakFreezeOffHint')}
         </Text>
+
+        {HUSTLERS_ENABLED ? (
+          <>
+            <SettingsSection label={t('settings.sectionHustlers', { defaultValue: 'Hustlers' })} />
+            <View style={styles.settingGroup}>
+              <SettingRow
+                icon={Trophy}
+                iconColor="#FFFFFF"
+                label={t('settings.leaderboardOptInLabel', { defaultValue: 'Appear on global ranking' })}
+                rightComponent={(
+                  <Switch
+                    value={leaderboardOptIn}
+                    onValueChange={handleToggleLeaderboard}
+                    trackColor={{ false: '#27272a', true: ACCENT + '55' }}
+                    thumbColor={leaderboardOptIn ? ACCENT : '#52525b'}
+                  />
+                )}
+              />
+              <SettingRow
+                icon={EyeOff}
+                iconColor="#FFFFFF"
+                label={t('settings.ghostModeLabel', { defaultValue: 'Ghost mode' })}
+                rightComponent={(
+                  <Switch
+                    value={ghostMode}
+                    onValueChange={handleToggleGhost}
+                    trackColor={{ false: '#27272a', true: ACCENT + '55' }}
+                    thumbColor={ghostMode ? ACCENT : '#52525b'}
+                  />
+                )}
+                isLast
+              />
+            </View>
+            <Text style={styles.prefHint}>
+              {ghostMode
+                ? t('settings.ghostModeOnHint', { defaultValue: 'Hidden from the global ranking. Your hustlers can still see your stats.' })
+                : leaderboardOptIn
+                  ? t('settings.leaderboardOnHint', { defaultValue: 'Your name, photo and hours are visible to everyone on the ranking.' })
+                  : t('settings.leaderboardOffHint', { defaultValue: 'You are off the global ranking. Only accepted hustlers can see your stats.' })}
+            </Text>
+          </>
+        ) : null}
 
         {/* ── System: device-level state and maintenance ── */}
         <SettingsSection label={t('settings.sectionSystem', { defaultValue: 'System' })} />
         <View style={styles.settingGroup}>
           <SettingRow
-            icon={pendingSyncCount > 0 || deadLetterCount > 0 ? CloudOff : CheckCircle2}
-            iconColor={deadLetterCount > 0 ? '#FB7185' : (pendingSyncCount > 0 ? '#FBBF24' : '#34D399')}
-            valueColor={deadLetterCount > 0 ? '#FB7185' : (pendingSyncCount > 0 ? '#FBBF24' : '#34D399')}
+            icon={pendingSyncCount > 0 || syncIssueCount > 0 ? CloudOff : CheckCircle2}
+            iconColor={syncIssueCount > 0 ? '#FB7185' : (pendingSyncCount > 0 ? '#FBBF24' : '#34D399')}
+            valueColor={syncIssueCount > 0 ? '#FB7185' : (pendingSyncCount > 0 ? '#FBBF24' : '#34D399')}
             label={t('settings.syncStatusLabel')}
             value={
-              deadLetterCount > 0
-                ? t('settings.syncFailedToSave', { count: deadLetterCount })
+              syncIssueCount > 0
+                ? t('settings.syncFailedToSave', { count: syncIssueCount })
                 : pendingSyncCount > 0
-                  ? t('settings.syncWaitingToSync', { count: pendingSyncCount })
+                  ? `${t('settings.syncWaitingToSync', { count: pendingSyncCount })}${syncConnectivity.connectivityKnown && !syncConnectivity.online
+                    ? ` · ${t('common.offline', { defaultValue: 'Offline' })}`
+                    : ''}`
                   : t('settings.syncAllSaved')
             }
-            onPress={pendingSyncCount > 0 ? handleSyncNow : handleViewSyncIssues}
+            onPress={pendingSyncCount > 0
+              ? handleSyncNow
+              : () => { handleViewSyncIssues().catch(() => {}); }}
             rightComponent={syncing ? <ActivityIndicator size="small" color={ACCENT} /> : undefined}
           />
           <SettingRow
@@ -748,6 +941,16 @@ export const SettingsScreen = ({ navigation }) => {
             iconColor="#FFFFFF"
             label={t('settings.feedbackLabel')}
             onPress={() => navigation.navigate('Feedback')}
+          />
+          {/* Paired deliberately: What's New is the record of this build, What's
+              Coming is the roadmap. Sitting together they read as one "where the
+              app is going" pair rather than two unrelated rows. */}
+          <SettingRow
+            icon={Sparkles}
+            iconColor="#FFFFFF"
+            label={t('settings.whatsNewLabel', { defaultValue: "What's New" })}
+            value={Constants.expoConfig?.version}
+            onPress={() => navigation.navigate('WhatsNew')}
           />
           <SettingRow
             icon={Rocket}
@@ -787,7 +990,9 @@ export const SettingsScreen = ({ navigation }) => {
           </Text>
         </View>
 
-        <View style={{ height: 60 }} />
+        {/* Flush to the bottom edge: no wrapper padding, no trailing spacer, so
+            scrolling to the end lands on the artwork instead of black space. */}
+        <JasperTribute />
       </ScrollView>
 
       {/* ─── Avatar Options Modal ────────────────────── */}
@@ -1064,6 +1269,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
     marginTop: 5,
   },
+  brandJasperSpacer: { height: 10 },
   brandJasper: {
     color: '#FFFFFF',
     fontSize: 10,
@@ -1083,7 +1289,7 @@ const styles = StyleSheet.create({
   },
   iconButton: { padding: 6 },
   headerTitle: { color: THEME_COLOR, fontSize: 15, fontWeight: '500', letterSpacing: 0.2 },
-  scroll: { paddingBottom: 60 },
+  scroll: { paddingBottom: 0 },
 
   // ── Identity row ──
   profileHeader: {

@@ -1,95 +1,95 @@
-import { Image } from 'expo-image';
-import { Flame } from 'lucide-react-native';
-import { useEffect, useRef } from 'react';
+import { CalendarCheck2 } from 'lucide-react-native';
+import { useEffect, useState } from 'react';
 import { Animated, Easing, StyleSheet, View } from 'react-native';
 
+const ACTIVE_COLOR = '#F5F5F5';
+const INACTIVE_COLOR = '#73757A';
+const ACTIVE_BORDER_COLOR = '#9CA3AF';
+const INACTIVE_BORDER_COLOR = '#5F6368';
+
 export const AnimatedFlame = ({ streak = 0, size = 26 }) => {
-  const isBurning = streak > 0;
-  
-  // Animation values
-  const pulseAnim = useRef(new Animated.Value(0)).current;
+  const isActive = streak > 0;
+  const [progress] = useState(() => new Animated.Value(0));
+  const frameSize = Math.min(34, Math.max(32, size + 6));
+  const iconSize = Math.min(20, Math.max(14, size - 6));
 
   useEffect(() => {
-    if (isBurning) {
-      Animated.loop(
-        Animated.sequence([
-          Animated.timing(pulseAnim, {
-            toValue: 1,
-            duration: 800,
-            easing: Easing.inOut(Easing.ease),
-            useNativeDriver: true,
-          }),
-          Animated.timing(pulseAnim, {
-            toValue: 0,
-            duration: 800,
-            easing: Easing.inOut(Easing.ease),
-            useNativeDriver: true,
-          })
-        ])
-      ).start();
-    } else {
-      pulseAnim.setValue(0);
-    }
-  }, [isBurning, pulseAnim]);
+    progress.stopAnimation();
+    progress.setValue(0);
 
-  // Interpolations for a beautiful premium glow
-  const scaleOuter = pulseAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [1, 1.05]
-  });
-  
-  const opacityOuter = pulseAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.7, 1]
-  });
+    if (!isActive) return undefined;
 
-  if (!isBurning) {
-    return (
-      <View style={styles.container}>
-        <Flame color="#555" size={size} fill="transparent" />
-      </View>
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(progress, {
+          toValue: 1,
+          duration: 2000,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+        Animated.timing(progress, {
+          toValue: 0,
+          duration: 2000,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+      ]),
+      { resetBeforeIteration: false }
     );
-  }
 
-  const gifSize = size + 6;
+    loop.start();
 
-  // Array of GIF URIs for the fire icon
-  const FIRE_GIFS = [
-    'https://media.tenor.com/x4UA1SGzabwAAAAj/catjam-fire-catjam.gif', // Catjam
-    'https://media.tenor.com/pmiCBCGZiekAAAAM/fire-elmo-whahahah.gif', // Elmo Fire
-  ];
+    return () => {
+      loop.stop();
+      progress.stopAnimation();
+      progress.setValue(0);
+    };
+  }, [isActive, progress]);
 
-  // Pick one based on the current day of the year so it changes exactly once a day
-  const getDayOfYear = () => {
-    const now = new Date();
-    const start = new Date(now.getFullYear(), 0, 0);
-    const diff = (now - start) + ((start.getTimezoneOffset() - now.getTimezoneOffset()) * 60 * 1000);
-    const oneDay = 1000 * 60 * 60 * 24;
-    return Math.floor(diff / oneDay);
-  };
-  
-  const selectedGifIndex = getDayOfYear() % FIRE_GIFS.length;
-  const currentGifUri = FIRE_GIFS[selectedGifIndex];
+  const animatedStyle = isActive
+    ? {
+        opacity: progress.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0.92, 1],
+        }),
+        transform: [
+          {
+            translateY: progress.interpolate({
+              inputRange: [0, 1],
+              outputRange: [0, -0.75],
+            }),
+          },
+          {
+            scale: progress.interpolate({
+              inputRange: [0, 1],
+              outputRange: [1, 1.015],
+            }),
+          },
+        ],
+      }
+    : null;
 
   return (
-    <View style={styles.container}>
-      <Animated.View style={{ 
-        transform: [{ scale: scaleOuter }], 
-        opacity: opacityOuter,
-        shadowColor: '#FB923C',
-        shadowOffset: { width: 0, height: 0 },
-        shadowOpacity: 0.6,
-        shadowRadius: 10,
-        borderRadius: gifSize / 2,
-      }}>
-        <Image 
-          source={{ uri: currentGifUri }}
-          style={{
-            width: gifSize,
-            height: gifSize,
-            borderRadius: gifSize / 2, // Circular crop
-          }}
-          contentFit="cover"
+    <View
+      accessible={false}
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+      pointerEvents="none"
+      style={[
+        styles.container,
+        {
+          width: frameSize,
+          height: frameSize,
+          borderRadius: frameSize / 2,
+          borderColor: isActive ? ACTIVE_BORDER_COLOR : INACTIVE_BORDER_COLOR,
+        },
+      ]}
+    >
+      <Animated.View style={animatedStyle}>
+        <CalendarCheck2
+          color={isActive ? ACTIVE_COLOR : INACTIVE_COLOR}
+          size={iconSize}
+          strokeWidth={1.7}
         />
       </Animated.View>
     </View>
@@ -98,9 +98,9 @@ export const AnimatedFlame = ({ streak = 0, size = 26 }) => {
 
 const styles = StyleSheet.create({
   container: {
-    justifyContent: 'center',
     alignItems: 'center',
-    width: 40,
-    height: 40,
+    justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: 'hidden',
   },
 });

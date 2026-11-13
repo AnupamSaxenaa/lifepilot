@@ -68,6 +68,20 @@ export const blend = (fg, bg, alpha) => {
 };
 
 /**
+ * The foreground to draw ON a given fill — dark ink or light ink, whichever
+ * separates better from it.
+ *
+ * Use this for ANY filled surface whose colour isn't known at authoring time:
+ * the theme accent (white by default, so a hardcoded '#FFF' label is
+ * invisible), a user-picked alarm label colour, or a semantic success/danger
+ * fill. Prefer `theme.onAccent` when the fill is the theme accent — that's this
+ * function already applied.
+ */
+export const readableOn = (fill, dark = '#0B0B0D', light = '#FFFFFF') => (
+  contrastRatio(dark, fill) >= contrastRatio(light, fill) ? dark : light
+);
+
+/**
  * Build a palette guaranteed to be legible on the equipped background.
  *
  * Why this exists: `ThemeContext` only overrides bg/surface/accent/font when a
@@ -112,9 +126,7 @@ export const resolveReadablePalette = (theme) => {
   const rawAccent = (theme?.accent || DEFAULTS.accent).slice(0, 7);
   const accent = contrastRatio(rawAccent, bg) >= 2.2 ? rawAccent : text;
   // Text drawn ON the accent (e.g. inside a filled check) must invert again.
-  const onAccent = contrastRatio('#0B0B0D', accent) >= contrastRatio('#FFFFFF', accent)
-    ? '#0B0B0D'
-    : '#FFFFFF';
+  const onAccent = readableOn(accent);
 
   // State colours (missed / done) resolved against this exact background, so
   // "red" and "green" stay legible on light, dark and mid-tone themes alike.
@@ -122,8 +134,8 @@ export const resolveReadablePalette = (theme) => {
   const success = semanticColor('success', bg);
   // Text/glyphs drawn ON those fills (e.g. the tick inside a filled circle)
   // must invert independently — the ramp can land on a pale or a deep shade.
-  const onSuccess = contrastRatio('#0B0B0D', success) >= contrastRatio('#FFFFFF', success) ? '#0B0B0D' : '#FFFFFF';
-  const onDanger = contrastRatio('#0B0B0D', danger) >= contrastRatio('#FFFFFF', danger) ? '#0B0B0D' : '#FFFFFF';
+  const onSuccess = readableOn(success);
+  const onDanger = readableOn(danger);
 
   // A raised "glass" panel has to satisfy two things at once: be visible against
   // the background, AND still carry readable text.

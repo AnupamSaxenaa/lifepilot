@@ -15,12 +15,9 @@ export const UpdateProgress = ({ status, progress = 0, updateReady = false, appl
   const [spinAnim] = useState(new Animated.Value(0));
   const [progressWidth] = useState(new Animated.Value(0));
   const [indeterminateAnim] = useState(new Animated.Value(0));
-  const [localStatus, setLocalStatus] = useState(status);
-
-  // Sync local status with prop
-  useEffect(() => {
-    setLocalStatus(status);
-  }, [status]);
+  // Status belongs to the parent. Mirroring it into local state caused every
+  // transition to render once stale and then again from an effect.
+  const localStatus = status;
 
   // Slide in/out animation
   useEffect(() => {
@@ -212,7 +209,7 @@ export const UpdateProgress = ({ status, progress = 0, updateReady = false, appl
         {localStatus === 'success_toast' && (
           <TouchableOpacity 
             style={styles.closeButton} 
-            onPress={() => { setLocalStatus(null); onDismiss?.(); }}
+            onPress={() => onDismiss?.()}
           >
             <X color="#999" size={20} />
           </TouchableOpacity>

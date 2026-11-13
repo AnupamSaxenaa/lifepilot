@@ -75,7 +75,9 @@ export const syncAppBlocker = async (userId) => {
     rules[pkg] = {
       unblockUntil: a.unblockUntil && a.unblockUntil > Date.now() ? a.unblockUntil : 0,
       lockMode: a.lockMode || 'allowance',
-      dailyBudgetMinutes: a.dailyBudgetMinutes || 0,
+      // Push TODAY's budget, not the raw configured one, so a tapering app is
+      // enforced against the same number the progress bar is drawn against.
+      dailyBudgetMinutes: getTodaysBudget(a) || 0,
     };
   });
   
@@ -137,6 +139,17 @@ export const removeSchedule = async (userId, scheduleId) => {
   return updated;
 };
 
+// ═══════════════════════════════════════════════════════
+// PRO QUOTA — re-exported from the pure module
+// ═══════════════════════════════════════════════════════
+// The arithmetic lives in `src/lib/proLimits.js` (no imports, unit-tested, same
+// convention as creditRules.js). Re-exported here so Mindful Lock callers have a
+// single import site.
+export {
+    canLockMoreApps,
+    canUseSchedules, FREE_LOCKED_APP_LIMIT, lockedAppQuota
+} from '../lib/proLimits';
+
 export const getInstalledApps = async () => {
   if (Platform.OS !== 'android' || !AppBlocker || !AppBlocker.getInstalledApps) return [];
   try {
@@ -146,6 +159,82 @@ export const getInstalledApps = async () => {
     console.error('Failed to get installed apps:', e);
     return [];
   }
+};
+
+// ═══════════════════════════════════════════════════════
+// LIVE USAGE (native-owned)
+// ═══════════════════════════════════════════════════════
+
+// The package key the native side tracks an app under. Must match the key
+// syncAppBlocker() writes into the blockedApps rules.
+export const nativePackageKey = (app) => app?.packageName || app?.name?.toLowerCase() || '';
+
+/**
+ * Live usage in MILLISECONDS for every given app, in one bridge round-trip.
+ * "Live" means banked time plus the in-flight slice of the session currently on
+ * screen — which is what lets the progress bar move while an app is open.
+ * Returns a { packageKey: ms } map; empty on iOS or if the bridge is missing.
+ */
+export const getUsageSnapshot = async (apps) => {
+  if (Platform.OS !== 'android' || !AppBlocker || !Array.isArray(apps) || apps.length === 0) return {};
+  const keys = apps.map(nativePackageKey).filter(Boolean);
+  if (keys.length === 0) return {};
+
+  try {
+    if (AppBlocker.getUsageSnapshot) {
+      const json = await AppBlocker.getUsageSnapshot(JSON.stringify(keys));
+      return JSON.parse(json) || {};
+    }
+    // Older native build without the batched method — fall back to per-app.
+    if (AppBlocker.getUsageToday) {
+      const entries = await Promise.all(keys.map(async (key) => {
+        try {
+          return [key, await AppBlocker.getUsageToday(key)];
+        } catch {
+          return [key, 0];
+        }
+      }));
+      return Object.fromEntries(entries);
+    }
+  } catch {
+    // Keep whatever the caller already had.
+  }
+  return {};
+};
+
+/**
+ * Merges a live usage snapshot into an app list, setting `usageMs` (precise)
+ * and `usageToday` (whole minutes, what the rest of the app already expects).
+ */
+export const withLiveUsage = (apps, snapshot) => {
+  if (!snapshot || Object.keys(snapshot).length === 0) return apps;
+  return apps.map((app) => {
+    const ms = snapshot[nativePackageKey(app)];
+    if (typeof ms !== 'number') return app;
+    return { ...app, usageMs: ms, usageToday: Math.floor(ms / 60000) };
+  });
+};
+
+// ═══════════════════════════════════════════════════════
+// OVERLAY PERMISSION ("Display over other apps")
+// ═══════════════════════════════════════════════════════
+// Android 10+ blocks background activity starts, so without this permission the
+// accessibility service's attempt to show the block screen is dropped SILENTLY.
+// Accessibility alone is not enough — this is the difference between "nothing
+// happens" and the block screen actually appearing.
+
+export const hasOverlayPermission = async () => {
+  if (Platform.OS !== 'android' || !AppBlocker?.hasOverlayPermission) return true;
+  try {
+    return !!(await AppBlocker.hasOverlayPermission());
+  } catch {
+    return true; // don't nag on an older native build that lacks the method
+  }
+};
+
+export const requestOverlayPermission = () => {
+  if (Platform.OS !== 'android') return;
+  AppBlocker?.requestOverlayPermission?.();
 };
 
 const generateUUID = () =>
@@ -336,6 +425,24 @@ export const addApp = async (userId, { name, packageName = '', icon = '📱', bu
   };
   apps.push(newApp);
   await Storage.set(KEYS.apps(userId), apps);
+
+  // Start today's allowance from zero for a newly added app.
+  //
+  // Native only accrues usage for apps that are already tracked, so this matters
+  // for the remove-then-re-add-same-day case: without it the app inherits the
+  // total it built up during its earlier stint and a fresh budget is spent before
+  // the user opens it once. Adding an app should always grant a full allowance
+  // for the rest of today. Must run BEFORE syncAppBlocker, or the ticker can
+  // bank a slice against the app between the write and the reset.
+  if (Platform.OS === 'android' && packageName) {
+    try {
+      AppBlocker?.resetUsage?.(packageName);
+    } catch (_e) {
+      // Older native build without the method — the isTracked guard already
+      // covers the common case, so this is a refinement, not a requirement.
+    }
+  }
+
   await syncAppBlocker(userId);
   syncToSupabase('mindful_apps', 'insert', appToRow(userId, newApp));
   return newApp;

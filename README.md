@@ -42,19 +42,24 @@ Save a file and the app reloads. Develop against **LP LAB**, never the public ap
 ## 🧪 Before you ship anything
 
 ```bash
-npm run verify        # lint + 147 tests + 11 verification harnesses
+npm run verify        # tests + release harnesses + lint
 ```
 
-## 📦 Build the shareable APK
+## 📦 Build for Google Play
 
 ```bash
-set -a; . ./.env; set +a
-export APP_VARIANT=store
-eas build --platform android --profile production-apk --local \
-  --non-interactive --output release/lifepilot-vX.Y.Z.apk
+npm run build:play    # remote EAS signing, remote version increment, AAB output
 ```
 
-Full procedure, including the signature and OTA traps:
+Upload the result to Play **Internal testing**, install and smoke-test that exact
+artifact, then promote it to Production. For an installable store-equivalent APK,
+use the `production-apk` profile. For JS/assets-only updates after launch:
+
+```bash
+npm run update:store -- "what changed"
+```
+
+Full procedure, including signing, permission and OTA traps:
 **[Build and release](docs/04-operations/01-build-and-release.md)**
 
 ---
@@ -66,12 +71,13 @@ coexist on one phone.
 
 | Variant | Name | Package | Purpose |
 |---------|------|---------|---------|
-| `store` | LifePilot | `com.anupam.lifepilot` | the real app |
-| `development` | LP LAB | `com.anupam.lp.tester` | your lab, live reload |
-| *(default)* | LifePilot | `com.anupam.lp` | legacy |
+| `store` | LifePilot | `com.anupam.lifepilot` | Google Play app; `store-production` OTA |
+| `development` | LP LAB | `com.anupam.lp.tester` | lab app; `development` OTA |
+| *(default)* | LifePilot | `com.anupam.lp` | legacy only; `legacy-production` OTA |
 
-Installed on three phones: **v1.1.0** (versionCode 11).
-Prepared in `app.json` but **not yet built**: **v1.2.0** (versionCode 12) — see
+Google Play production access was granted on **October 4, 2026**. Production is
+not live yet: the latest EAS AAB is v2.0.0/code 25 and predates recent fixes, so a
+new artifact must be built, tested and promoted. See
 [current release state](docs/04-operations/01-build-and-release.md#-current-release-state).
 
 ---

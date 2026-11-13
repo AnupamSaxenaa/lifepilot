@@ -1,7 +1,10 @@
-const fs = require('fs');
-
-const GEMINI_API_KEY = 'AIzaSyDr-xuClZjfnJ9Bpt2d9x8FOSZOlqZd8eM';
-const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+// Local-only manual probe. Provider secrets must come from the shell; never
+// hardcode them here or they land in Git history and EAS build archives.
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.EXPO_PUBLIC_GEMINI_API_KEY;
+if (!GEMINI_API_KEY || GEMINI_API_KEY === 'DISABLED') {
+  throw new Error('Set GEMINI_API_KEY in your shell before running tools/test-ai.js');
+}
+const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
 
 let currentMemory = "No memory yet.";
 

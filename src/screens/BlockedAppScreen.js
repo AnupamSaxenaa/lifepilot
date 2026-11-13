@@ -2,22 +2,21 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import { BrainCircuit } from 'lucide-react-native';
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { BackHandler, Dimensions, Image, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { BackHandler, Image, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
 import { generateAggressiveBlockMessage, generateMindfulIntervention } from '../lib/AIEngine';
-import { loadTasks } from '../lib/dataManager';
-import { supabase } from '../lib/supabase';
+import { getCurrentUserId } from '../lib/dataManager';
+import { getSyncState } from '../lib/syncQueue';
 import { Gamification } from '../utils/gamification';
-import { addLogEntry, getApps, getProfile, grantTempAllowance } from '../utils/mindfulLock';
-
-const { width } = Dimensions.get('window');
+import { addLogEntry, getApps, getEffectiveBlockingMode, getProfile, grantTempAllowance } from '../utils/mindfulLock';
+import { Storage } from '../utils/storage';
 
 const getTasksByDate = async (userId, targetDate) => {
-  const allTasks = await loadTasks(userId, () => {});
+  const allTasks = await Storage.get(`tasks_${userId}`) || [];
   const dateStr = targetDate.toISOString().split('T')[0];
   
-  return (allTasks || []).filter(t => {
+  return (Array.isArray(allTasks) ? allTasks : []).filter(t => {
     if (t.is_deleted || t.status === 'completed') return false;
     if (t.planned_date && t.planned_date.startsWith(dateStr)) return true;
     if (t.due_date && t.due_date.startsWith(dateStr)) return true;
@@ -30,18 +29,57 @@ export function BlockedAppScreen() {
   const { t } = useTranslation();
   const route = useRoute();
   const navigation = useNavigation();
-  const ACCENT = useTheme().theme.accent;
-  const styles = useMemo(() => makeStyles(ACCENT), [ACCENT]);
+  const { theme } = useTheme();
+  const ACCENT = theme.accent;
+  const ON_ACCENT = theme.onAccent || '#0B0B0D';
+  const styles = useMemo(() => makeStyles(ACCENT, ON_ACCENT), [ACCENT, ON_ACCENT]);
+  const blockedPkg = route.params?.app || route.params?.blocked_app;
+  const fallbackName = blockedPkg || t('blockedApp.fallbackAppName');
+  const fallbackMessage = blockedPkg
+    ? t('blockedApp.coachFallbackMessage', { name: fallbackName })
+    : t('blockedApp.noContextMessage');
   const [appId, setAppId] = useState(null);
-  const [appName, setAppName] = useState('');
-  const [message, setMessage] = useState('');
-  const [displayedText, setDisplayedText] = useState('');
-  const [canUnlock, setCanUnlock] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [appName, setAppName] = useState(fallbackName);
+  const [message, setMessage] = useState(fallbackMessage);
   const [isStrict, setIsStrict] = useState(true);
   const [grantCountdown, setGrantCountdown] = useState(10);
 
-  const blockedPkg = route.params?.app || route.params?.blocked_app;
+  // ── Replayed-block guard ───────────────────────────────────────────────────
+  // The accessibility service opens this screen with FLAG_ACTIVITY_NEW_TASK, so
+  // `lifepilot://blocked?...` becomes the BASE INTENT of LifePilot's task.
+  // Android replays a task's base intent whenever the user reopens the app from
+  // the launcher or recents, which dropped them back onto this screen instead of
+  // their dashboard — the screen had already dismissed itself correctly, the
+  // intent was simply being delivered again.
+  //
+  // Each block carries a `t` token. We remember the last token acted on and send
+  // any repeat straight to the dashboard, so a replay is inert while a genuinely
+  // new block still shows. Tokens without `t` (a stale native build) fall through
+  // and display, which is the safe direction to fail.
+  const blockToken = route.params?.t ? String(route.params.t) : null;
+  const [replayChecked, setReplayChecked] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      if (!blockToken) {
+        if (active) setReplayChecked(true);
+        return;
+      }
+      const seen = await Storage.get('mindful_last_block_token');
+      if (!active) return;
+      if (String(seen) === blockToken) {
+        // Same block we already handled: this is a replayed base intent.
+        navigation.reset({ index: 0, routes: [{ name: 'Dashboard' }] });
+        return;
+      }
+      await Storage.set('mindful_last_block_token', blockToken);
+      if (active) setReplayChecked(true);
+    })().catch(() => {
+      if (active) setReplayChecked(true);
+    });
+    return () => { active = false; };
+  }, [blockToken, navigation]);
 
   useEffect(() => {
     // 🔒 HARCORE LOCK: Disable physical back button on Android (only if strict)
@@ -54,81 +92,57 @@ export function BlockedAppScreen() {
   }, [isStrict]);
 
   useEffect(() => {
-    const initBlockScreen = async () => {
-      if (!blockedPkg) {
-        // Fallback if opened without context
-        setMessage(t('blockedApp.noContextMessage'));
-        setLoading(false);
-        return;
-      }
+    let active = true;
+    // Immediate fallback state was initialized during render; AI remains an
+    // optional asynchronous enhancement.
+    if (!blockedPkg) return () => { active = false; };
 
-      const session = await supabase.auth.getSession();
-      const userId = session?.data?.session?.user?.id;
-      
+    (async () => {
+      const userId = await getCurrentUserId();
+      if (!userId || !active) return;
+
       let name = blockedPkg;
-      if (userId) {
-        const apps = await getApps(userId);
-        const app = apps.find(a => a.packageName === blockedPkg || a.name.toLowerCase() === blockedPkg);
-        if (app) {
-          name = app.name;
-          setAppId(app.id);
-        }
-
-        const profile = await getProfile(userId);
-        const strictMode = profile?.blockingMode === 'strict';
-        setIsStrict(strictMode);
-
-        // Fetch today's tasks for AI context
-        const todayTasks = await getTasksByDate(userId, new Date());
-        
-        // Generate AI message
-        if (strictMode) {
-          const aiMessage = await generateAggressiveBlockMessage(name, todayTasks);
-          setMessage(aiMessage);
-        } else {
-          const aiMessageObj = await generateMindfulIntervention(name, '', 'gentle', null, null);
-          setMessage(aiMessageObj?.message || t('blockedApp.coachFallbackMessage', { name }));
-          setCanUnlock(true); // Don't enforce 10s wait in coach mode
-        }
-      } else {
-        setMessage(t('blockedApp.noUserIdMessage', { name }));
+      const [apps, profile] = await Promise.all([getApps(userId), getProfile(userId)]);
+      if (!active) return;
+      const app = apps.find((item) => (
+        item.packageName === blockedPkg || item.name.toLowerCase() === blockedPkg.toLowerCase()
+      ));
+      if (app) {
+        name = app.name;
+        setAppId(app.id);
+        setAppName(name);
       }
-      
-      setAppName(name);
-      setLoading(false);
-    };
 
-    initBlockScreen();
-  }, [blockedPkg]);
+      const strictMode = getEffectiveBlockingMode(profile) === 'strict';
+      setIsStrict(strictMode);
+      const todayTasks = await getTasksByDate(userId, new Date());
+      if (!getSyncState().online) return;
+      const timeout = new Promise((resolve) => setTimeout(() => resolve(null), 1000));
+      const generated = strictMode
+        ? await Promise.race([generateAggressiveBlockMessage(name, todayTasks), timeout])
+        : await Promise.race([generateMindfulIntervention(name, '', 'gentle', null, null), timeout]);
+      if (!active || !generated) return;
+      const nextMessage = strictMode ? generated : generated?.message;
+      if (nextMessage) setMessage(nextMessage);
+    })().catch((error) => {
+      console.log('[BlockedApp] Optional AI message unavailable:', error?.message || error);
+    });
 
-  // Typewriter effect
-  useEffect(() => {
-    if (!loading && message) {
-      if (displayedText.length < message.length) {
-        const timer = setTimeout(() => {
-          setDisplayedText(message.slice(0, displayedText.length + 1));
-        }, 35); // 35ms per character for smooth typing
-        return () => clearTimeout(timer);
-      } else if (displayedText.length === message.length && !canUnlock) {
-        // Finished typing! Show buttons immediately
-        setCanUnlock(true);
-      }
-    }
-  }, [loading, message, displayedText, canUnlock]);
+    return () => { active = false; };
+  }, [blockedPkg, t]);
 
   // Grant Countdown Timer
   useEffect(() => {
-    if (canUnlock && grantCountdown > 0) {
+    if (!isStrict && grantCountdown > 0) {
       const timer = setTimeout(() => {
         setGrantCountdown(prev => prev - 1);
       }, 1000);
       return () => clearTimeout(timer);
     }
-  }, [canUnlock, grantCountdown]);
+  }, [grantCountdown, isStrict]);
 
   const handleGrantAllowance = async (mins) => {
-    const session = await supabase.auth.getSession();
-    const userId = session?.data?.session?.user?.id;
+    const userId = await getCurrentUserId();
     if (userId && appId) {
       await grantTempAllowance(userId, appId, mins);
       await Gamification.addXP(userId, -20);
@@ -149,8 +163,7 @@ export function BlockedAppScreen() {
 
   const handleCloseApp = async () => {
     // Reward resisting the urge
-    const session = await supabase.auth.getSession();
-    const userId = session?.data?.session?.user?.id;
+    const userId = await getCurrentUserId();
     if (userId) {
       await Gamification.addXP(userId, 15);
       await addLogEntry(userId, { appId, appName: appName || 'App', action: 'closed' });
@@ -173,13 +186,18 @@ export function BlockedAppScreen() {
         setTimeout(() => {
           BackHandler.exitApp();
         }, 100);
-      } catch (e) {
+      } catch (_error) {
         BackHandler.exitApp();
       }
     } else {
       navigation.goBack();
     }
   };
+
+  // Hold the render until the replay check has run. Without this a reopened
+  // LifePilot flashes the full block screen for a frame before bouncing to the
+  // dashboard, which reads as the bug still being present.
+  if (!replayChecked) return <SafeAreaView style={styles.container} />;
 
   return (
     <SafeAreaView style={styles.container}>
@@ -189,14 +207,10 @@ export function BlockedAppScreen() {
         </View>
         
         <View style={styles.messageContainer}>
-          <Text style={styles.typewriterText}>
-            {loading ? t('blockedApp.analyzingBehavior') : displayedText}
-            {!canUnlock && <Text style={styles.cursor}>|</Text>}
-          </Text>
+          <Text style={styles.typewriterText}>{message}</Text>
         </View>
 
-        {canUnlock && (
-          <View style={styles.actionContainer}>
+        <View style={styles.actionContainer}>
             <TouchableOpacity style={styles.closeBtn} onPress={handleCloseApp}>
               <Text style={styles.closeBtnText}>{t('blockedApp.closingAppButton', { appName: appName || t('blockedApp.fallbackAppName') })}</Text>
             </TouchableOpacity>
@@ -250,14 +264,13 @@ export function BlockedAppScreen() {
                 {t('blockedApp.strictNoteText')}
               </Text>
             )}
-          </View>
-        )}
+        </View>
       </View>
     </SafeAreaView>
   );
 }
 
-const makeStyles = (ACCENT) => StyleSheet.create({
+const makeStyles = (ACCENT, ON_ACCENT) => StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#000000',
@@ -317,7 +330,7 @@ const makeStyles = (ACCENT) => StyleSheet.create({
     width: '100%',
   },
   closeBtnText: {
-    color: '#ffffff',
+    color: ON_ACCENT,
     fontSize: 18,
     fontWeight: '800',
   },

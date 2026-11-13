@@ -1,27 +1,30 @@
 import { useFocusEffect } from '@react-navigation/native';
-import { Bell, Calendar, CheckCircle2, ChevronDown, ChevronRight, ChevronUp, Circle, Flag, ListChecks, Menu, Repeat, Wand2, Zap } from 'lucide-react-native';
-import React, { memo, useEffect, useRef, useState } from 'react';
+import { Bell, Calendar, CheckCircle2, ChevronDown, ChevronRight, ChevronUp, Circle, Flag, ListChecks, Menu, Repeat, Trophy, Users, Wand2, Zap } from 'lucide-react-native';
+import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ActivityIndicator, Animated, AppState, BackHandler, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Animated, AppState, BackHandler, ScrollView, StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { AIAuraOverlay } from '../components/AIAuraOverlay';
 import { AlarmOverlay } from '../components/AlarmOverlay';
 import { AnimatedFlame } from '../components/AnimatedFlame';
 import { BackgroundWrapper } from '../components/BackgroundWrapper';
 import { DailyPromiseOverlay } from '../components/DailyPromiseOverlay';
+import { DayAura } from '../components/DayAura';
 import { GamificationStatsModal } from '../components/GamificationStatsModal';
 import { GlassSidebar } from '../components/GlassSidebar';
 import { LevelUpModal } from '../components/LevelUpModal';
 import { PermissionsOnboarding } from '../components/PermissionsOnboarding';
-import { ALARMS_ENABLED } from '../config/flags';
+import { ALARMS_ENABLED, HUSTLERS_ENABLED } from '../config/flags';
 import { getPriorityColor, shouldShowFlag } from '../config/priorityConfig';
 import { useTheme as useAppTheme } from '../context/ThemeContext';
 import { useWidgetTaskSync } from '../hooks/useWidgetTaskSync';
 import { syncLanguageFromProfile } from '../i18n';
 import { generateInactivityNudge } from '../lib/AIEngine';
-import { cacheTasks, loadProfile, loadTasks, performInitialSync } from '../lib/dataManager';
+import { cacheTasks, getCurrentUserId, loadProfile, loadTasks, performInitialSync } from '../lib/dataManager';
+import { loadHustlerBadges, subscribeToHustlerChanges } from '../lib/hustlersManager';
 import { supabase } from '../lib/supabase';
 import { syncToSupabase } from '../lib/syncQueue';
+import { getDayProgress } from '../utils/dayProgress';
 import { Gamification } from '../utils/gamification';
 import { cancelInactivityReminder, rescheduleAllReminders, scheduleInactivityReminder } from '../utils/notifications';
 import { savePlanForToday } from '../utils/planStore';
@@ -212,11 +215,20 @@ export const DashboardScreen = ({ navigation }) => {
   });
   const [quote, setQuote] = useState(t('dashboard.loadingQuote'));
   const [gamestate, setGamestate] = useState({ xp: 0, level: 1, streak: 0, tasksCompletedToday: 0 });
+  const [socialBadges, setSocialBadges] = useState({ pendingCount: 0, onlineCount: 0 });
+  const { height: windowHeight } = useWindowDimensions();
+  const auraHeight = Math.round(windowHeight * 0.72);
   const [allTasks, setAllTasks] = useState([]);
   const [todaysTasks, setTodaysTasks] = useState([]);
+  // Aura fuel: every task belonging to today, from the Today list and any
+  // custom list. Derived from the same optimistic state the rows render, so the
+  // glow moves the instant a task is ticked.
+  const dayProgress = useMemo(
+    () => getDayProgress({ openTasks: todaysTasks, allTasks }),
+    [allTasks, todaysTasks],
+  );
 
   const [isGamificationModalOpen, setIsGamificationModalOpen] = useState(false);
-  const [isInitialSyncing, setIsInitialSyncing] = useState(false);
   const [showAura, setShowAura] = useState(false);
   const [generatedPlan, setGeneratedPlan] = useState(null);
   const [alarmVisible, setAlarmVisible] = useState(false);
@@ -304,15 +316,13 @@ export const DashboardScreen = ({ navigation }) => {
 
   const loadData = async () => {
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session) {
-        const userId = session.user.id;
-
+      const userId = await getCurrentUserId();
+      if (userId) {
         // ── INSTANT: Load tasks + profile from cache FIRST (appears in ~10ms) ──
         const fallbackProfile = {
           id: userId,
-          display_name: session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || t('dashboard.defaultUserName'),
-          username: session.user.user_metadata?.username || session.user.email?.split('@')[0] || 'user'
+          display_name: t('dashboard.defaultUserName'),
+          username: 'user'
         };
 
         const cachedProfile = await loadProfile(userId, (fresh) => {
@@ -325,7 +335,21 @@ export const DashboardScreen = ({ navigation }) => {
           }
         });
         if (cachedProfile) setProfile(cachedProfile);
-        else setProfile(fallbackProfile);
+        else {
+          setProfile(fallbackProfile);
+          // Session metadata only improves the no-profile fallback. Resolve it
+          // without blocking cached profile/task rendering or offline actions.
+          supabase.auth.getSession().then(({ data: { session } }) => {
+            const authUser = session?.user;
+            if (!authUser) return;
+            const authFallback = {
+              id: userId,
+              display_name: authUser.user_metadata?.full_name || authUser.email?.split('@')[0] || t('dashboard.defaultUserName'),
+              username: authUser.user_metadata?.username || authUser.email?.split('@')[0] || 'user'
+            };
+            setProfile((current) => current === fallbackProfile ? authFallback : current);
+          }).catch(() => {});
+        }
 
         const cachedTasks = await loadTasks(userId, (fresh) => processTasks(fresh));
         processTasks(cachedTasks);
@@ -343,10 +367,8 @@ export const DashboardScreen = ({ navigation }) => {
             // Initial Sync for returning users (only runs once ever)
             const initialSyncDone = await Storage.get(`initial_sync_done_${userId}`);
             if (!initialSyncDone) {
-              setIsInitialSyncing(true);
               await performInitialSync(userId);
-              setIsInitialSyncing(false);
-              // Reload tasks after initial sync
+              // Reload tasks after initial sync without covering cached UI.
               const freshTasks = await loadTasks(userId, (fresh) => processTasks(fresh));
               processTasks(freshTasks);
             }
@@ -382,7 +404,7 @@ export const DashboardScreen = ({ navigation }) => {
                     changed = true;
                   }
                   if (remoteProfile.last_active_date && !freshState.lastActiveDate) {
-                    freshState.lastActiveDate = new Date(remoteProfile.last_active_date).toDateString();
+                    freshState.lastActiveDate = Gamification.toLocalDayKey(remoteProfile.last_active_date);
                     changed = true;
                   }
                   if (changed) {
@@ -434,6 +456,43 @@ export const DashboardScreen = ({ navigation }) => {
 
       return () => {
         backHandlerSub.remove();
+      };
+    }, [])
+  );
+
+  // Social badges are cache-first, then refreshed while Dashboard is visible.
+  // Realtime accelerates arrivals; polling remains authoritative when the
+  // friendships table has not yet been added to the Realtime publication.
+  useFocusEffect(
+    React.useCallback(() => {
+      if (!HUSTLERS_ENABLED) return undefined;
+      let active = true;
+      let userId = null;
+      let stopRealtime = () => {};
+      let poll = null;
+
+      const apply = (counts) => {
+        if (active && counts) setSocialBadges(counts);
+      };
+      const refresh = () => {
+        if (!userId) return;
+        loadHustlerBadges(userId, apply).then(apply).catch(() => {});
+      };
+
+      (async () => {
+        userId = await getCurrentUserId();
+        if (!active || !userId) return;
+        const cached = await loadHustlerBadges(userId, apply);
+        apply(cached);
+        if (!active) return;
+        stopRealtime = subscribeToHustlerChanges(userId, refresh);
+        poll = setInterval(refresh, 20 * 1000);
+      })().catch(() => {});
+
+      return () => {
+        active = false;
+        if (poll) clearInterval(poll);
+        stopRealtime();
       };
     }, [])
   );
@@ -606,6 +665,13 @@ export const DashboardScreen = ({ navigation }) => {
 
   return (
     <BackgroundWrapper>
+      {/* Behind everything: today's completion burning upward from the bottom. */}
+      <DayAura
+        ratio={dayProgress.ratio}
+        isComplete={dayProgress.isComplete}
+        hasWork={dayProgress.hasWork}
+        height={auraHeight}
+      />
       <SafeAreaView style={styles.container}>
         <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
           {/* ── Header: borderless controls so the eye lands on content, not chrome ── */}
@@ -633,6 +699,45 @@ export const DashboardScreen = ({ navigation }) => {
                 <AnimatedFlame streak={gamestate.streak} />
                 <Text style={[styles.streakChipText, { color: theme.text }]}>{gamestate.streak}</Text>
               </TouchableOpacity>
+
+              {HUSTLERS_ENABLED && (
+                <>
+                  <TouchableOpacity
+                    accessibilityRole="button"
+                    accessibilityLabel={t('sidebar.hustlers', {
+                      defaultValue: `Hustlers, ${socialBadges.onlineCount} online, ${socialBadges.pendingCount} pending requests`,
+                    })}
+                    onPress={() => navigation.navigate('Hustlers')}
+                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    style={[styles.navButton, styles.hustlersNavButton]}
+                  >
+                    <Users color={theme.text} size={20} />
+                    {socialBadges.pendingCount > 0 ? (
+                      <View style={styles.friendRequestBadge}>
+                        <Text style={styles.friendRequestBadgeText}>
+                          {socialBadges.pendingCount > 9 ? '9+' : socialBadges.pendingCount}
+                        </Text>
+                      </View>
+                    ) : null}
+                    {socialBadges.onlineCount > 0 ? (
+                      <View style={styles.friendOnlineBadge}>
+                        <Text style={styles.friendOnlineBadgeText}>
+                          {socialBadges.onlineCount > 99 ? '99+' : socialBadges.onlineCount}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    accessibilityRole="button"
+                    accessibilityLabel={t('leaderboard.title', { defaultValue: 'Leaderboard' })}
+                    onPress={() => navigation.navigate('Leaderboard')}
+                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    style={styles.navButton}
+                  >
+                    <Trophy color={theme.text} size={20} />
+                  </TouchableOpacity>
+                </>
+              )}
 
               {ALARMS_ENABLED && (
                 <TouchableOpacity
@@ -762,6 +867,7 @@ export const DashboardScreen = ({ navigation }) => {
         isOpen={isSidebarOpen} 
         onClose={() => setIsSidebarOpen(false)} 
         profile={profile}
+        gamestate={gamestate}
         handleLogout={handleLogout}
         navigation={navigation}
         currentRoute="Dashboard"
@@ -781,14 +887,6 @@ export const DashboardScreen = ({ navigation }) => {
         gamestate={gamestate} 
         profile={profile} 
       />
-
-      {isInitialSyncing && (
-        <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000000', justifyContent: 'center', alignItems: 'center', zIndex: 999 }]}>
-          <ActivityIndicator size="large" color="#FFFFFF" />
-          <Text style={{ color: '#FFFFFF', marginTop: 20, fontSize: 16, fontWeight: '600', letterSpacing: 0.5 }}>{t('dashboard.syncingWorkspace')}</Text>
-          <Text style={{ color: '#888888', marginTop: 8, fontSize: 13 }}>{t('dashboard.syncingWorkspaceSubtitle')}</Text>
-        </View>
-      )}
 
       {/* AIAuraOverlay */}
       <AIAuraOverlay 
@@ -842,6 +940,33 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  hustlersNavButton: { overflow: 'visible' },
+  friendRequestBadge: {
+    position: 'absolute',
+    top: -5,
+    left: -7,
+    minWidth: 16,
+    height: 16,
+    paddingHorizontal: 4,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FB7185',
+  },
+  friendRequestBadgeText: { color: '#0B0B0D', fontSize: 8, fontWeight: '700' },
+  friendOnlineBadge: {
+    position: 'absolute',
+    top: -6,
+    right: -9,
+    minWidth: 17,
+    height: 17,
+    paddingHorizontal: 4,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#4ADE80',
+  },
+  friendOnlineBadgeText: { color: '#07130B', fontSize: 8, fontWeight: '700' },
   navActions: { flexDirection: 'row', alignItems: 'center', gap: 14 },
   streakChip: {
     height: 34,

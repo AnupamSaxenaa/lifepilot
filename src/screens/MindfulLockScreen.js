@@ -1,9 +1,3 @@
-// ─── Mindful Lock Dashboard ──────────────────────────────
-// Main screen for the Mindful Lock distraction control
-// feature. Shows score ring, stats, locked apps, and
-// the "I'm Tempted" intervention trigger.
-// ─────────────────────────────────────────────────────────
-
 import { useFocusEffect } from '@react-navigation/native';
 import {
     AlertTriangle,
@@ -11,44 +5,49 @@ import {
     BrainCircuit,
     CheckCircle2,
     ChevronRight,
+    Clock3,
+    Flame,
     Frown,
     Laugh,
+    LockKeyhole,
     LockOpen,
     Meh,
     Menu,
     Plus,
     Settings,
+    ShieldCheck,
     Smartphone,
     Smile,
-    Trash2
+    Trash2,
 } from 'lucide-react-native';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
     Alert,
     AppState,
-    Dimensions,
     Image,
-    NativeModules, Platform,
+    NativeModules,
+    Platform,
     ScrollView,
     StyleSheet,
     Switch,
-    Text, TouchableOpacity,
-    View
+    Text,
+    TouchableOpacity,
+    useWindowDimensions,
+    View,
 } from 'react-native';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import Svg, { Path } from 'react-native-svg';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { DistractionScoreRing } from '../components/DistractionScoreRing';
 import { GlassSidebar } from '../components/GlassSidebar';
 import { MindfulInterventionOverlay } from '../components/MindfulInterventionOverlay';
 import { MindfulReflectionModal } from '../components/MindfulReflectionModal';
 import { ScheduleModal } from '../components/ScheduleModal';
-import { useTheme } from '../context/ThemeContext';
-import { loadProfile } from '../lib/dataManager';
+import { usePro } from '../context/ProContext';
+import { getCurrentUserId, loadProfile } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
 import {
-    addApp,
+    canUseSchedules,
     checkMindfulStreak,
     getApps,
     getDistractionScore,
@@ -58,107 +57,101 @@ import {
     getTimeSavedToday,
     getTodaysBudget,
     getTodayStats,
+    getUsageSnapshot,
+    hasOverlayPermission,
+    lockedAppQuota,
     removeApp,
+    requestOverlayPermission,
     saveProfile,
-    syncAppBlocker
+    syncAppBlocker,
+    withLiveUsage
 } from '../utils/mindfulLock';
 import { Storage } from '../utils/storage';
 
-const CustomClockIcon = ({ color, size }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
-    <Path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2zm4.2 14.2L11 11.6V7h2v3.8l4.6 3.9-.9 1.5z" />
-  </Svg>
-);
-
-const CustomShieldIcon = ({ color, size }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
-    <Path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z" />
-  </Svg>
-);
-
-const CustomFlameIcon = ({ color, size }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
-    <Path d="M13.5 0.67s0.74 2.65 0.74 4.8c0 2.06-1.35 3.73-3.41 3.73-2.07 0-3.63-1.67-3.63-3.73l0.03-0.36C5.21 7.51 4 10.62 4 14c0 4.42 3.58 8 8 8s8-3.58 8-8C20 8.61 17.41 3.8 13.5 0.67zM11.71 19c-1.78 0-3.22-1.4-3.22-3.14 0-1.62 1.05-2.76 2.81-3.12 1.77-0.36 3.6-1.21 4.62-2.58 0.39 1.29 0.59 2.65 0.59 4.04 0 2.65-2.15 4.8-4.8 4.8z" />
-  </Svg>
-);
-
-// Maps a reflection mood score (0–4) to a vector face icon instead of an emoji.
 const MoodIcon = ({ mood, size = 20, color = '#a1a1aa' }) => {
   const Icon = mood === 0 ? Angry : mood === 1 ? Frown : mood === 2 ? Meh : mood === 3 ? Smile : Laugh;
-  return <Icon color={color} size={size} strokeWidth={2} />;
+  return <Icon color={color} size={size} strokeWidth={1.8} />;
 };
 
-const { width } = Dimensions.get('window');
+const Metric = ({ icon: Icon, label, value, color = '#A1A1AA' }) => (
+  <View style={styles.metricItem}>
+    <Icon color={color} size={17} strokeWidth={1.8} />
+    <Text style={styles.metricValue}>{value}</Text>
+    <Text style={styles.metricLabel} numberOfLines={1}>{label}</Text>
+  </View>
+);
+
 export const MindfulLockScreen = ({ navigation, route }) => {
   const { t } = useTranslation();
-  const insets = useSafeAreaInsets();
-  const ACCENT = useTheme().theme.accent;
-  const styles = useMemo(() => makeStyles(ACCENT), [ACCENT]);
+  const { width } = useWindowDimensions();
+  const isNarrow = width < 360;
+  const contentWidth = Math.min(width, 720);
+  const scoreSize = isNarrow ? 128 : 148;
   const [userId, setUserId] = useState(route?.params?.userId);
 
   useEffect(() => {
     if (!userId) {
-      supabase.auth.getSession().then(({ data: { session } }) => {
-        if (session?.user?.id) {
-          setUserId(session.user.id);
-        }
+      getCurrentUserId().then((resolvedUserId) => {
+        if (resolvedUserId) setUserId(resolvedUserId);
       });
     }
   }, [userId]);
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [profile, setProfile] = useState(null);
-  // The mode actually in effect right now = base mode unless a schedule
-  // window is currently active (schedules override; strict wins).
   const [effectiveMode, setEffectiveMode] = useState('cbt');
   const [userProfile, setUserProfile] = useState(null);
   const [apps, setApps] = useState([]);
   const [score, setScore] = useState(50);
   const [todayStats, setTodayStats] = useState({ resisted: 0, used: 0, timeSaved: 0 });
-  const [timeSavedEquiv, setTimeSavedEquiv] = useState('');
+  const [, setTimeSavedEquiv] = useState('');
   const [pastReflections, setPastReflections] = useState([]);
-
-  // Live clock tick (drives allowance countdowns without needing a manual refresh)
-  const [now, setNow] = useState(Date.now());
-  // Whether the Android accessibility service is currently enabled
+  const [now, setNow] = useState(() => Date.now());
   const [accessibilityEnabled, setAccessibilityEnabled] = useState(true);
-
-  // Modals
+  const { isPro } = usePro();
+  const [overlayGranted, setOverlayGranted] = useState(true);
+  // Guards the 1s usage poll so a slow bridge call can't pile up round-trips.
+  const usagePollBusy = useRef(false);
+  // Lets the poll read the current app list without re-creating the interval
+  // (and without the stale-closure/no-op-setState dance it used to do).
+  const appsRef = useRef([]);
   const [showIntervention, setShowIntervention] = useState(false);
   const [interventionApp, setInterventionApp] = useState(null);
+  const [showReflection, setShowReflection] = useState(false);
+  const [showSchedule, setShowSchedule] = useState(false);
 
   useEffect(() => {
-    if (route?.params?.triggerInterventionForApp) {
-      const appName = route.params.appName || route.params.triggerInterventionForApp;
-      setInterventionApp({ name: appName, id: route.params.triggerInterventionForApp });
+    const trigger = route?.params?.triggerInterventionForApp;
+    if (!trigger || apps.length === 0) return undefined;
+
+    const timeout = setTimeout(() => {
+      const matchedApp = apps.find((app) => (
+        String(app.id) === String(trigger)
+        || app.packageName === trigger
+        || app.name?.toLowerCase() === String(trigger).toLowerCase()
+      ));
+      const appName = matchedApp?.name || route.params.appName || trigger;
+      setInterventionApp(matchedApp || { name: appName, id: trigger });
       setShowIntervention(true);
       navigation.setParams({ triggerInterventionForApp: undefined, appName: undefined });
-    }
-  }, [route?.params?.triggerInterventionForApp]);
-  const [showReflection, setShowReflection] = useState(false);
-  const [showAddApp, setShowAddApp] = useState(false);
-  const [showSchedule, setShowSchedule] = useState(false);
-  const [showEditApp, setShowEditApp] = useState(null);
+    }, 0);
 
-  // Add app form
-  const [newAppName, setNewAppName] = useState('');
-  const [newAppIcon, setNewAppIcon] = useState('📱');
-  const [newAppBudget, setNewAppBudget] = useState('60');
-
-  const QUICK_ICONS = ['📱', '📸', '🎵', '▶️', '🐦', '🔴', '👻', '📘', '🎮', '💬', '📧', '🛒'];
+    return () => clearTimeout(timeout);
+  }, [apps, navigation, route?.params?.appName, route?.params?.triggerInterventionForApp]);
 
   const loadData = useCallback(async () => {
     if (!userId) return;
 
-    // Check accessibility FIRST (Android) — independent of everything else so an
-    // error below can never suppress the "service is off" warning banner.
     if (Platform.OS === 'android' && NativeModules.AppBlocker?.isAccessibilityServiceEnabled) {
       try {
         const enabled = await NativeModules.AppBlocker.isAccessibilityServiceEnabled();
         setAccessibilityEnabled(!!enabled);
-      } catch (e) {
-        setAccessibilityEnabled(true); // Don't nag the user on a check error
+      } catch {
+        setAccessibilityEnabled(true);
       }
+      // Without "Display over other apps" the service can't foreground the
+      // block screen on Android 10+, so the block silently never appears.
+      setOverlayGranted(await hasOverlayPermission());
     }
 
     const [appListRaw, prof, scoreVal, stats, saved, up, reflectionsRaw] = await Promise.all([
@@ -171,18 +164,7 @@ export const MindfulLockScreen = ({ navigation, route }) => {
       Storage.get(`mindful_reflections_${userId}`),
     ]);
 
-    let appList = appListRaw;
-    const AppBlocker = NativeModules.AppBlocker;
-    if (Platform.OS === 'android' && AppBlocker && AppBlocker.getUsageToday) {
-      appList = await Promise.all(appListRaw.map(async app => {
-        try {
-          const ms = await AppBlocker.getUsageToday(app.packageName || app.name.toLowerCase());
-          return { ...app, usageToday: Math.floor(ms / 60000) };
-        } catch (e) {
-          return app;
-        }
-      }));
-    }
+    const appList = withLiveUsage(appListRaw, await getUsageSnapshot(appListRaw));
 
     setApps(appList);
     setProfile(prof);
@@ -193,10 +175,11 @@ export const MindfulLockScreen = ({ navigation, route }) => {
     setUserProfile(up);
     setPastReflections(reflectionsRaw || []);
 
-    // Check streak
-    await checkMindfulStreak(userId);
-
-    // Force sync the latest rules to native blocker
+    const streakProfile = await checkMindfulStreak(userId);
+    if (streakProfile) {
+      setProfile(streakProfile);
+      setEffectiveMode(getEffectiveBlockingMode(streakProfile));
+    }
     await syncAppBlocker(userId);
   }, [userId]);
 
@@ -204,111 +187,78 @@ export const MindfulLockScreen = ({ navigation, route }) => {
     useCallback(() => {
       loadData();
 
-      // Live 1-second tick so allowance countdowns update in real time.
-      // Also recompute the effective blocking mode so the UI flips the moment
-      // a schedule window starts or ends, with no manual reload needed.
+      let cancelled = false;
+
+      // One 1s loop drives everything on this screen: the allowance countdown,
+      // the effective-mode pill, and the per-app usage bars. Usage comes from
+      // the native side as a LIVE value (banked + in-flight), so the bars move
+      // second-by-second instead of only after a 30s poll landed on a minute
+      // boundary.
+      const refreshUsage = async () => {
+        if (usagePollBusy.current || cancelled) return;
+        usagePollBusy.current = true;
+        try {
+          const current = appsRef.current;
+          if (!current.length) return;
+          const snapshot = await getUsageSnapshot(current);
+          if (cancelled || Object.keys(snapshot).length === 0) return;
+          setApps((prev) => withLiveUsage(prev, snapshot));
+        } finally {
+          usagePollBusy.current = false;
+        }
+      };
+
       const tick = setInterval(() => {
         setNow(Date.now());
-        setProfile(cur => {
-          if (cur) setEffectiveMode(getEffectiveBlockingMode(cur));
-          return cur;
+        setProfile((current) => {
+          if (current) setEffectiveMode(getEffectiveBlockingMode(current));
+          return current;
         });
+        refreshUsage();
       }, 1000);
 
-      // Live dynamic update for progress bars
-      const interval = setInterval(() => {
-        if (Platform.OS === 'android' && NativeModules.AppBlocker?.getUsageToday) {
-          setApps(currentApps => {
-            if (!currentApps.length) return currentApps;
-            
-            // Promise.all inside set state isn't great, but we can fire an async function
-            const updateLiveUsage = async () => {
-              try {
-                const updated = await Promise.all(currentApps.map(async app => {
-                  try {
-                    const ms = await NativeModules.AppBlocker.getUsageToday(app.packageName || app.name.toLowerCase());
-                    return { ...app, usageToday: Math.floor(ms / 60000) };
-                  } catch (e) { return app; }
-                }));
-                setApps(updated);
-              } catch (e) {}
-            };
-            updateLiveUsage();
-            return currentApps;
-          });
-        }
-      }, 30000); // Check every 30s
-      
       return () => {
+        cancelled = true;
         clearInterval(tick);
-        clearInterval(interval);
       };
-    }, [loadData])
+    }, [loadData]),
   );
 
-  // Instantly refresh usage bars when app comes back to foreground
   useEffect(() => {
-    const subscription = AppState.addEventListener('change', nextAppState => {
-      if (nextAppState === 'active') {
-        loadData();
-      }
-    });
+    appsRef.current = apps;
+  }, [apps]);
 
-    return () => {
-      subscription.remove();
-    };
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState === 'active') loadData();
+    });
+    return () => subscription.remove();
   }, [loadData]);
 
-  // Handle deep link from Accessibility Service block
   useEffect(() => {
     if (route?.params?.blocked_app) {
       const pkg = route.params.blocked_app;
-      const app = apps.find(a => a.packageName === pkg || a.name.toLowerCase() === pkg);
+      const app = apps.find((item) => item.packageName === pkg || item.name.toLowerCase() === pkg);
       const appName = app ? app.name : pkg;
-      
       Alert.alert(
         t('mindfulLock.allowanceExceededTitle'),
         t('mindfulLock.allowanceExceededMessage', { appName }),
-        [{ text: t('mindfulLock.gotIt') }]
+        [{ text: t('mindfulLock.gotIt') }],
       );
-      
-      // Clear param so it doesn't fire again on navigation
       navigation.setParams({ blocked_app: undefined });
     }
-  }, [route?.params?.blocked_app, apps]);
-
-  // Refresh when returning from intervention
-  useEffect(() => {
-    if (!showIntervention && !showReflection) {
-      loadData();
-    }
-  }, [showIntervention, showReflection]);
-
-  const handleAddApp = async () => {
-    if (!newAppName.trim()) return;
-
-    await addApp(userId, {
-      name: newAppName.trim(),
-      icon: newAppIcon,
-      lockMode: 'allowance',
-      dailyBudgetMinutes: parseInt(newAppBudget) || 60,
-    });
-
-    setNewAppName('');
-    setNewAppIcon('📱');
-    setNewAppBudget('60');
-    setShowAddApp(false);
-    loadData();
-  };
+  }, [apps, navigation, route?.params?.blocked_app, t]);
 
   const handleRemoveApp = (app) => {
     Alert.alert(t('mindfulLock.removeAppTitle'), t('mindfulLock.removeAppMessage', { appName: app.name }), [
       { text: t('common.cancel'), style: 'cancel' },
       {
-        text: t('mindfulLock.removeButton'), style: 'destructive', onPress: async () => {
+        text: t('mindfulLock.removeButton'),
+        style: 'destructive',
+        onPress: async () => {
           await removeApp(userId, app.id);
           loadData();
-        }
+        },
       },
     ]);
   };
@@ -323,8 +273,8 @@ export const MindfulLockScreen = ({ navigation, route }) => {
             t('mindfulLock.permissionRequiredMessage'),
             [
               { text: t('common.cancel'), style: 'cancel' },
-              { text: t('mindfulLock.openSettings'), onPress: () => NativeModules.AppBlocker.openAccessibilitySettings() }
-            ]
+              { text: t('mindfulLock.openSettings'), onPress: () => NativeModules.AppBlocker.openAccessibilitySettings() },
+            ],
           );
           return;
         }
@@ -341,348 +291,429 @@ export const MindfulLockScreen = ({ navigation, route }) => {
     navigation.reset({ index: 0, routes: [{ name: 'Onboarding' }] });
   };
 
+  // Schedules auto-switch strict mode by time of day — a Pro feature. Existing
+  // schedules stay VISIBLE and keep working if a subscription lapses; only
+  // opening the editor is gated, so a lapse never silently unblocks apps the
+  // user asked to be blocked.
+  const handleOpenSchedule = () => {
+    if (schedulesUnlocked) {
+      setShowSchedule(true);
+      return;
+    }
+    Alert.alert(
+      t('mindfulLock.schedulesProTitle'),
+      t('mindfulLock.schedulesProMessage'),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        { text: t('mindfulLock.seePlansButton'), onPress: () => navigation.navigate('Paywall') },
+      ],
+    );
+  };
+
+  const openAppPicker = () => navigation.navigate('MindfulLockSetup', {
+    userId,
+    initialStep: Platform.OS === 'android' ? 3 : 2,
+    isAddingMore: true,
+  });
+
+  const openIntervention = () => {
+    if (apps.length === 0) {
+      Alert.alert(t('mindfulLock.noAppsTitle'), t('mindfulLock.noAppsMessage'));
+      return;
+    }
+    setShowIntervention(true);
+  };
+
   const todayStr = new Date().toISOString().split('T')[0];
-  const hasReflectedToday = pastReflections.some(r => r.createdAt && r.createdAt.startsWith(todayStr));
-  const currentHour = new Date().getHours();
-  const showReflectionBtn = currentHour >= 20 && !hasReflectedToday;
+  const hasReflectedToday = pastReflections.some((reflection) => reflection.createdAt?.startsWith(todayStr));
+  const showReflectionBtn = new Date().getHours() >= 20 && !hasReflectedToday;
+  const activeScheduleCount = profile?.schedules?.filter((schedule) => schedule.enabled !== false).length || 0;
+  const strictActive = effectiveMode === 'strict';
+  // Grandfathered: a user who already built schedules keeps editing them even if
+  // their subscription lapsed. Taking away access to rules that are actively
+  // blocking their apps would be worse than leaving the editor open.
+  const schedulesUnlocked = canUseSchedules(isPro) || activeScheduleCount > 0;
+  const quota = lockedAppQuota({ isPro, currentCount: apps.length });
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      {/* ─── Header ─── */}
-      <View style={[styles.header, { paddingTop: 8 }]}>
-        <TouchableOpacity onPress={() => setIsSidebarOpen(true)} style={styles.iconBtn}>
-          <Menu color={ACCENT} size={26} />
+      <View style={[styles.header, { width: contentWidth }]}>
+        <TouchableOpacity onPress={() => setIsSidebarOpen(true)} style={styles.iconButton} accessibilityRole="button">
+          <Menu color="#E4E4E7" size={22} strokeWidth={1.8} />
         </TouchableOpacity>
-        <View style={styles.headerCenter}>
-          <BrainCircuit color={ACCENT} size={20} />
+        <View style={styles.headerIdentity}>
           <Text style={styles.headerTitle}>{t('mindfulLock.headerTitle')}</Text>
+          <View style={[styles.modePill, strictActive && styles.modePillStrict]}>
+            <View style={[styles.modeDot, strictActive && styles.modeDotStrict]} />
+            <Text style={[styles.modePillText, strictActive && styles.modePillTextStrict]}>
+              {strictActive ? t('mindfulLockSetup.modeStrictName') : t('mindfulLockSetup.modeCbtName')}
+            </Text>
+          </View>
         </View>
         <TouchableOpacity
           onPress={() => navigation.navigate('MindfulLockSetup', { userId })}
-          style={styles.iconBtn}
+          style={styles.iconButton}
+          accessibilityRole="button"
         >
-          <Settings color="#71717a" size={22} />
+          <Settings color="#A1A1AA" size={21} strokeWidth={1.8} />
         </TouchableOpacity>
       </View>
 
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[
+          styles.scrollContent,
+          { width: contentWidth, paddingHorizontal: isNarrow ? 14 : 20 },
+        ]}
       >
-        {/* ─── Accessibility Off Warning ─── */}
         {Platform.OS === 'android' && !accessibilityEnabled && (
           <TouchableOpacity
             style={styles.accessibilityWarning}
             onPress={() => NativeModules.AppBlocker?.openAccessibilitySettings?.()}
-            activeOpacity={0.8}
+            activeOpacity={0.75}
           >
-            <AlertTriangle color="#FBBF24" size={20} strokeWidth={2.2} />
-            <View style={{ flex: 1, marginLeft: 10 }}>
-              <Text style={styles.accessibilityWarningTitle}>{t('mindfulLock.accessibilityWarningTitle')}</Text>
-              <Text style={styles.accessibilityWarningDesc}>
-                {t('mindfulLock.accessibilityWarningDesc')}
-              </Text>
+            <AlertTriangle color="#D6A647" size={20} strokeWidth={1.9} />
+            <View style={styles.warningCopy}>
+              <Text style={styles.warningTitle}>{t('mindfulLock.accessibilityWarningTitle')}</Text>
+              <Text style={styles.warningDescription}>{t('mindfulLock.accessibilityWarningDesc')}</Text>
             </View>
+            <ChevronRight color="#8A6A2F" size={18} />
           </TouchableOpacity>
         )}
 
-        {/* ─── Distraction Score Ring ─── */}
-        <Animated.View entering={FadeIn.duration(500)} style={styles.scoreSection}>
-          <DistractionScoreRing score={score} size={180} strokeWidth={10} />
-          <Text style={styles.scoreSubtitle}>{t('mindfulLock.scoreSubtitle')}</Text>
+        {Platform.OS === 'android' && !overlayGranted && (
+          <TouchableOpacity
+            style={styles.accessibilityWarning}
+            onPress={() => requestOverlayPermission()}
+            activeOpacity={0.75}
+          >
+            <AlertTriangle color="#D6A647" size={20} strokeWidth={1.9} />
+            <View style={styles.warningCopy}>
+              <Text style={styles.warningTitle}>{t('mindfulLock.overlayWarningTitle')}</Text>
+              <Text style={styles.warningDescription}>{t('mindfulLock.overlayWarningDesc')}</Text>
+            </View>
+            <ChevronRight color="#8A6A2F" size={18} />
+          </TouchableOpacity>
+        )}
+
+        <Animated.View entering={FadeIn.duration(350)} style={styles.overviewCard}>
+          <View style={styles.scoreWrap}>
+            <DistractionScoreRing score={score} size={scoreSize} strokeWidth={7} />
+          </View>
+          <View style={styles.overviewCopy}>
+            <Text style={styles.eyebrow}>{t('mindfulLock.scoreSubtitle')}</Text>
+            <Text style={styles.overviewTitle}>
+              {strictActive ? t('mindfulLock.strictBlockActive') : t('mindfulLock.temptedButtonSub')}
+            </Text>
+            <Text style={styles.overviewDescription}>
+              {strictActive
+                ? (profile?.blockingMode !== 'strict'
+                  ? t('mindfulLock.strictBlockScheduleSub')
+                  : t('mindfulLock.strictBlockManualSub'))
+                : t('mindfulLockSetup.modeCbtDesc')}
+            </Text>
+          </View>
         </Animated.View>
 
-        {/* ─── Today's Stats ─── */}
-        <View style={styles.statsRow}>
-          <Animated.View entering={FadeInDown.delay(100).duration(400)} style={styles.statItem}>
-            <CustomClockIcon color="#71717a" size={20} />
-            <Text style={styles.statValueCompact}>{todayStats.timeSaved}m</Text>
-            <Text style={styles.statLabelCompact}>{t('mindfulLock.statSaved')}</Text>
-          </Animated.View>
+        <Animated.View entering={FadeInDown.delay(70).duration(350)} style={styles.metricsCard}>
+          <Metric icon={Clock3} label={t('mindfulLock.statSaved')} value={`${todayStats.timeSaved}m`} />
+          <View style={styles.metricDivider} />
+          <Metric icon={ShieldCheck} label={t('mindfulLock.statResisted')} value={todayStats.resisted} color="#6FAD8E" />
+          <View style={styles.metricDivider} />
+          <Metric icon={Flame} label={t('mindfulLock.statStreak')} value={profile?.streak || 0} />
+        </Animated.View>
 
-          <Animated.View entering={FadeInDown.delay(150).duration(400)} style={styles.statItem}>
-            <CustomShieldIcon color="#71717a" size={20} />
-            <Text style={styles.statValueCompact}>{todayStats.resisted}</Text>
-            <Text style={styles.statLabelCompact}>{t('mindfulLock.statResisted')}</Text>
+        {strictActive ? (
+          <Animated.View entering={FadeInDown.delay(120).duration(350)} style={styles.strictStateCard}>
+            <View style={styles.actionIconWrapDark}>
+              <LockKeyhole color="#8EB7D9" size={21} strokeWidth={1.8} />
+            </View>
+            <View style={styles.actionCopy}>
+              <Text style={styles.strictStateTitle}>{t('mindfulLock.strictBlockActive')}</Text>
+              <Text style={styles.strictStateDescription}>
+                {profile?.blockingMode !== 'strict'
+                  ? t('mindfulLock.strictBlockScheduleSub')
+                  : t('mindfulLock.strictBlockManualSub')}
+              </Text>
+            </View>
           </Animated.View>
-
-          <Animated.View entering={FadeInDown.delay(200).duration(400)} style={styles.statItem}>
-            <CustomFlameIcon color={ACCENT} size={22} />
-            <Text style={styles.statValueCompact}>{profile?.streak || 0}</Text>
-            <Text style={styles.statLabelCompact}>{t('mindfulLock.statStreak')}</Text>
-          </Animated.View>
-        </View>
-
-        {/* ─── THE BIG BUTTON ─── (reflects the EFFECTIVE mode, i.e. honors
-             an active schedule window, not just the manual base setting) */}
-        {effectiveMode !== 'strict' && (
-          <Animated.View entering={FadeInDown.delay(200).duration(400)}>
-            <TouchableOpacity
-              style={styles.temptedBtn}
-              onPress={() => {
-                if (apps.length === 0) {
-                  Alert.alert(t('mindfulLock.noAppsTitle'), t('mindfulLock.noAppsMessage'));
-                  return;
-                }
-                setShowIntervention(true);
-              }}
-              activeOpacity={0.8}
-            >
-              <BrainCircuit color="#A78BFA" size={24} />
-              <Text style={styles.temptedBtnText}>{t('mindfulLock.temptedButton')}</Text>
-              <Text style={styles.temptedBtnSub}>{t('mindfulLock.temptedButtonSub')}</Text>
+        ) : (
+          <Animated.View entering={FadeInDown.delay(120).duration(350)}>
+            <TouchableOpacity style={styles.primaryAction} onPress={openIntervention} activeOpacity={0.86}>
+              <View style={styles.actionIconWrapLight}>
+                <BrainCircuit color="#09090B" size={21} strokeWidth={1.8} />
+              </View>
+              <View style={styles.actionCopy}>
+                <Text style={styles.primaryActionTitle}>{t('mindfulLock.temptedButton')}</Text>
+                <Text style={styles.primaryActionDescription}>{t('mindfulLock.temptedButtonSub')}</Text>
+              </View>
+              <ChevronRight color="#52525B" size={20} />
             </TouchableOpacity>
           </Animated.View>
         )}
 
-        {effectiveMode === 'strict' && (
-          <Animated.View entering={FadeInDown.delay(200).duration(400)} style={[styles.temptedBtn, { backgroundColor: '#60A5FA18', borderColor: '#60A5FA', borderWidth: 1 }]}>
-            <BrainCircuit color="#60A5FA" size={24} />
-            <Text style={styles.temptedBtnText}>{t('mindfulLock.strictBlockActive')}</Text>
-            <Text style={styles.temptedBtnSub}>
-              {profile?.blockingMode !== 'strict'
-                ? t('mindfulLock.strictBlockScheduleSub')
-                : t('mindfulLock.strictBlockManualSub')}
-            </Text>
-          </Animated.View>
-        )}
-
-        {/* ─── Quick Actions ─── */}
         {Platform.OS === 'android' && (
-          <Animated.View entering={FadeInDown.delay(300).duration(400)}>
-            <Text style={styles.sectionTitle}>{t('mindfulLock.quickActionsTitle')}</Text>
-            <View style={styles.quickActions}>
-              <View style={styles.quickActionRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.quickActionLabel}>{t('mindfulLock.strictBlockerLabel')}</Text>
-                  <Text style={styles.quickActionDesc}>
-                    {profile?.blockingMode === 'strict' ? t('mindfulLock.strictBlockerDescActive') : t('mindfulLock.strictBlockerDescInactive')}
+          <Animated.View entering={FadeInDown.delay(170).duration(350)} style={styles.section}>
+            <Text style={styles.sectionLabel}>{t('mindfulLock.quickActionsTitle')}</Text>
+            <View style={styles.controlCard}>
+              <View style={styles.controlRow}>
+                <View style={styles.controlIcon}>
+                  <LockKeyhole color="#C4C4C8" size={18} strokeWidth={1.7} />
+                </View>
+                <View style={styles.controlCopy}>
+                  <Text style={styles.controlTitle}>{t('mindfulLock.strictBlockerLabel')}</Text>
+                  <Text style={styles.controlDescription}>
+                    {profile?.blockingMode === 'strict'
+                      ? t('mindfulLock.strictBlockerDescActive')
+                      : t('mindfulLock.strictBlockerDescInactive')}
                   </Text>
                 </View>
                 <Switch
                   value={profile?.blockingMode === 'strict'}
                   onValueChange={handleToggleStrictMode}
-                  trackColor={{ false: '#27272a', true: '#60A5FA40' }}
-                  thumbColor={profile?.blockingMode === 'strict' ? '#60A5FA' : '#52525b'}
+                  trackColor={{ false: '#2A2A2E', true: '#45657E' }}
+                  thumbColor={profile?.blockingMode === 'strict' ? '#E8F1F7' : '#A1A1AA'}
                 />
               </View>
-
-              <View style={styles.divider} />
-
-              <TouchableOpacity style={styles.quickActionRow} onPress={() => setShowSchedule(true)} activeOpacity={0.7}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.quickActionLabel}>{t('mindfulLock.autoScheduleLabel')}</Text>
-                  <Text style={styles.quickActionDesc}>
+              <View style={styles.controlDivider} />
+              <TouchableOpacity
+                style={styles.controlRow}
+                onPress={handleOpenSchedule}
+                activeOpacity={0.7}
+                accessibilityRole="button"
+              >
+                <View style={styles.controlIcon}>
+                  <Clock3 color="#C4C4C8" size={18} strokeWidth={1.7} />
+                </View>
+                <View style={styles.controlCopy}>
+                  <View style={styles.controlTitleRow}>
+                    <Text style={styles.controlTitle}>{t('mindfulLock.autoScheduleLabel')}</Text>
+                    {!schedulesUnlocked && (
+                      <View style={styles.proTag}>
+                        <Text style={styles.proTagText}>{t('mindfulLock.proTag')}</Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text style={styles.controlDescription}>
                     {profile?.schedules?.length > 0
-                      ? t('mindfulLock.activeRules', { count: profile.schedules.filter(s => s.enabled !== false).length })
+                      ? t('mindfulLock.activeRules', { count: activeScheduleCount })
                       : t('mindfulLock.autoScheduleDesc')}
                   </Text>
                 </View>
-                <ChevronRight color="#52525b" size={20} />
+                <ChevronRight color="#71717A" size={19} />
               </TouchableOpacity>
             </View>
           </Animated.View>
         )}
 
-        {/* ─── Locked Apps ─── */}
-        <Animated.View entering={FadeInDown.delay(400).duration(400)}>
+        <Animated.View entering={FadeInDown.delay(220).duration(350)} style={styles.section}>
           <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>{t('mindfulLock.lockedDistractionsTitle')}</Text>
-            <TouchableOpacity
-              style={styles.addBtn}
-              onPress={() => navigation.navigate('MindfulLockSetup', { 
-                userId, 
-                initialStep: Platform.OS === 'android' ? 3 : 2, 
-                isAddingMore: true 
-              })}
-            >
-              <Plus color={ACCENT} size={16} />
-              <Text style={styles.addBtnText}>{t('mindfulLock.addButton')}</Text>
+            <Text style={styles.sectionLabel}>{t('mindfulLock.lockedDistractionsTitle')}</Text>
+            <TouchableOpacity style={styles.addButton} onPress={openAppPicker} activeOpacity={0.7}>
+              <Plus color="#E4E4E7" size={16} />
+              <Text style={styles.addButtonText}>{t('mindfulLock.addButton')}</Text>
+              {/* Surface the free-plan quota BEFORE the user hits it, so the
+                  limit is discoverable rather than a surprise mid-flow. */}
+              {!quota.unlimited && (
+                <Text style={styles.addButtonQuota}>
+                  {t('mindfulLock.appQuota', { used: quota.used, limit: quota.limit })}
+                </Text>
+              )}
             </TouchableOpacity>
           </View>
 
-          {/* App List */}
           {apps.length === 0 ? (
             <View style={styles.emptyState}>
-              <View style={styles.emptyIconWrap}>
-                <LockOpen color={ACCENT} size={24} strokeWidth={2} />
+              <View style={styles.emptyIcon}>
+                <LockOpen color="#A1A1AA" size={24} strokeWidth={1.6} />
               </View>
-              <Text style={styles.emptyText}>{t('mindfulLock.emptyTitle')}</Text>
-              <Text style={styles.emptySubtext}>{t('mindfulLock.emptySubtitle')}</Text>
+              <Text style={styles.emptyTitle}>{t('mindfulLock.emptyTitle')}</Text>
+              <Text style={styles.emptyDescription}>{t('mindfulLock.emptySubtitle')}</Text>
+              <TouchableOpacity style={styles.emptyAction} onPress={openAppPicker} activeOpacity={0.8}>
+                <Plus color="#09090B" size={17} strokeWidth={2} />
+                <Text style={styles.emptyActionText}>{t('mindfulLock.addButton')}</Text>
+              </TouchableOpacity>
             </View>
           ) : (
-            apps.map((app, index) => {
-              const budget = getTodaysBudget(app);
-              const usage = app.usageToday || 0;
-              const progress = budget > 0 ? Math.min(usage / budget, 1) : 0;
-              const isOverBudget = usage >= budget;
+            <View style={styles.appList}>
+              {apps.map((app, index) => {
+                const budget = getTodaysBudget(app);
+                // Prefer the precise ms figure so the bar creeps every second;
+                // `usageToday` (whole minutes) is only a fallback for iOS /
+                // pre-bridge data.
+                const usageMs = typeof app.usageMs === 'number'
+                  ? app.usageMs
+                  : (app.usageToday || 0) * 60000;
+                const budgetMs = budget * 60000;
+                const usage = Math.floor(usageMs / 60000);
+                const progress = budgetMs > 0 ? Math.min(usageMs / budgetMs, 1) : 0;
+                const isOverBudget = budgetMs <= 0 ? usageMs > 0 : usageMs >= budgetMs;
+                const activeAllowance = app.unblockUntil && app.unblockUntil > now;
+                const remainingSec = activeAllowance ? Math.ceil((app.unblockUntil - now) / 1000) : 0;
+                const remMM = Math.floor(remainingSec / 60);
+                const remSS = String(remainingSec % 60).padStart(2, '0');
+                const modeLabel = app.lockMode === 'hard'
+                  ? t('mindfulLock.modeHard')
+                  : app.lockMode === 'scheduled'
+                    ? t('mindfulLock.modeScheduled')
+                    : t('mindfulLock.modeAllowance');
 
-              // Live allowance countdown (updates every second via `now`)
-              const activeAllowance = app.unblockUntil && app.unblockUntil > now;
-              const remainingSec = activeAllowance ? Math.ceil((app.unblockUntil - now) / 1000) : 0;
-              const remMM = Math.floor(remainingSec / 60);
-              const remSS = String(remainingSec % 60).padStart(2, '0');
-
-              return (
-                <Animated.View
-                  key={app.id}
-                  entering={FadeInDown.delay(index * 50).duration(300)}
-                  style={styles.appCard}
-                >
-                  {app.icon && app.icon.length > 10 ? (
-                    <Image 
-                      source={{ uri: `data:image/png;base64,${app.icon}` }} 
-                      style={{ width: 32, height: 32, borderRadius: 6, marginRight: 14 }} 
-                    />
-                  ) : (
-                    <Text style={styles.appCardIcon}>{app.icon}</Text>
-                  )}
-                  <View style={{ flex: 1 }}>
-                    <View style={styles.appCardHeader}>
-                      <Text style={styles.appCardName}>{app.name}</Text>
-                      {app.bundle && (
-                        <Text style={styles.appCardBundle}>{app.bundle}</Text>
+                return (
+                  <Animated.View
+                    key={app.id}
+                    entering={FadeInDown.delay(Math.min(index * 40, 240)).duration(280)}
+                    style={styles.appCard}
+                  >
+                    <View style={styles.appCardTop}>
+                      {app.icon && app.icon.length > 10 ? (
+                        <Image source={{ uri: `data:image/png;base64,${app.icon}` }} style={styles.appIconImage} />
+                      ) : (
+                        <View style={styles.appIconFallback}>
+                          <Text style={styles.appIconEmoji}>{app.icon || '•'}</Text>
+                        </View>
                       )}
+                      <View style={styles.appIdentity}>
+                        <Text style={styles.appName} numberOfLines={1}>{app.name}</Text>
+                        <Text style={styles.appMode} numberOfLines={1}>{modeLabel}</Text>
+                      </View>
+                      <TouchableOpacity
+                        style={styles.deleteButton}
+                        onPress={() => handleRemoveApp(app)}
+                        accessibilityRole="button"
+                      >
+                        <Trash2 color="#71717A" size={17} strokeWidth={1.8} />
+                      </TouchableOpacity>
                     </View>
-
-                    {/* Progress Bar */}
-                    <View style={styles.progressBarBg}>
+                    <View style={styles.usageRow}>
+                      <Text style={[styles.usageText, activeAllowance && styles.allowanceText, isOverBudget && styles.overBudgetText]}>
+                        {activeAllowance
+                          ? t('mindfulLock.timeLeft', { time: `${remMM}:${remSS}` })
+                          : t('mindfulLock.usedMinutes', { usage, budget })}
+                      </Text>
+                      <Text style={styles.usagePercent}>{Math.round(progress * 100)}%</Text>
+                    </View>
+                    <View style={styles.progressTrack}>
                       <View
                         style={[
-                          styles.progressBarFill,
-                          {
-                            width: `${progress * 100}%`,
-                            backgroundColor: isOverBudget ? '#FB7185' : ACCENT,
-                          },
+                          styles.progressFill,
+                          { width: `${progress * 100}%` },
+                          activeAllowance && styles.progressFillAllowance,
+                          isOverBudget && styles.progressFillOver,
                         ]}
                       />
                     </View>
-
-                    <View style={styles.appCardFooter}>
-                      {activeAllowance ? (
-                        <Text style={[styles.appCardUsage, { color: '#34D399' }]}>
-                          {t('mindfulLock.timeLeft', { time: `${remMM}:${remSS}` })}
-                        </Text>
-                      ) : (
-                        <Text style={[styles.appCardUsage, isOverBudget && { color: '#A1A1AA' }]}>
-                          {t('mindfulLock.usedMinutes', { usage, budget })}
-                        </Text>
-                      )}
-                      <Text style={styles.appCardMode}>
-                        {app.lockMode === 'hard' ? t('mindfulLock.modeHard') :
-                          app.lockMode === 'scheduled' ? t('mindfulLock.modeScheduled') : t('mindfulLock.modeAllowance')}
-                      </Text>
-                    </View>
-                  </View>
-
-                  <TouchableOpacity
-                    style={styles.appCardDelete}
-                    onPress={() => handleRemoveApp(app)}
-                  >
-                    <Trash2 color="#52525b" size={16} />
-                  </TouchableOpacity>
-                </Animated.View>
-              );
-            })
+                  </Animated.View>
+                );
+              })}
+            </View>
           )}
         </Animated.View>
 
-        {/* ─── Today's Activity ─── */}
         {todayStats.todayLog?.length > 0 && (
-          <Animated.View entering={FadeInDown.delay(500).duration(400)}>
-            <Text style={styles.sectionTitle}>{t('mindfulLock.todayActivityTitle')}</Text>
-            {todayStats.todayLog.slice(0, 5).map((entry, i) => (
-              <View key={entry.id} style={styles.logEntry}>
-                <View style={styles.logIconWrap}>
-                  {entry.action === 'resisted' || entry.action === 'closed'
-                    ? <CheckCircle2 color="#34D399" size={17} strokeWidth={2.2} />
-                    : <Smartphone color="#71717a" size={16} strokeWidth={2.2} />}
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.logText}>
-                    {entry.action === 'resisted' ? t('mindfulLock.logResisted') : 
-                     entry.action === 'closed' ? t('mindfulLock.logClosed') : 
-                     entry.action === 'granted' ? t('mindfulLock.logGranted') : t('mindfulLock.logUsed')} {entry.appName}
-                    {entry.duration ? ` (${entry.duration}m)` : ''}
-                  </Text>
-                  <Text style={styles.logTime}>
-                    {new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </Text>
-                </View>
-                <Text style={[styles.logXP, (entry.action === 'used' || entry.action === 'granted') && { color: '#A1A1AA' }]}>
-                  {entry.action === 'resisted' ? t('mindfulLock.xpResisted') :
-                   entry.action === 'closed' ? t('mindfulLock.xpClosed') :
-                   entry.action === 'granted' ? t('mindfulLock.xpGranted') :
-                   entry.action === 'used' ? t('mindfulLock.xpUsed') : ''}
-                </Text>
-              </View>
-            ))}
+          <Animated.View entering={FadeInDown.delay(270).duration(350)} style={styles.section}>
+            <Text style={styles.sectionLabel}>{t('mindfulLock.todayActivityTitle')}</Text>
+            <View style={styles.activityCard}>
+              {todayStats.todayLog.slice(0, 5).map((entry, index) => {
+                const positive = entry.action === 'resisted' || entry.action === 'closed';
+                const actionText = entry.action === 'resisted'
+                  ? t('mindfulLock.logResisted')
+                  : entry.action === 'closed'
+                    ? t('mindfulLock.logClosed')
+                    : entry.action === 'granted'
+                      ? t('mindfulLock.logGranted')
+                      : t('mindfulLock.logUsed');
+                const xpText = entry.action === 'resisted'
+                  ? t('mindfulLock.xpResisted')
+                  : entry.action === 'closed'
+                    ? t('mindfulLock.xpClosed')
+                    : entry.action === 'granted'
+                      ? t('mindfulLock.xpGranted')
+                      : entry.action === 'used'
+                        ? t('mindfulLock.xpUsed')
+                        : '';
+                return (
+                  <View key={entry.id} style={[styles.activityRow, index > 0 && styles.activityRowBorder]}>
+                    <View style={styles.activityIcon}>
+                      {positive
+                        ? <CheckCircle2 color="#6FAD8E" size={17} strokeWidth={1.9} />
+                        : <Smartphone color="#8C8C92" size={16} strokeWidth={1.8} />}
+                    </View>
+                    <View style={styles.activityCopy}>
+                      <Text style={styles.activityText} numberOfLines={2}>
+                        {actionText} {entry.appName}{entry.duration ? ` (${entry.duration}m)` : ''}
+                      </Text>
+                      <Text style={styles.activityTime}>
+                        {new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </Text>
+                    </View>
+                    <Text style={[styles.activityXp, !positive && styles.activityXpNegative]}>{xpText}</Text>
+                  </View>
+                );
+              })}
+            </View>
           </Animated.View>
         )}
 
-        {/* ─── Reflection Button (after 8 PM) ─── */}
         {showReflectionBtn && (
-          <TouchableOpacity
-            style={styles.reflectionBtn}
-            onPress={() => setShowReflection(true)}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.reflectionBtnText}>{t('mindfulLock.reflectionButton')}</Text>
+          <TouchableOpacity style={styles.reflectionAction} onPress={() => setShowReflection(true)} activeOpacity={0.75}>
+            <Text style={styles.reflectionActionText}>{t('mindfulLock.reflectionButton')}</Text>
+            <ChevronRight color="#71717A" size={19} />
           </TouchableOpacity>
         )}
 
-        {/* ─── Past Reflections ─── */}
         {pastReflections.length > 0 && (
-          <View style={styles.pastReflectionsContainer}>
-            <Text style={styles.pastReflectionsTitle}>{t('mindfulLock.pastReflectionsTitle')}</Text>
-            {pastReflections.map((ref) => (
-              <View key={ref.id} style={styles.reflectionCard}>
-                <View style={styles.reflectionCardHeader}>
-                  <Text style={styles.reflectionDate}>
-                    {new Date(ref.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
+          <View style={styles.section}>
+            <Text style={styles.sectionLabel}>{t('mindfulLock.pastReflectionsTitle')}</Text>
+            <View style={styles.reflectionList}>
+              {pastReflections.map((reflection) => (
+                <View key={reflection.id} style={styles.reflectionCard}>
+                  <View style={styles.reflectionHeader}>
+                    <Text style={styles.reflectionDate}>
+                      {new Date(reflection.createdAt).toLocaleDateString([], {
+                        month: 'short',
+                        day: 'numeric',
+                        year: 'numeric',
+                      })}
+                    </Text>
+                    <MoodIcon mood={reflection.mood} color="#A1A1AA" />
+                  </View>
+                  <Text style={reflection.note ? styles.reflectionNote : styles.reflectionNoteEmpty}>
+                    {reflection.note || t('mindfulLock.noNoteAdded')}
                   </Text>
-                  <MoodIcon mood={ref.mood} size={20} color={ACCENT} />
                 </View>
-                {ref.note ? (
-                  <Text style={styles.reflectionNote}>{ref.note}</Text>
-                ) : (
-                  <Text style={styles.reflectionNoteEmpty}>{t('mindfulLock.noNoteAdded')}</Text>
-                )}
-              </View>
-            ))}
+              ))}
+            </View>
           </View>
         )}
-
-        <View style={{ height: 40 }} />
+        <View style={styles.scrollEnd} />
       </ScrollView>
 
-      {/* ─── Modals ─── */}
       <MindfulInterventionOverlay
         isVisible={showIntervention}
         onClose={() => {
           setShowIntervention(false);
           setInterventionApp(null);
+          loadData();
         }}
         userId={userId}
         initialApp={interventionApp}
       />
-
       <MindfulReflectionModal
         isVisible={showReflection}
-        onClose={() => setShowReflection(false)}
+        onClose={() => {
+          setShowReflection(false);
+          loadData();
+        }}
         userId={userId}
         todayStats={todayStats}
         onSuccess={loadData}
       />
-
       <ScheduleModal
         isVisible={showSchedule}
         onClose={() => setShowSchedule(false)}
         userId={userId}
         onChange={loadData}
       />
-
-      {/* ─── Sidebar ─── */}
       <GlassSidebar
         isOpen={isSidebarOpen}
         onClose={() => setIsSidebarOpen(false)}
@@ -695,418 +726,185 @@ export const MindfulLockScreen = ({ navigation, route }) => {
   );
 };
 
-const makeStyles = (ACCENT) => StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#050505',
-  },
-
-  // ─── Header ───
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#070708' },
   header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
+    minHeight: 58,
+    paddingHorizontal: 12,
     paddingBottom: 8,
-  },
-  iconBtn: {
-    padding: 8,
-    width: 44,
-    alignItems: 'center',
-  },
-  headerCenter: {
+    alignSelf: 'center',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-  },
-  headerTitle: {
-    color: '#ffffff',
-    fontSize: 18,
-    fontWeight: '800',
-  },
-
-  scrollContent: {
-    paddingHorizontal: 20,
-  },
-
-  // ─── Accessibility Off Warning ───
-  accessibilityWarning: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(161, 161, 170, 0.1)',
-    borderWidth: 1,
-    borderColor: 'rgba(161, 161, 170, 0.35)',
-    borderRadius: 14,
-    padding: 14,
-    marginTop: 12,
-  },
-  accessibilityWarningTitle: {
-    color: '#A1A1AA',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  accessibilityWarningDesc: {
-    color: '#a1a1aa',
-    fontSize: 12,
-    marginTop: 2,
-    lineHeight: 16,
-  },
-
-  // ─── Score Ring ───
-  scoreSection: {
-    alignItems: 'center',
-    paddingVertical: 24,
-  },
-  scoreSubtitle: {
-    color: '#52525b',
-    fontSize: 12,
-    fontWeight: '600',
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-    marginTop: 12,
-  },
-
-  // ─── Stats Row ───
-  statsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    marginBottom: 30,
-    paddingHorizontal: 10,
-  },
-  statItem: {
-    alignItems: 'center',
-    gap: 6,
-  },
-  statValueCompact: {
-    color: '#a3a3a3',
-    fontSize: 16,
-    fontWeight: '800',
-  },
-  statLabelCompact: {
-    color: '#52525b',
-    fontSize: 10,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-
-  // ─── Tempted Button ───
-  temptedBtn: {
-    backgroundColor: ACCENT,
-    borderRadius: 18,
-    paddingVertical: 20,
-    paddingHorizontal: 24,
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  temptedBtnText: {
-    color: '#ffffff',
-    fontSize: 19,
-    fontWeight: '850',
-    marginTop: 8,
-    letterSpacing: -0.3,
-  },
-  temptedBtnSub: {
-    color: 'rgba(255,255,255,0.7)',
-    fontSize: 13,
-    marginTop: 4,
-  },
-
-  quickActions: {
-    backgroundColor: '#18181b', // Lighter dark gray so it's not pure black
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#27272a',
-    marginBottom: 24,
-    overflow: 'hidden',
-  },
-  quickActionRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 16,
-  },
-  quickActionLabel: {
-    color: '#ffffff',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  quickActionDesc: {
-    color: '#52525b',
-    fontSize: 12,
-    marginTop: 2,
-  },
-  quickActionArrow: {
-    color: '#52525b',
-    fontSize: 24,
-    fontWeight: '300',
-  },
-  divider: {
-    height: 1,
-    backgroundColor: '#27272a',
-  },
-
-  // ─── Section ───
-  sectionHeader: {
-    flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
   },
-  sectionTitle: {
-    color: '#71717a',
-    fontSize: 13,
-    fontWeight: '700',
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-    marginBottom: 12,
-  },
-  addBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    padding: 8,
-    marginBottom: 12,
-  },
-  addBtnText: {
-    color: ACCENT,
-    fontSize: 14,
-    fontWeight: '700',
-  },
-
-  // ─── Add App Form ───
-  addAppForm: {
-    backgroundColor: '#121212',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#27272a',
-    padding: 14,
-    marginBottom: 12,
-  },
-  addAppRow: {},
-  iconPicker: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 6,
-    backgroundColor: '#1a1a1a',
-  },
-  iconPickerSelected: {
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    borderWidth: 1,
-    borderColor: ACCENT,
-  },
-  addAppInputRow: {
-    flexDirection: 'row',
-    gap: 8,
-    alignItems: 'center',
-  },
-  addAppInput: {
-    backgroundColor: '#0a0a0a',
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#27272a',
-    color: '#fff',
-    fontSize: 14,
-    padding: 12,
-  },
-  addAppSubmit: {
-    backgroundColor: ACCENT,
-    borderRadius: 10,
+  iconButton: {
     width: 44,
     height: 44,
+    borderRadius: 22,
     alignItems: 'center',
     justifyContent: 'center',
   },
-
-  // ─── Empty State ───
-  emptyState: {
-    alignItems: 'center',
-    padding: 32,
-    backgroundColor: '#0a0a0a',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#1a1a1a',
-    borderStyle: 'dashed',
-    marginBottom: 20,
-  },
-  emptyIconWrap: {
-    width: 52,
-    height: 52,
-    borderRadius: 16,
-    backgroundColor: ACCENT + '18',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 12,
-  },
-  emptyText: {
-    color: '#71717a',
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  emptySubtext: {
-    color: '#52525b',
-    fontSize: 13,
+  headerIdentity: { flex: 1, alignItems: 'center', paddingHorizontal: 8 },
+  headerTitle: { color: '#FAFAFA', fontSize: 17, fontWeight: '500', letterSpacing: -0.25 },
+  modePill: {
     marginTop: 4,
-  },
-
-  // ─── App Cards ───
-  appCard: {
+    maxWidth: '100%',
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#121212',
-    borderRadius: 16,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 10,
+    backgroundColor: '#18181B',
+  },
+  modePillStrict: { backgroundColor: '#15202A' },
+  modeDot: { width: 5, height: 5, borderRadius: 3, marginRight: 6, backgroundColor: '#6FAD8E' },
+  modeDotStrict: { backgroundColor: '#8EB7D9' },
+  modePillText: { color: '#A1A1AA', fontSize: 10, fontWeight: '500' },
+  modePillTextStrict: { color: '#AFC9DD' },
+  scrollContent: { alignSelf: 'center', paddingTop: 6 },
+  accessibilityWarning: {
+    minHeight: 68,
+    marginBottom: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#1a1a1a',
+    borderColor: '#4A3B20',
+    backgroundColor: '#15130E',
+  },
+  warningCopy: { flex: 1, marginHorizontal: 11 },
+  warningTitle: { color: '#E2C27E', fontSize: 13, fontWeight: '600' },
+  warningDescription: { color: '#9B8B68', fontSize: 11, lineHeight: 16, marginTop: 2 },
+  overviewCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 176,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#202024',
+    backgroundColor: '#101012',
     padding: 14,
-    marginBottom: 10,
   },
-  appCardIcon: {
-    fontSize: 28,
-    marginRight: 14,
-  },
-  appCardHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 6,
-  },
-  appCardName: {
-    color: '#ffffff',
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  appCardBundle: {
-    // Was #52525b on #1a1a1a — 2.25:1, unreadable for a package name that the
-    // user is meant to be able to identify. #8E8E93 gives 4.9:1.
-    color: '#8E8E93',
-    fontSize: 11,
+  scoreWrap: { marginRight: 15 },
+  overviewCopy: { flex: 1, minWidth: 0 },
+  eyebrow: {
+    color: '#71717A',
+    fontSize: 10,
     fontWeight: '600',
-    backgroundColor: '#1a1a1a',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  progressBarBg: {
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: '#27272a',
-    marginBottom: 6,
-  },
-  progressBarFill: {
-    height: 4,
-    borderRadius: 2,
-  },
-  appCardFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  appCardUsage: {
-    color: '#71717a',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  appCardMode: {
-    color: '#52525b',
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  appCardDelete: {
-    padding: 8,
-    marginLeft: 8,
-  },
-
-  // ─── Activity Log ───
-  logEntry: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#18181b',
-  },
-  logIconWrap: {
-    width: 28,
-    height: 28,
-    borderRadius: 9,
-    backgroundColor: '#18181b',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  logText: {
-    color: '#d4d4d8',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  logTime: {
-    color: '#52525b',
-    fontSize: 11,
-    marginTop: 2,
-  },
-  logXP: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-
-  // ─── Reflection Button ───
-  reflectionBtn: {
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
-    padding: 18,
-    alignItems: 'center',
-    marginTop: 20,
-  },
-  reflectionBtnText: {
-    color: '#ffffff',
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  
-  // ─── Past Reflections ───
-  pastReflectionsContainer: {
-    marginTop: 24,
-    paddingHorizontal: 20,
-  },
-  pastReflectionsTitle: {
-    color: '#ffffff',
-    fontSize: 18,
-    fontWeight: '800',
-    marginBottom: 12,
-  },
-  reflectionCard: {
-    backgroundColor: '#121212',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: '#27272a',
-  },
-  reflectionCardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    letterSpacing: 1.1,
+    textTransform: 'uppercase',
     marginBottom: 8,
   },
-  reflectionDate: {
-    color: '#a1a1aa',
-    fontSize: 14,
-    fontWeight: '600',
+  overviewTitle: { color: '#F4F4F5', fontSize: 18, fontWeight: '500', lineHeight: 23, letterSpacing: -0.25 },
+  overviewDescription: { color: '#85858B', fontSize: 12, lineHeight: 17, marginTop: 7 },
+  metricsCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 78,
+    marginTop: 10,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#1D1D20',
+    backgroundColor: '#0D0D0F',
   },
-  reflectionMoodEmoji: {
-    fontSize: 20,
+  metricItem: { flex: 1, minWidth: 0, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 },
+  metricValue: { color: '#F4F4F5', fontSize: 16, fontWeight: '500', marginTop: 4, lineHeight: 18 },
+  metricLabel: { color: '#68686E', fontSize: 9, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.55, marginTop: 2 },
+  metricDivider: { width: StyleSheet.hairlineWidth, height: 38, backgroundColor: '#29292D' },
+  primaryAction: {
+    minHeight: 72,
+    marginTop: 14,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 16,
+    backgroundColor: '#F4F4F5',
   },
-  reflectionNote: {
-    color: '#e4e4e7',
-    fontSize: 15,
-    lineHeight: 22,
+  actionIconWrapLight: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center', backgroundColor: '#DDDDDF' },
+  actionIconWrapDark: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center', backgroundColor: '#1A2A36' },
+  actionCopy: { flex: 1, minWidth: 0, marginHorizontal: 12 },
+  primaryActionTitle: { color: '#09090B', fontSize: 16, fontWeight: '600', letterSpacing: -0.2 },
+  primaryActionDescription: { color: '#626268', fontSize: 12, marginTop: 2 },
+  strictStateCard: {
+    minHeight: 72,
+    marginTop: 14,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#294256',
+    backgroundColor: '#101922',
   },
-  reflectionNoteEmpty: {
-    color: '#52525b',
-    fontSize: 14,
-    fontStyle: 'italic',
+  strictStateTitle: { color: '#D6E5F0', fontSize: 15, fontWeight: '600' },
+  strictStateDescription: { color: '#8197A8', fontSize: 11, lineHeight: 16, marginTop: 2 },
+  section: { marginTop: 26 },
+  sectionHeader: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  sectionLabel: { color: '#8B8B91', fontSize: 11, fontWeight: '600', letterSpacing: 1.05, textTransform: 'uppercase', marginBottom: 10 },
+  addButton: { minHeight: 44, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, gap: 5 },
+  addButtonText: { color: '#D4D4D8', fontSize: 13, fontWeight: '600' },
+  controlCard: { borderRadius: 16, borderWidth: 1, borderColor: '#202024', backgroundColor: '#101012', overflow: 'hidden' },
+  controlRow: { minHeight: 72, paddingHorizontal: 13, paddingVertical: 11, flexDirection: 'row', alignItems: 'center' },
+  controlIcon: { width: 34, height: 34, borderRadius: 10, backgroundColor: '#1B1B1E', alignItems: 'center', justifyContent: 'center', marginRight: 11 },
+  controlCopy: { flex: 1, minWidth: 0, paddingRight: 8 },
+  addButtonQuota: { color: '#8C8C92', fontSize: 11, fontWeight: '600', marginLeft: 'auto' },
+  controlTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  // This screen uses a module-level StyleSheet with no theme accent, so the tag
+  // is a fixed neutral rather than the equipped accent.
+  proTag: {
+    borderWidth: 1,
+    borderColor: 'rgba(228,228,231,0.4)',
+    borderRadius: 5,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
   },
+  proTagText: { color: '#E4E4E7', fontSize: 9, fontWeight: '800', letterSpacing: 0.7 },
+  controlTitle: { color: '#E4E4E7', fontSize: 14, fontWeight: '500' },
+  controlDescription: { color: '#71717A', fontSize: 11, lineHeight: 15, marginTop: 3 },
+  controlDivider: { height: StyleSheet.hairlineWidth, backgroundColor: '#29292D', marginLeft: 58 },
+  emptyState: { alignItems: 'center', paddingHorizontal: 24, paddingVertical: 30, borderRadius: 18, borderWidth: 1, borderColor: '#28282C', borderStyle: 'dashed', backgroundColor: '#0C0C0E' },
+  emptyIcon: { width: 48, height: 48, borderRadius: 24, alignItems: 'center', justifyContent: 'center', backgroundColor: '#18181B', marginBottom: 13 },
+  emptyTitle: { color: '#E4E4E7', fontSize: 16, fontWeight: '500' },
+  emptyDescription: { color: '#71717A', fontSize: 12, lineHeight: 17, textAlign: 'center', marginTop: 5 },
+  emptyAction: { minHeight: 44, marginTop: 17, paddingHorizontal: 18, borderRadius: 12, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#F4F4F5' },
+  emptyActionText: { color: '#09090B', fontSize: 13, fontWeight: '600' },
+  appList: { gap: 9 },
+  appCard: { borderRadius: 16, borderWidth: 1, borderColor: '#202024', backgroundColor: '#101012', padding: 13 },
+  appCardTop: { minHeight: 44, flexDirection: 'row', alignItems: 'center' },
+  appIconImage: { width: 36, height: 36, borderRadius: 9, marginRight: 11 },
+  appIconFallback: { width: 36, height: 36, borderRadius: 9, marginRight: 11, alignItems: 'center', justifyContent: 'center', backgroundColor: '#1B1B1E' },
+  appIconEmoji: { fontSize: 20 },
+  appIdentity: { flex: 1, minWidth: 0 },
+  appName: { color: '#F4F4F5', fontSize: 15, fontWeight: '500' },
+  appMode: { color: '#707076', fontSize: 10, marginTop: 3 },
+  deleteButton: { width: 44, height: 44, marginRight: -8, alignItems: 'center', justifyContent: 'center' },
+  usageRow: { marginTop: 12, marginBottom: 7, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  usageText: { color: '#A1A1AA', fontSize: 11, fontWeight: '500' },
+  allowanceText: { color: '#76AD91' },
+  overBudgetText: { color: '#C88686' },
+  usagePercent: { color: '#5F5F65', fontSize: 10 },
+  progressTrack: { height: 4, borderRadius: 2, backgroundColor: '#28282D', overflow: 'hidden' },
+  progressFill: { height: 4, borderRadius: 2, backgroundColor: '#B6B6BB' },
+  progressFillAllowance: { backgroundColor: '#6FAD8E' },
+  progressFillOver: { backgroundColor: '#B96F6F' },
+  activityCard: { borderRadius: 16, borderWidth: 1, borderColor: '#202024', backgroundColor: '#101012', paddingHorizontal: 13 },
+  activityRow: { minHeight: 64, paddingVertical: 10, flexDirection: 'row', alignItems: 'center' },
+  activityRowBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#29292D' },
+  activityIcon: { width: 32, height: 32, borderRadius: 10, backgroundColor: '#1A1A1D', alignItems: 'center', justifyContent: 'center', marginRight: 10 },
+  activityCopy: { flex: 1, minWidth: 0 },
+  activityText: { color: '#D4D4D8', fontSize: 12, lineHeight: 16, fontWeight: '500' },
+  activityTime: { color: '#626268', fontSize: 10, marginTop: 3 },
+  activityXp: { color: '#76AD91', fontSize: 11, fontWeight: '600', marginLeft: 8 },
+  activityXpNegative: { color: '#A27A7A' },
+  reflectionAction: { minHeight: 56, marginTop: 24, paddingHorizontal: 15, borderRadius: 14, borderWidth: 1, borderColor: '#29292D', backgroundColor: '#101012', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  reflectionActionText: { flex: 1, color: '#D4D4D8', fontSize: 13, fontWeight: '500' },
+  reflectionList: { gap: 9 },
+  reflectionCard: { padding: 14, borderRadius: 14, borderWidth: 1, borderColor: '#202024', backgroundColor: '#101012' },
+  reflectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
+  reflectionDate: { color: '#8B8B91', fontSize: 11, fontWeight: '600' },
+  reflectionNote: { color: '#D4D4D8', fontSize: 13, lineHeight: 19 },
+  reflectionNoteEmpty: { color: '#626268', fontSize: 12, fontStyle: 'italic' },
+  scrollEnd: { height: 40 },
 });

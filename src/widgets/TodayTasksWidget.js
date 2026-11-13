@@ -4,11 +4,11 @@ import { getPriorityColor } from '../config/priorityConfig';
 import { Storage } from '../utils/storage';
 import { Chip, chipTint, hasPriorityFlag, pickTags, PriorityFlag, StrikeText } from './widgetPrimitives';
 import {
-  buildGrainSvg,
-  getListLabel,
-  resolveWidgetContext,
-  selectTasksForList,
-  withAlpha,
+    buildGrainSvg,
+    getListLabel,
+    resolveWidgetContext,
+    selectTasksForList,
+    withAlpha,
 } from './widgetTheme';
 
 // Title-case a repeat rule ("daily" -> "Daily", "every 2 weeks" -> "Every 2 Weeks")
@@ -165,6 +165,16 @@ export async function TodayTasksWidget(props) {
 
     return (
       <ChromeWrapper ctx={ctx}>
+        {/* NO clickAction ON THIS CONTAINER.
+            A clickable widget becomes an invisible overlay sized to its own
+            bounds, stacked above the widget content. This container is
+            match_parent, so putting "open the app" here laid a full-bleed
+            clickable sheet over the ListWidget below: the task/step tap targets
+            never received a tap, and because that overlay is clickable-but-not-
+            scrollable the launcher swallowed vertical drags and opened the app
+            drawer instead of scrolling the list.
+            "Open the app" now lives on the header label, which sits outside the
+            list and can be tapped safely. */}
         <FlexWidget
           style={{
             height: 'match_parent',
@@ -174,11 +184,13 @@ export async function TodayTasksWidget(props) {
             paddingLeft: 18,
             paddingRight: 18,
           }}
-          clickAction="OPEN_APP"
         >
           {/* Header: list name, progress fraction, and a quick-add affordance */}
           <FlexWidget style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', width: 'match_parent' }}>
-            <FlexWidget style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+            <FlexWidget
+              style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}
+              clickAction="OPEN_APP"
+            >
               <TextWidget text={label} style={{ fontSize: 10, color: theme.muted, fontWeight: '500', letterSpacing: 2, ...fontStyle }} />
               <TextWidget text={`   ${doneToday}/${totalToday}`} style={{ fontSize: 10, color: theme.muted, fontWeight: '400', letterSpacing: 0.5, ...fontStyle }} />
             </FlexWidget>

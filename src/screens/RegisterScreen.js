@@ -23,14 +23,30 @@ import { PasswordStrengthIndicator } from '../components/PasswordStrengthIndicat
 import { TermsModal } from '../components/TermsModal';
 import { getCurrentLanguage, setAppLanguage } from '../i18n';
 import { SUPPORTED_LANGUAGES } from '../i18n/languages';
+import { setAuthenticatedUser } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
 import { validateConfirmPassword, validateEmail, validatePassword } from '../utils/validation';
 
 WebBrowser.maybeCompleteAuthSession();
 
-export const RegisterScreen = ({ navigation }) => {
+export const RegisterScreen = ({ navigation, route }) => {
   const { t } = useTranslation();
   const palette = useAuthPalette();
+  const returnTo = route?.params?.returnTo;
+  const inviteToken = route?.params?.inviteToken;
+  const authRouteParams = {
+    ...(returnTo ? { returnTo } : {}),
+    ...(inviteToken ? { inviteToken } : {}),
+  };
+  const postAuthRoute = inviteToken
+    ? {
+        name: 'InviteAcceptance',
+        params: {
+          ...(returnTo ? { returnTo } : {}),
+          token: inviteToken,
+        },
+      }
+    : { name: 'Dashboard' };
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -233,8 +249,8 @@ export const RegisterScreen = ({ navigation }) => {
         return;
       }
 
-      // Navigate to OTP verification screen with user's email
-      navigation.navigate('OTP', { email: email });
+      // Navigate to OTP verification without persisting invitation context.
+      navigation.navigate('OTP', { email, ...authRouteParams });
     } catch (err) {
       setErrors({ email: err.message });
     } finally {
@@ -256,14 +272,17 @@ export const RegisterScreen = ({ navigation }) => {
         return; // user cancelled
       }
 
+      await setAuthenticatedUser(session.user);
+
       // Persist the selected app language onto their new profile (fire and
       // forget — non-critical, shouldn't block navigation if it fails).
       if (session.user?.id) {
         supabase.from('profiles').update({ preferred_language: selectedLanguage }).eq('id', session.user.id).then(() => {}, () => {});
       }
 
-      // Google sign-in signs the user straight in — go to the app, not Login.
-      navigation.reset({ index: 0, routes: [{ name: 'Dashboard' }] });
+      // Google sign-in signs the user straight in — continue an in-memory
+      // invitation when present, otherwise retain the existing dashboard flow.
+      navigation.reset({ index: 0, routes: [postAuthRoute] });
     } catch (err) {
       setErrors({ email: err.message || t('register.errorGoogleFailed') });
     } finally {
@@ -419,7 +438,7 @@ export const RegisterScreen = ({ navigation }) => {
           <AuthFooter
             prompt={t('register.alreadyHaveAccount')}
             action={t('register.login')}
-            onPress={() => navigation.navigate('Login')}
+            onPress={() => navigation.navigate('Login', authRouteParams)}
           />
         </View>
       </AuthScreen>

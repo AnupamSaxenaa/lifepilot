@@ -97,22 +97,26 @@ export async function PlannerWidget(props) {
     // Responsive to BOTH axes. The widget can now be shrunk to 110dp (the old
     // 180dp floor is what made it feel unresizable), and at that width a fixed
     // 58dp time column plus the rail and checkbox overflowed the row.
-    const { height, width } = props.widgetInfo || {};
+    const { width } = props.widgetInfo || {};
     const w = width || ctx.lastW || 0;
-    const maxRows = !height ? 7 : height < 160 ? 3 : height < 260 ? 6 : height < 380 ? 9 : 14;
     const narrow = w > 0 && w < 220;
     const tiny = w > 0 && w < 160;
 
-    // Scroll the window to where the user actually is: once most of the day has
-    // elapsed, a fixed "first N rows" view would show nothing but struck-out
-    // history. Keep one elapsed row for context, then fill forward.
-    const firstLive = rows.findIndex((r) => r.state === 'now' || r.state === 'upcoming');
-    const start = firstLive <= 0 || rows.length <= maxRows
-      ? 0
-      : Math.min(Math.max(0, firstLive - 1), Math.max(0, rows.length - maxRows));
-    const visible = rows.slice(start, start + maxRows);
-    const hiddenBefore = start;
-    const hiddenAfter = Math.max(0, rows.length - (start + visible.length));
+    // The whole day, in one scrollable list.
+    //
+    // This used to render a window of ~3-14 rows chosen from the widget height,
+    // positioned around "now", with "N earlier"/"N later" labels standing in for
+    // the rows it dropped. That existed because the list could not actually be
+    // scrolled — a full-bleed clickable overlay was intercepting drags (see the
+    // note on the container below). With that removed the ListWidget scrolls, so
+    // windowing only hides the user's own plan behind a label.
+    //
+    // MAX_PLAN_ROWS is a safety valve rather than a layout choice: every list
+    // item is rasterised to its own bitmap, so an unbounded plan would blow the
+    // headless task's time budget (see scripts/check-widget-latency.js).
+    const MAX_PLAN_ROWS = 24;
+    const visible = rows.slice(0, MAX_PLAN_ROWS);
+    const hiddenAfter = Math.max(0, rows.length - visible.length);
 
     const trackable = rows.filter((r) => r.kind === 'task').length;
     const doneCount = rows.filter((r) => r.state === 'done').length;
@@ -120,6 +124,16 @@ export async function PlannerWidget(props) {
 
     return (
       <Shell bgColor={bgColor}>
+        {/* NO clickAction ON THIS CONTAINER.
+            A clickable widget becomes an invisible overlay sized to its own
+            bounds, stacked above the widget content. This container is
+            match_parent, so putting "open the app" here laid a full-bleed
+            clickable sheet over the ListWidget below: row checkboxes never
+            received a tap, and because that overlay is clickable-but-not-
+            scrollable the launcher swallowed vertical drags and opened the app
+            drawer instead of scrolling the list.
+            "Open the app" now lives on the header row, which sits outside the
+            list and can be tapped safely. */}
         <FlexWidget
           style={{
             height: 'match_parent',
@@ -128,12 +142,15 @@ export async function PlannerWidget(props) {
             paddingBottom: narrow ? 8 : 12,
             paddingHorizontal: tiny ? 8 : narrow ? 10 : 16,
           }}
-          clickAction="OPEN_APP"
         >
           {/* Header: label, progress, and a missed count only when it exists.
               At tiny widths the title is dropped rather than letting the
-              progress counters get squeezed off the row. */}
-          <FlexWidget style={{ flexDirection: 'row', alignItems: 'center', width: 'match_parent' }}>
+              progress counters get squeezed off the row. Also the widget's
+              "open the app" target — see the note above. */}
+          <FlexWidget
+            style={{ flexDirection: 'row', alignItems: 'center', width: 'match_parent' }}
+            clickAction="OPEN_APP"
+          >
             {!tiny && (
               <TextWidget
                 text="TODAY'S PLAN"
@@ -159,16 +176,9 @@ export async function PlannerWidget(props) {
           <FlexWidget style={{ height: 1, width: 'match_parent', backgroundColor: theme.hairline, marginTop: narrow ? 8 : 12, marginBottom: 8 }} />
 
           <ListWidget style={{ flex: 1 }}>
-            {hiddenBefore > 0 && (
-              <TextWidget
-                text={`↑ ${hiddenBefore} earlier`}
-                style={{ fontSize: 9.5, color: theme.muted, marginBottom: 4, ...fontStyle }}
-              />
-            )}
-
             {visible.map((row, index) => (
               <PlanRow
-                key={`${row.taskId || 'b'}-${start + index}`}
+                key={`${row.taskId || 'b'}-${index}`}
                 row={row}
                 theme={theme}
                 fontStyle={fontStyle}

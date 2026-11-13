@@ -155,19 +155,39 @@ const summarizeHabits = (tasks) => {
   return [...seen.values()];
 };
 
-const renderTask = (task, listNames, { showTime = false, showDate = false } = {}) => {
-  const bits = [];
-  const tag = priorityTag(task);
-  if (tag) bits.push(tag);
-  bits.push(clip(task.title || 'Untitled'));
+const sameId = (left, right) => left != null && right != null && String(left) === String(right);
+const spaceIdFor = (value) => value?.space_id ?? value?.spaceId ?? null;
+const assignedToFor = (value) => value?.assigned_to ?? value?.assignedTo ?? null;
 
+const renderTask = (task, listsById, userId, { showTime = false, showDate = false } = {}) => {
+  const list = task?.list_id != null ? listsById[task.list_id] : null;
+  const shared = spaceIdFor(task) != null || Boolean(list?.shared);
   const extras = [];
+
   if (showTime && task.reminder_time) extras.push(timeLabel(task.reminder_time));
   if (showDate) {
     const when = task.due_date || task.reminder_time;
     if (when) extras.push(dateLabel(when));
   }
-  if (task.list_id && listNames[task.list_id]) extras.push(clip(listNames[task.list_id], 18));
+  if (list?.name) extras.push(`list ${clip(list.name, 18)}`);
+
+  if (shared) {
+    const assignedTo = assignedToFor(task);
+    const relation = assignedTo == null
+      ? 'unassigned'
+      : (sameId(assignedTo, userId) ? 'assigned-to-me' : 'assigned');
+    const bits = [
+      `[shared · ${task.is_completed ? 'done' : 'open'} · ${relation}]`,
+      clip(task.title || 'Untitled'),
+    ];
+    if (extras.length > 0) bits.push(`(${extras.join(', ')})`);
+    return `- ${bits.join(' ')}`;
+  }
+
+  const bits = [];
+  const tag = priorityTag(task);
+  if (tag) bits.push(tag);
+  bits.push(clip(task.title || 'Untitled'));
   if (Array.isArray(task.subtasks) && task.subtasks.length > 0) {
     const done = task.subtasks.filter((s) => s?.is_completed).length;
     extras.push(`${done}/${task.subtasks.length} steps`);
@@ -179,34 +199,69 @@ const renderTask = (task, listNames, { showTime = false, showDate = false } = {}
 /**
  * Build the snapshot string.
  *
+ * Shared rows come from the same aggregate task/list caches as personal rows,
+ * so an existing aggregate cache purge removes them from Aura automatically.
+ * When currentSpace is supplied, personal rows remain visible but shared rows
+ * are bounded to that space. No member, comment, or activity cache is read.
+ *
  * @param {string|null} userId
- * @param {Array}  [tasksOverride] Already-loaded tasks (skips a Storage read).
+ * @param {Array|Object} [tasksOverride] Already-loaded tasks, or options when no task override is needed.
+ * @param {Object} [options]
+ * @param {Object|string|number|null} [options.currentSpace]
  * @returns {Promise<string>}
  */
-export const buildAuraContext = async (userId, tasksOverride) => {
+export const buildAuraContext = async (userId, tasksOverride, options = {}) => {
+  const overrideIsTasks = Array.isArray(tasksOverride);
+  const resolvedOptions = !overrideIsTasks && tasksOverride && typeof tasksOverride === 'object'
+    ? tasksOverride
+    : options;
+  const currentSpace = resolvedOptions?.currentSpace
+    ?? resolvedOptions?.currentSpaceId
+    ?? resolvedOptions?.spaceId
+    ?? null;
+  const currentSpaceId = currentSpace && typeof currentSpace === 'object'
+    ? (currentSpace.id ?? currentSpace.space_id ?? currentSpace.spaceId ?? null)
+    : currentSpace;
+
   try {
     const keys = userId
       ? [`tasks_${userId}`, `lists_${userId}`, `gamification_${userId}`]
       : [];
     const batch = keys.length > 0 ? await Storage.getBatch(keys) : {};
 
-    const tasks = Array.isArray(tasksOverride) && tasksOverride.length > 0
-      ? tasksOverride
-      : (batch[`tasks_${userId}`] || []);
+    const cachedTasks = batch[`tasks_${userId}`] || [];
+    const tasks = overrideIsTasks && tasksOverride.length > 0 ? tasksOverride : cachedTasks;
     const lists = batch[`lists_${userId}`] || [];
     const game = batch[`gamification_${userId}`] || null;
 
-    // Cached arrays can contain junk (a null row, a list with no name) after a
-    // partial sync. Normalise once here: a single bad entry used to throw and
-    // wipe the ENTIRE snapshot, leaving Aura blind instead of slightly wrong.
-    const safeLists = (Array.isArray(lists) ? lists : [])
+    // Cached arrays can contain junk after a partial sync. Normalize only the
+    // fields Aura is allowed to use for list context.
+    const allSafeLists = (Array.isArray(lists) ? lists : [])
       .filter((list) => list && list.id != null)
-      .map((list) => ({ id: list.id, name: clip(list.name || 'Untitled list', 18) }));
+      .map((list) => ({
+        id: list.id,
+        name: clip(list.name || 'Untitled list', 18),
+        spaceId: spaceIdFor(list),
+        shared: spaceIdFor(list) != null,
+      }));
 
-    const listNames = {};
-    for (const list of safeLists) listNames[list.id] = list.name;
+    const allListsById = {};
+    for (const list of allSafeLists) allListsById[list.id] = list;
 
-    const b = bucketTasks(Array.isArray(tasks) ? tasks : []);
+    const inCurrentBoundary = (row, linkedList) => {
+      if (currentSpaceId == null) return true;
+      const rowSpaceId = spaceIdFor(row) ?? linkedList?.spaceId ?? null;
+      return rowSpaceId == null || sameId(rowSpaceId, currentSpaceId);
+    };
+
+    const safeLists = allSafeLists.filter((list) => inCurrentBoundary(list));
+    const listsById = {};
+    for (const list of safeLists) listsById[list.id] = list;
+
+    const scopedTasks = (Array.isArray(tasks) ? tasks : []).filter((task) => (
+      !task || inCurrentBoundary(task, allListsById[task.list_id])
+    ));
+    const b = bucketTasks(scopedTasks);
 
     // Open count per list so Aura can say "Work has 7 open".
     const perList = new Map();
@@ -217,8 +272,16 @@ export const buildAuraContext = async (userId, tasksOverride) => {
 
     const now = new Date();
     const sections = [];
+    const hasSharedContext = safeLists.some((list) => list.shared)
+      || scopedTasks.some((task) => (
+        task && (spaceIdFor(task) != null || Boolean(listsById[task.list_id]?.shared))
+      ));
 
     sections.push(`NOW: ${now.toDateString()} ${timeLabel(now)}`);
+    if (currentSpaceId != null) sections.push('SCOPE: personal + selected shared space');
+    if (hasSharedContext) {
+      sections.push('SHARED: transient workspace context; never store collaborator facts in durable memory');
+    }
 
     const stats = [`open ${b.open.length}`, `done today ${b.doneToday}`];
     if (game?.streak != null) stats.push(`streak ${game.streak}`);
@@ -228,7 +291,7 @@ export const buildAuraContext = async (userId, tasksOverride) => {
     if (safeLists.length > 0) {
       const listLine = safeLists
         .slice(0, CAPS.lists)
-        .map((l) => `${l.name}:${perList.get(l.id) || 0}`)
+        .map((list) => `${list.shared ? '[shared] ' : ''}${list.name}:${perList.get(list.id) || 0}`)
         .join(' · ');
       const inboxCount = perList.get('__none') || 0;
       sections.push(`LISTS: Inbox:${inboxCount}${listLine ? ` · ${listLine}` : ''}`);
@@ -236,33 +299,38 @@ export const buildAuraContext = async (userId, tasksOverride) => {
 
     if (b.overdue.length > 0) {
       const lines = pickImportant(b.overdue, CAPS.overdue)
-        .map((t) => renderTask(t, listNames, { showDate: true }));
+        .map((task) => renderTask(task, listsById, userId, { showDate: true }));
       const more = b.overdue.length - lines.length;
       sections.push(`OVERDUE (${b.overdue.length}):\n${lines.join('\n')}${more > 0 ? `\n- +${more} more` : ''}`);
     }
 
     if (b.dueToday.length > 0) {
       const lines = pickImportant(b.dueToday, CAPS.today)
-        .map((t) => renderTask(t, listNames, { showTime: true }));
+        .map((task) => renderTask(task, listsById, userId, { showTime: true }));
       const more = b.dueToday.length - lines.length;
       sections.push(`TODAY (${b.dueToday.length}):\n${lines.join('\n')}${more > 0 ? `\n- +${more} more` : ''}`);
     }
 
     if (b.soon.length > 0) {
       const lines = pickImportant(b.soon, CAPS.soon)
-        .map((t) => renderTask(t, listNames, { showDate: true }));
+        .map((task) => renderTask(task, listsById, userId, { showDate: true }));
       const more = b.soon.length - lines.length;
       sections.push(`NEXT 7 DAYS (${b.soon.length}):\n${lines.join('\n')}${more > 0 ? `\n- +${more} more` : ''}`);
     }
 
     if (b.backlog.length > 0) {
       const lines = pickImportant(b.backlog, CAPS.backlog)
-        .map((t) => renderTask(t, listNames));
+        .map((task) => renderTask(task, listsById, userId));
       const more = b.backlog.length - lines.length;
       sections.push(`UNSCHEDULED (${b.backlog.length}):\n${lines.join('\n')}${more > 0 ? `\n- +${more} more` : ''}`);
     }
 
-    const habits = summarizeHabits(b.open);
+    // Repeat rules are useful personal context but are outside the allowed
+    // shared-task projection, so shared tasks never feed the routines section.
+    const personalOpen = b.open.filter((task) => (
+      spaceIdFor(task) == null && !listsById[task.list_id]?.shared
+    ));
+    const habits = summarizeHabits(personalOpen);
     if (habits.length > 0) sections.push(`ROUTINES: ${habits.join(' · ')}`);
 
     let out = sections.join('\n');
@@ -277,8 +345,8 @@ export const buildAuraContext = async (userId, tasksOverride) => {
     // minimum it should still know the date and how much is open.
     console.log('[AuraContext] Failed to build snapshot:', error?.message || error);
     try {
-      const open = (Array.isArray(tasksOverride) ? tasksOverride : [])
-        .filter((t) => t && !t.is_completed).length;
+      const open = (overrideIsTasks ? tasksOverride : [])
+        .filter((task) => task && !task.is_completed).length;
       return `NOW: ${new Date().toDateString()} ${timeLabel(new Date())}\nSTATUS: open ${open}`;
     } catch (_e) {
       return `NOW: ${new Date().toDateString()}`;

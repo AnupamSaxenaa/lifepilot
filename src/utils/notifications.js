@@ -1,6 +1,6 @@
+import notifee, { AndroidImportance, TriggerType } from '@notifee/react-native';
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
-import notifee, { TriggerType, AndroidImportance } from '@notifee/react-native';
 
 /**
  * Notification utility — gracefully degrades in Expo Go.
@@ -64,19 +64,39 @@ export const requestNotificationPermissions = async () => {
   }
 };
 
-export const scheduleTaskReminder = async (taskId, title, reminderTime) => {
+const reminderIdentifier = (taskId, metadata = {}) => {
+  if (metadata?.userId == null) return `reminder_${taskId}`;
+  const userPart = encodeURIComponent(String(metadata.userId));
+  const taskPart = encodeURIComponent(String(taskId));
+  const scopePart = metadata.spaceId == null
+    ? 'personal'
+    : `space:${encodeURIComponent(String(metadata.spaceId))}`;
+  return `reminder_v2:${userPart}:${scopePart}:${taskPart}`;
+};
+
+/**
+ * Schedule a local task reminder. The optional metadata keeps the original
+ * three-argument signature working while allowing shared-task routing data.
+ */
+export const scheduleTaskReminder = async (taskId, title, reminderTime, metadata = {}) => {
   if (!N) return null;
   try {
     const triggerDate = new Date(reminderTime);
-    if (triggerDate <= new Date()) return null;
+    if (Number.isNaN(triggerDate.getTime()) || triggerDate <= new Date()) return null;
 
-    await cancelTaskReminder(taskId);
+    await cancelTaskReminder(taskId, metadata);
 
     const id = await N.scheduleNotificationAsync({
       content: {
         title: '🔔 Task Reminder',
         body: title,
-        data: { taskId },
+        data: {
+          taskId,
+          userId: metadata?.userId ?? null,
+          spaceId: metadata?.spaceId ?? null,
+          assignedTo: metadata?.assignedTo ?? null,
+          createdBy: metadata?.createdBy ?? null,
+        },
         sound: true,
       },
       trigger: {
@@ -84,7 +104,7 @@ export const scheduleTaskReminder = async (taskId, title, reminderTime) => {
         date: triggerDate,
         channelId: Platform.OS === 'android' ? 'task-reminders-v2' : undefined,
       },
-      identifier: `reminder_${taskId}`,
+      identifier: reminderIdentifier(taskId, metadata),
     });
     return id;
   } catch (err) {
@@ -92,18 +112,60 @@ export const scheduleTaskReminder = async (taskId, title, reminderTime) => {
   }
 };
 
-export const cancelTaskReminder = async (taskId) => {
+export const cancelTaskReminder = async (taskId, metadata = {}) => {
   if (!N) return;
   try {
-    await N.cancelScheduledNotificationAsync(`reminder_${taskId}`);
+    const identifiers = new Set([reminderIdentifier(taskId, metadata)]);
+    // Metadata-aware reminders replaced legacy reminder_<taskId> entries.
+    // Clearing both prevents duplicate or stale notifications after upgrades.
+    if (metadata?.userId != null) identifiers.add(reminderIdentifier(taskId));
+    await Promise.all(
+      [...identifiers].map((identifier) => N.cancelScheduledNotificationAsync(identifier)),
+    );
   } catch (err) {}
 };
 
-export const rescheduleAllReminders = async (tasks) => {
-  if (!N || !tasks || !Array.isArray(tasks)) return;
+const sameUser = (left, right) => (
+  left != null && right != null && String(left) === String(right)
+);
+
+export const rescheduleAllReminders = async (tasks, currentUserId) => {
+  if (!N || !Array.isArray(tasks)) return;
+
   for (const task of tasks) {
-    if (task.reminder_time && !task.is_completed) {
-      await scheduleTaskReminder(task.id, task.title, task.reminder_time);
+    if (!task || task.id == null) continue;
+
+    const spaceId = task.space_id ?? task.spaceId ?? null;
+    const assignedTo = task.assigned_to ?? task.assignedTo ?? null;
+    const createdBy = task.created_by ?? task.createdBy ?? null;
+    const ownerId = task.owner_id ?? task.ownerId ?? task.user_id ?? task.userId ?? null;
+    const shared = spaceId != null;
+    const metadata = currentUserId == null
+      ? undefined
+      : { userId: currentUserId, spaceId, assignedTo, createdBy };
+
+    const reminderDate = task.reminder_time ? new Date(task.reminder_time) : null;
+    const activeReminder = reminderDate != null
+      && !Number.isNaN(reminderDate.getTime())
+      && reminderDate > new Date()
+      && !task.is_completed
+      && !task._deleted
+      && !task.deleted_at;
+    const eligibleSharedActor = !shared || (
+      currentUserId != null
+      && (
+        sameUser(assignedTo, currentUserId)
+        || (
+          assignedTo == null
+          && (sameUser(createdBy, currentUserId) || sameUser(ownerId, currentUserId))
+        )
+      )
+    );
+
+    if (activeReminder && eligibleSharedActor) {
+      await scheduleTaskReminder(task.id, task.title, task.reminder_time, metadata);
+    } else {
+      await cancelTaskReminder(task.id, metadata);
     }
   }
 };

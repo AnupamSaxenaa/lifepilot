@@ -70,6 +70,51 @@ serve(async (req) => {
   const row = payload?.record ?? payload;
   if (!row) return new Response("ok", { status: 200 });
 
+  /**
+   * Signed URL for one private screenshot, or null if it cannot be produced.
+   *
+   * Never throws: a missing key or a storage hiccup must not stop the Discord
+   * notification, because the report itself matters far more than its picture.
+   * Accepts SERVICE_ROLE_KEY or SUPABASE_SERVICE_ROLE_KEY — the same naming trap
+   * that once made the revenuecat webhook silently fail.
+   */
+  async function signScreenshot(path: string): Promise<string | null> {
+    const url = Deno.env.get("SUPABASE_URL");
+    const key = Deno.env.get("SERVICE_ROLE_KEY")
+      ?? Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    if (!url || !key) return null;
+
+    try {
+      const res = await fetch(
+        `${url}/storage/v1/object/sign/feedback-attachments/${path}`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${key}`,
+            apikey: key,
+            "Content-Type": "application/json",
+          },
+          // 7 days: long enough to triage a report at leisure, short enough that
+          // a link pasted somewhere it should not be stops working.
+          body: JSON.stringify({ expiresIn: 60 * 60 * 24 * 7 }),
+        },
+      );
+      if (!res.ok) {
+        console.error("[feedback-notify] sign failed:", res.status);
+        return null;
+      }
+      const data = await res.json();
+      const signed = data?.signedURL ?? data?.signedUrl;
+      if (!signed) return null;
+      return signed.startsWith("http")
+        ? signed
+        : `${url}/storage/v1${signed.startsWith("/") ? "" : "/"}${signed}`;
+    } catch (e) {
+      console.error("[feedback-notify] sign error:", (e as Error).message);
+      return null;
+    }
+  }
+
   const webhookUrl = Deno.env.get("DISCORD_FEEDBACK_WEBHOOK_URL");
   if (!webhookUrl) {
     // Not configured yet — don't fail the webhook, just no-op.
@@ -85,7 +130,33 @@ serve(async (req) => {
     .filter(Boolean)
     .join(" · ");
 
-  const screenshots: string[] = Array.isArray(row.screenshot_urls) ? row.screenshot_urls : [];
+  // ── Screenshot links ──────────────────────────────────────────────────────
+  // `screenshot_urls` now holds STORAGE PATHS ("<uid>/<uuid>.jpg") rather than
+  // public URLs, because the feedback-attachments bucket is private: a public
+  // URL for a bug-report screenshot works forever for anyone who ever sees it,
+  // and people screenshot whatever they happen to be doing.
+  //
+  // Discord fetches embed images anonymously, so it cannot use a private object
+  // directly. We mint a short-lived signed URL here with the service role. The
+  // link dies on its own, which is the whole point.
+  //
+  // Rows written before this change stored full "https://..." URLs. Those are
+  // passed through untouched so old feedback still renders.
+  const screenshotRefs: string[] = Array.isArray(row.screenshot_urls) ? row.screenshot_urls : [];
+  const screenshots: string[] = [];
+
+  for (const ref of screenshotRefs.slice(0, 1)) {
+    const value = String(ref ?? "");
+    if (!value) continue;
+
+    if (value.startsWith("http://") || value.startsWith("https://")) {
+      screenshots.push(value); // legacy public URL
+      continue;
+    }
+
+    const signed = await signScreenshot(value);
+    if (signed) screenshots.push(signed);
+  }
 
   const embed = {
     title: `${emoji} New ${categoryLabel}${severityTag}`,

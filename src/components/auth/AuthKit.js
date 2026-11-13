@@ -21,6 +21,7 @@ import Animated, {
     withTiming,
 } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { readableOn } from '../../theme/contrast';
 import { BackgroundWrapper } from '../BackgroundWrapper';
 
 const SPRING = { damping: 18, stiffness: 220, mass: 0.65 };
@@ -34,6 +35,10 @@ const AUTH_PALETTE = Object.freeze({
   muted: '#929299',
   border: '#202025',
   accent: '#FFFFFF',
+  // Label colour for the accent-filled primary button. Explicit rather than
+  // reusing `background`, which only happened to work because this palette is
+  // pure white on pure black.
+  onAccent: '#0B0B0D',
   danger: '#FB7185',
   success: '#34D399',
   warning: '#FBBF24',
@@ -279,7 +284,7 @@ export const AuthButton = ({
     transform: [{ scale: scale.value }],
     opacity: withTiming(pressed ? 0.92 : 1, { duration: 120 }),
   }));
-  const color = primary ? palette.background : palette.text;
+  const color = primary ? (palette.onAccent || readableOn(palette.accent)) : palette.text;
 
   return (
     <Animated.View style={[styles.buttonShell, blocked && styles.disabled, animatedStyle, style]}>

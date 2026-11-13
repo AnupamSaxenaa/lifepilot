@@ -1,4 +1,5 @@
 import DateTimePicker from '@react-native-community/datetimepicker';
+import { useFocusEffect } from '@react-navigation/native';
 import {
     ArrowLeft,
     Bell,
@@ -11,10 +12,10 @@ import {
     Plus,
     Repeat,
     Star, Sun,
-    Trash2, X,
+    Trash2, UserRound, X,
     Zap
 } from 'lucide-react-native';
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
     Alert,
@@ -31,10 +32,29 @@ import {
 import Animated, { FadeIn, Layout, SlideInDown, SlideOutDown } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BackgroundWrapper } from '../components/BackgroundWrapper';
+import {
+    AssigneePicker,
+    CommentThread,
+    getMemberName,
+    SyncStatusStrip,
+} from '../components/collaboration';
 import { getPriorityColor, getPriorityLabel, PRIORITY_CONFIG } from '../config/priorityConfig';
 import { useTheme } from '../context/ThemeContext';
-import { cacheTasks, deleteTask as dmDeleteTask, toggleTaskImportance, updateTask } from '../lib/dataManager';
-import { syncToSupabase } from '../lib/syncQueue';
+import {
+    deleteSharedTask,
+    loadSpaceDetail,
+    loadTaskComments,
+    updateSharedTask,
+} from '../lib/collaborationManager';
+import { subscribeCollaboration } from '../lib/collaborationRealtime';
+import {
+    deleteTask as dmDeleteTask,
+    getCurrentUserId,
+    resolveTaskById,
+    toggleTaskCompletion,
+    toggleTaskImportance,
+    updateTask,
+} from '../lib/dataManager';
 import { Gamification } from '../utils/gamification';
 import { cancelTaskReminder, scheduleTaskReminder } from '../utils/notifications';
 import { Storage } from '../utils/storage';
@@ -85,21 +105,62 @@ const getRepeatOptions = (t) => [
   { label: t('taskDetail.repeatYearly'), value: 'yearly' },
 ];
 
+const normalizeId = (value) => (value == null || value === '' ? null : String(value));
+const idsEqual = (left, right) => {
+  const leftId = normalizeId(left);
+  const rightId = normalizeId(right);
+  return leftId != null && rightId != null && leftId === rightId;
+};
+const createSubtaskId = (taskId, existing) => {
+  const prefix = `sub_${normalizeId(taskId) || 'task'}_`;
+  const used = new Set((Array.isArray(existing) ? existing : []).map((item) => normalizeId(item?.id)));
+  let sequence = used.size + 1;
+  while (used.has(`${prefix}${sequence}`)) sequence += 1;
+  return `${prefix}${sequence}`;
+};
+const normalizeTask = (value, fallbackSpaceId = null) => {
+  if (!value || value.id == null) return null;
+  return {
+    ...value,
+    id: normalizeId(value.id),
+    space_id: normalizeId(value.space_id ?? fallbackSpaceId),
+    assigned_to: normalizeId(value.assigned_to),
+  };
+};
+
 export const TaskDetailScreen = ({ route, navigation }) => {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
-  const ACCENT = useTheme().theme.accent;
-  const styles = useMemo(() => makeStyles(ACCENT), [ACCENT]);
-  const { task: initialTask, userId } = route.params;
+  const { theme } = useTheme();
+  const ACCENT = theme.accent || '#FFFFFF';
+  const ON_ACCENT = theme.onAccent || '#0B0B0D';
+  const styles = useMemo(() => makeStyles(ACCENT, ON_ACCENT), [ACCENT, ON_ACCENT]);
+  const routeParams = route?.params || {};
+  const routeUserId = normalizeId(routeParams.userId);
+  const routeSpaceId = normalizeId(routeParams.spaceId);
+  const initialTask = useMemo(() => {
+    if (routeParams.task?.id == null) return null;
+    if (routeParams.taskId != null && !idsEqual(routeParams.taskId, routeParams.task.id)) return null;
+    return normalizeTask(routeParams.task, routeSpaceId);
+  }, [routeParams.task, routeParams.taskId, routeSpaceId]);
+  const resolvedTaskId = normalizeId(routeParams.taskId ?? initialTask?.id);
   const REPEAT_OPTIONS = useMemo(() => getRepeatOptions(t), [t]);
 
+  const [resolvedUserId, setResolvedUserId] = useState(routeUserId);
   const [task, setTask] = useState(initialTask);
-  const [noteText, setNoteText] = useState(initialTask.notes || '');
+  const [isResolving, setIsResolving] = useState(!initialTask);
+  const [members, setMembers] = useState([]);
+  const [comments, setComments] = useState([]);
+  const [refreshEpoch, setRefreshEpoch] = useState(0);
+  const [pendingMutation, setPendingMutation] = useState(false);
+  const [mutationError, setMutationError] = useState('');
+  const [showAssigneePicker, setShowAssigneePicker] = useState(false);
+  const [noteText, setNoteText] = useState(initialTask?.notes || '');
   const [isEditingTitle, setIsEditingTitle] = useState(false);
-  const [editTitle, setEditTitle] = useState(initialTask.title);
-  
+  const [editTitle, setEditTitle] = useState(initialTask?.title || '');
+
   // Subtask state
-  const [subtasks, setSubtasks] = useState(initialTask.subtasks || []);
+  const [subtasks, setSubtasks] = useState(initialTask?.subtasks || []);
   const [isAddingSubtask, setIsAddingSubtask] = useState(false);
   const [newSubtaskTitle, setNewSubtaskTitle] = useState('');
   const subtaskInputRef = useRef(null);
@@ -111,24 +172,187 @@ export const TaskDetailScreen = ({ route, navigation }) => {
   const [pickerDate, setPickerDate] = useState(new Date());
   const [showRepeatMenu, setShowRepeatMenu] = useState(false);
   const [showPriorityMenu, setShowPriorityMenu] = useState(false);
-
   const titleInputRef = useRef(null);
+
+  const adoptTask = useCallback((nextTask, fallbackSpaceId = routeSpaceId) => {
+    const normalized = normalizeTask(nextTask, fallbackSpaceId);
+    setTask(normalized);
+    if (!normalized) return;
+    setNoteText(normalized.notes || '');
+    setEditTitle(normalized.title || '');
+    setSubtasks(Array.isArray(normalized.subtasks) ? normalized.subtasks : []);
+  }, [routeSpaceId]);
+
+  // The app-level collaboration coordinator owns the backend subscription. This
+  // screen listens only to its sanitized events, then re-reads the local cache.
+  useEffect(() => {
+    if (!resolvedUserId || !resolvedTaskId) return undefined;
+    const subscriptionSpaceId = normalizeId(task?.space_id ?? routeSpaceId);
+    return subscribeCollaboration((event) => {
+      if (event?.userId && !idsEqual(event.userId, resolvedUserId)) return;
+      if (event?.type === 'refresh') {
+        setRefreshEpoch((value) => value + 1);
+        return;
+      }
+      if (event?.type === 'membership_revoked' && idsEqual(event.spaceId, subscriptionSpaceId)) {
+        setRefreshEpoch((value) => value + 1);
+        return;
+      }
+      if (event?.type !== 'row') return;
+      const affectsTask = event.table === 'tasks' && idsEqual(event.row?.id, resolvedTaskId);
+      const affectsComments = event.table === 'task_comments' && idsEqual(event.row?.task_id, resolvedTaskId);
+      const affectsMembers = event.table === 'space_members'
+        && idsEqual(event.row?.space_id, subscriptionSpaceId);
+      if (affectsTask || affectsComments || affectsMembers) {
+        setRefreshEpoch((value) => value + 1);
+      }
+    });
+  }, [resolvedTaskId, resolvedUserId, routeSpaceId, task?.space_id]);
+
+  // A route snapshot paints immediately. On focus and relevant realtime events,
+  // resolve the user through dataManager and re-read task/member/comment caches
+  // before their loaders perform silent background refreshes.
+  useFocusEffect(useCallback(() => {
+    let active = true;
+    const preserveResolvedTask = Boolean(initialTask || refreshEpoch > 0);
+
+    const loadSharedCaches = async (userId, spaceId, taskId) => {
+      if (spaceId == null) {
+        if (active) {
+          setMembers([]);
+          setComments([]);
+        }
+        return;
+      }
+      const [detail, cachedComments] = await Promise.all([
+        loadSpaceDetail(userId, spaceId, (fresh) => {
+          if (active) setMembers(fresh?.members || []);
+        }),
+        loadTaskComments(userId, taskId, (fresh) => {
+          if (active) setComments(Array.isArray(fresh) ? fresh : []);
+        }),
+      ]);
+      if (active) {
+        setMembers(detail?.members || []);
+        setComments(Array.isArray(cachedComments) ? cachedComments : []);
+      }
+    };
+
+    const refresh = async () => {
+      const userId = routeUserId || normalizeId(await getCurrentUserId());
+      if (!active) return;
+      setResolvedUserId(userId);
+      if (!userId || resolvedTaskId == null) {
+        if (!preserveResolvedTask) setTask(null);
+        setIsResolving(false);
+        return;
+      }
+
+      const cachedTask = await resolveTaskById(userId, resolvedTaskId, (freshTask) => {
+        if (!active) return;
+        adoptTask(freshTask);
+        const freshSpaceId = normalizeId(freshTask?.space_id ?? routeSpaceId);
+        loadSharedCaches(userId, freshSpaceId, resolvedTaskId).catch(() => {});
+      });
+      if (!active) return;
+      if (cachedTask) adoptTask(cachedTask);
+      else if (!preserveResolvedTask) setTask(null);
+      const spaceId = normalizeId(cachedTask?.space_id ?? initialTask?.space_id ?? routeSpaceId);
+      await loadSharedCaches(userId, spaceId, resolvedTaskId);
+      if (active) setIsResolving(false);
+    };
+
+    refresh().catch(() => {
+      if (active) {
+        if (!preserveResolvedTask) setTask(null);
+        setIsResolving(false);
+      }
+    });
+    return () => { active = false; };
+  }, [adoptTask, initialTask, refreshEpoch, resolvedTaskId, routeSpaceId, routeUserId]));
+
+  const sharedSpaceId = normalizeId(task?.space_id ?? routeSpaceId);
+  const isShared = sharedSpaceId != null;
+  const currentMember = isShared
+    ? members.find((member) => idsEqual(member?.user_id ?? member?.id, resolvedUserId))
+    : null;
+  const currentRole = String(currentMember?.role || '').toLowerCase();
+  const isViewer = isShared && currentRole === 'viewer';
+  const permissionsResolved = !isShared || Boolean(currentMember);
+  // Cached/server membership is the only write authority. Route snapshots may
+  // paint content immediately but can never grant editor permissions.
+  const canMutate = Boolean(
+    task
+    && resolvedUserId
+    && permissionsResolved
+    && (!isShared || (['owner', 'editor'].includes(currentRole) && routeParams.readOnly !== true)),
+  );
+  const readOnlyExplanation = isViewer || routeParams.readOnly === true
+    ? 'You have viewer access. Editing, assigning, completing, commenting, and deleting are disabled.'
+    : 'Checking collaboration permissions. Editing is temporarily disabled.';
+  const assignedMember = members.find((member) => (
+    idsEqual(member?.user_id ?? member?.id, task?.assigned_to)
+  ));
+  const taskHasPendingSync = isShared && (pendingMutation || task?._sync_status === 'pending');
+  const controlsDisabled = !canMutate || pendingMutation;
+
+  const readCurrentTasks = async () => {
+    const cached = await Storage.get(`tasks_${resolvedUserId}`);
+    const current = Array.isArray(cached) ? cached : [];
+    if (!task || current.some((item) => idsEqual(item.id, task.id))) return current;
+    return [task, ...current];
+  };
 
   // ─── Persist helper ───────────────────────────────────
   const handleUpdateField = async (fields) => {
-    const updatedTask = { ...task, ...fields };
-    setTask(updatedTask);
-    const allTasks = await Storage.get(`tasks_${userId}`);
-    if (allTasks) {
-      await updateTask(userId, allTasks, task.id, fields);
+    if (!canMutate || !task || pendingMutation) return false;
+    const normalizedFields = Object.prototype.hasOwnProperty.call(fields, 'assigned_to')
+      ? { ...fields, assigned_to: normalizeId(fields.assigned_to) }
+      : fields;
+    setMutationError('');
+    setPendingMutation(true);
+    setTask((current) => current ? {
+      ...current,
+      ...normalizedFields,
+      ...(isShared ? { _sync_status: 'pending' } : {}),
+    } : current);
+
+    try {
+      if (isShared) {
+        const pendingTask = await updateSharedTask(
+          resolvedUserId,
+          normalizeId(task.id),
+          normalizedFields,
+          task.collaboration_version,
+        );
+        if (pendingTask) adoptTask(pendingTask, sharedSpaceId);
+      } else {
+        const allTasks = await readCurrentTasks();
+        const updatedTasks = await updateTask(
+          resolvedUserId,
+          allTasks,
+          normalizeId(task.id),
+          normalizedFields,
+        );
+        const updatedTask = updatedTasks?.find((item) => idsEqual(item.id, task.id));
+        if (updatedTask) adoptTask(updatedTask);
+      }
+      return true;
+    } catch (_error) {
+      // Shared managers persist optimistic state before queueing, so never roll
+      // back a local copy that may already be safely pending retry.
+      setMutationError('The change is saved locally but could not be queued yet. Try again after refresh.');
+      return false;
+    } finally {
+      setPendingMutation(false);
     }
   };
 
   // ─── Subtask handlers ─────────────────────────────────
   const handleAddSubtask = async () => {
-    if (!newSubtaskTitle.trim()) return;
+    if (!canMutate || !newSubtaskTitle.trim()) return;
     const newSub = {
-      id: `sub_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      id: createSubtaskId(task?.id, subtasks),
       title: newSubtaskTitle.trim(),
       is_completed: false,
     };
@@ -139,103 +363,123 @@ export const TaskDetailScreen = ({ route, navigation }) => {
   };
 
   const handleToggleSubtask = async (subId) => {
+    if (!canMutate) return;
     let becameComplete = false;
-    const updated = subtasks.map(s => {
-      if (s.id !== subId) return s;
-      becameComplete = !s.is_completed;
-      return { ...s, is_completed: !s.is_completed };
+    const updated = subtasks.map((subtask) => {
+      if (!idsEqual(subtask.id, subId)) return subtask;
+      becameComplete = !subtask.is_completed;
+      return { ...subtask, is_completed: becameComplete };
     });
     setSubtasks(updated);
     await handleUpdateField({ subtasks: updated });
-    // Small step XP (also triggers the +/− XP popup via addXP).
-    if (userId) {
+    // Shared subtask XP is server-owned; retain the personal-task behavior.
+    if (!isShared) {
       const delta = becameComplete ? Gamification.xpForSubtask() : -Gamification.xpForSubtask();
-      await Gamification.addXP(userId, delta);
+      await Gamification.addXP(resolvedUserId, delta);
     }
   };
 
   const handleDeleteSubtask = async (subId) => {
-    const updated = subtasks.filter(s => s.id !== subId);
+    if (!canMutate) return;
+    const updated = subtasks.filter((subtask) => !idsEqual(subtask.id, subId));
     setSubtasks(updated);
     await handleUpdateField({ subtasks: updated });
   };
 
   // ─── Task handlers ────────────────────────────────────
   const handleToggleComplete = async () => {
+    if (!canMutate || !task || pendingMutation) return;
     const newStatus = !task.is_completed;
     const completedAt = newStatus ? new Date().toISOString() : null;
-    
-    setTask(prev => ({ ...prev, is_completed: newStatus, completed_at: completedAt }));
-    
-    // ✅ FIX: Load fresh tasks, update only this task
-    const latestTasks = await Storage.get(`tasks_${userId}`) || [];
-    const storedTask = latestTasks.find(t => t.id === task.id) || task;
 
-    // On complete: grant priority-based XP and remember the exact amount.
-    // On uncomplete: deduct that same remembered amount (fallback to priority).
+    if (isShared) {
+      // The versioned shared-task RPC owns completion XP and recipient choice.
+      await handleUpdateField({ is_completed: newStatus, completed_at: completedAt });
+      return;
+    }
+
+    const allTasks = await readCurrentTasks();
+    const storedTask = allTasks.find((item) => idsEqual(item.id, task.id)) || task;
     const xpAmount = newStatus
       ? Gamification.xpForTask(task)
-      : ((storedTask.xp_awarded != null) ? storedTask.xp_awarded : Gamification.xpForTask(task));
+      : (storedTask.xp_awarded ?? Gamification.xpForTask(task));
+    const optimisticFields = {
+      is_completed: newStatus,
+      completed_at: completedAt,
+      xp_awarded: newStatus ? xpAmount : null,
+    };
+    setTask((current) => current ? { ...current, ...optimisticFields } : current);
 
-    const updated = latestTasks.map(t =>
-      t.id === task.id 
-        ? { ...t, is_completed: newStatus, completed_at: completedAt, xp_awarded: newStatus ? xpAmount : null }
-        : t
+    const completedTasks = await toggleTaskCompletion(
+      resolvedUserId,
+      allTasks,
+      normalizeId(task.id),
+      task.is_completed,
     );
-    
-    await cacheTasks(userId, updated);
-    
-    syncToSupabase('tasks', 'update',
-      { is_completed: newStatus, completed_at: completedAt },
-      { column: 'id', value: task.id }
-    );
-    
-    if (newStatus && task.reminder_time) cancelTaskReminder(task.id);
-    else if (!newStatus && task.reminder_time) scheduleTaskReminder(task.id, task.title, task.reminder_time);
-    
-    await Gamification.addXP(userId, newStatus ? xpAmount : -xpAmount);
+    await updateTask(resolvedUserId, completedTasks, normalizeId(task.id), {
+      xp_awarded: newStatus ? xpAmount : null,
+    });
+    if (newStatus && task.reminder_time) await cancelTaskReminder(task.id);
+    else if (!newStatus && task.reminder_time) {
+      await scheduleTaskReminder(task.id, task.title, task.reminder_time);
+    }
+    await Gamification.addXP(resolvedUserId, newStatus ? xpAmount : -xpAmount);
   };
 
   const handleToggleImportant = async () => {
-    const newStatus = !task.is_important;
-    setTask(prev => ({ ...prev, is_important: newStatus }));
-    const allTasks = await Storage.get(`tasks_${userId}`);
-    if (allTasks) await toggleTaskImportance(userId, allTasks, task.id, task.is_important);
+    if (!canMutate || !task || pendingMutation) return;
+    if (isShared) {
+      await handleUpdateField({ is_important: !task.is_important });
+      return;
+    }
+    setTask((current) => current ? { ...current, is_important: !current.is_important } : current);
+    const allTasks = await readCurrentTasks();
+    await toggleTaskImportance(
+      resolvedUserId,
+      allTasks,
+      normalizeId(task.id),
+      task.is_important,
+    );
   };
 
   const handleTitleSave = async () => {
     setIsEditingTitle(false);
     Keyboard.dismiss();
-    if (editTitle.trim() && editTitle.trim() !== task.title) {
+    if (!task) return;
+    if (canMutate && editTitle.trim() && editTitle.trim() !== task.title) {
       await handleUpdateField({ title: editTitle.trim() });
     } else {
-      setEditTitle(task.title);
+      setEditTitle(task.title || '');
     }
   };
 
   const handleSetDueDate = async (date) => {
     setShowDatePicker(false);
-    if (date) {
-      const d = new Date(date); d.setHours(23, 59, 0, 0);
-      await handleUpdateField({ due_date: d.toISOString() });
+    if (date && canMutate) {
+      const dueDate = new Date(date); dueDate.setHours(23, 59, 0, 0);
+      await handleUpdateField({ due_date: dueDate.toISOString() });
     }
   };
 
   const handleRemoveDueDate = () => handleUpdateField({ due_date: null });
 
   const handleSetReminder = async (date) => {
+    if (!canMutate || !task) return;
     if (reminderStep === 'date') { setPickerDate(date); setReminderStep('time'); return; }
     setShowReminderPicker(false); setReminderStep('date');
     if (date) {
       const finalDate = new Date(pickerDate);
       finalDate.setHours(date.getHours(), date.getMinutes(), 0, 0);
       await handleUpdateField({ reminder_time: finalDate.toISOString() });
-      scheduleTaskReminder(task.id, task.title, finalDate.toISOString());
+      // Shared reminders are scheduled by collaborationManager for only the
+      // current assignee (or the eligible unassigned-task actor).
+      if (!isShared) await scheduleTaskReminder(task.id, task.title, finalDate.toISOString());
     }
   };
 
   const handleRemoveReminder = async () => {
-    cancelTaskReminder(task.id);
+    if (!canMutate || !task) return;
+    if (!isShared) await cancelTaskReminder(task.id);
     await handleUpdateField({ reminder_time: null });
   };
 
@@ -248,38 +492,86 @@ export const TaskDetailScreen = ({ route, navigation }) => {
 
   const handleSaveNotes = async () => {
     Keyboard.dismiss();
-    await handleUpdateField({ notes: noteText });
+    if (canMutate && task && noteText !== (task.notes || '')) {
+      await handleUpdateField({ notes: noteText });
+    }
   };
 
   const handleDelete = () => {
+    if (!canMutate || !task || pendingMutation) return;
     Alert.alert(t('taskDetail.deleteTaskTitle'), t('taskDetail.deleteTaskMessage', { title: task.title }), [
       { text: t('taskDetail.cancel'), style: 'cancel' },
       {
         text: t('taskDetail.deleteButton'), style: 'destructive',
         onPress: async () => {
-          cancelTaskReminder(task.id);
-          const allTasks = await Storage.get(`tasks_${userId}`);
-          if (allTasks) await dmDeleteTask(userId, allTasks, task.id);
-          navigation.goBack();
+          setMutationError('');
+          setPendingMutation(true);
+          try {
+            if (isShared) {
+              await deleteSharedTask(
+                resolvedUserId,
+                normalizeId(task.id),
+                task.collaboration_version,
+              );
+            } else {
+              await cancelTaskReminder(task.id);
+              const allTasks = await readCurrentTasks();
+              await dmDeleteTask(resolvedUserId, allTasks, normalizeId(task.id));
+            }
+            navigation.goBack();
+          } catch (_error) {
+            setMutationError('The task could not be queued for deletion. Your cached copy is unchanged.');
+            setPendingMutation(false);
+          }
         },
       },
     ]);
   };
 
   const handleGoBack = async () => {
-    if (noteText !== (initialTask.notes || '')) {
+    if (canMutate && task && noteText !== (task.notes || '')) {
       await handleUpdateField({ notes: noteText });
     }
     navigation.goBack();
   };
 
+  const handleAssigneeSelect = async (assigneeId) => {
+    if (!canMutate || pendingMutation) return;
+    // handleUpdateField paints the normalized assignee before the queue write.
+    await handleUpdateField({ assigned_to: normalizeId(assigneeId) });
+  };
+
   // Subtask stats
-  const completedSubtasks = subtasks.filter(s => s.is_completed).length;
+  const completedSubtasks = subtasks.filter((subtask) => subtask.is_completed).length;
   const totalSubtasks = subtasks.length;
+
+  if (!task) {
+    return (
+      <BackgroundWrapper>
+        <View style={[styles.header, { paddingTop: Math.max(insets.top, 12) + 8 }]}>
+          <TouchableOpacity onPress={() => navigation.goBack()} style={styles.headerBtn}>
+            <ArrowLeft color="#fff" size={24} />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>{t('taskDetail.headerTitle')}</Text>
+          <View style={{ width: 40 }} />
+        </View>
+        <View style={styles.emptyState} accessibilityLiveRegion="polite">
+          <Text style={styles.emptyStateTitle}>
+            {isResolving ? 'Task is not cached on this device' : 'Task not found'}
+          </Text>
+          <Text style={styles.emptyStateText}>
+            {isResolving
+              ? 'Checking for an available copy in the background…'
+              : 'It may have been deleted or is no longer available to you.'}
+          </Text>
+        </View>
+      </BackgroundWrapper>
+    );
+  }
 
   return (
     <BackgroundWrapper>
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
         {/* ─── Header ─────────────────────────────────── */}
         <View style={[styles.header, { paddingTop: Math.max(insets.top, 12) + 8 }]}>
           <TouchableOpacity onPress={handleGoBack} style={styles.headerBtn}>
@@ -291,76 +583,87 @@ export const TaskDetailScreen = ({ route, navigation }) => {
 
         <ScrollView
           style={styles.scrollView}
-          contentContainerStyle={[styles.scrollContent, { paddingBottom: 100 + insets.bottom }]}
+          contentContainerStyle={[styles.scrollContent, { paddingBottom: 24 + insets.bottom }]}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
+          {isShared && (
+            <View style={styles.syncStripWrap}>
+              <SyncStatusStrip spaceId={sharedSpaceId} />
+              {taskHasPendingSync && (
+                <Text accessibilityLiveRegion="polite" style={styles.pendingText}>
+                  {pendingMutation ? 'Saving locally…' : 'Changes pending sync'}
+                </Text>
+              )}
+              {!canMutate && (
+                <View accessible accessibilityRole="text" style={styles.readOnlyBanner}>
+                  <Text style={styles.readOnlyText}>{readOnlyExplanation}</Text>
+                </View>
+              )}
+              {mutationError ? (
+                <Text accessibilityLiveRegion="assertive" style={styles.mutationErrorText}>
+                  {mutationError}
+                </Text>
+              ) : null}
+            </View>
+          )}
+
           {/* ─── Task Title Row ───────────────────────── */}
-          <View style={styles.titleRow}>
-            <TouchableOpacity onPress={handleToggleComplete} style={styles.titleCheckbox}>
+          <View style={[styles.titleRow, controlsDisabled && styles.disabledControl]}>
+            <TouchableOpacity disabled={!canMutate} onPress={handleToggleComplete} style={styles.titleCheckbox}>
               {task.is_completed
                 ? <CheckCircle2 color="#34D399" size={28} />
                 : <Circle color="#fff" size={28} />}
             </TouchableOpacity>
             <View style={styles.titleContent}>
-              {isEditingTitle ? (
+              {isEditingTitle && canMutate ? (
                 <TextInput
                   ref={titleInputRef} value={editTitle} onChangeText={setEditTitle}
                   onBlur={handleTitleSave} onSubmitEditing={handleTitleSave}
                   style={styles.titleInput} autoFocus multiline blurOnSubmit
                 />
               ) : (
-                <TouchableOpacity onPress={() => setIsEditingTitle(true)}>
+                <TouchableOpacity disabled={!canMutate} onPress={() => setIsEditingTitle(true)}>
                   <Text style={[styles.titleText, task.is_completed && styles.titleCompleted]}>{task.title}</Text>
                 </TouchableOpacity>
               )}
             </View>
-            <TouchableOpacity onPress={handleToggleImportant} style={styles.titleStar}>
+            <TouchableOpacity disabled={!canMutate} onPress={handleToggleImportant} style={styles.titleStar}>
               <Star color={task.is_important ? '#FBBF24' : '#555'} fill={task.is_important ? '#FBBF24' : 'transparent'} size={24} />
             </TouchableOpacity>
           </View>
 
           {/* ─── Subtasks Section ─────────────────────── */}
           <View style={styles.subtasksSection}>
-            {subtasks.map((sub, index) => (
+            {subtasks.map((sub) => (
               <Animated.View
                 key={sub.id}
                 entering={FadeIn.duration(200)}
                 layout={Layout.springify()}
                 style={styles.subtaskRow}
               >
-                <TouchableOpacity onPress={() => handleToggleSubtask(sub.id)} style={styles.subtaskCheckbox}>
+                <TouchableOpacity disabled={!canMutate} onPress={() => handleToggleSubtask(sub.id)} style={styles.subtaskCheckbox}>
                   {sub.is_completed
                     ? <CheckCircle2 color="#34D399" size={20} />
                     : <Circle color="#555" size={20} />}
                 </TouchableOpacity>
-                <Text style={[styles.subtaskText, sub.is_completed && styles.subtaskCompleted]}>
-                  {sub.title}
-                </Text>
-                <TouchableOpacity onPress={() => handleDeleteSubtask(sub.id)} style={styles.subtaskDelete}>
-                  <X color="#444" size={16} />
-                </TouchableOpacity>
+                <Text style={[styles.subtaskText, sub.is_completed && styles.subtaskCompleted]}>{sub.title}</Text>
+                {canMutate && (
+                  <TouchableOpacity onPress={() => handleDeleteSubtask(sub.id)} style={styles.subtaskDelete}>
+                    <X color="#444" size={16} />
+                  </TouchableOpacity>
+                )}
               </Animated.View>
             ))}
 
-            {/* Add Subtask */}
-            {isAddingSubtask ? (
+            {canMutate && (isAddingSubtask ? (
               <Animated.View entering={FadeIn.duration(200)} style={styles.subtaskInputRow}>
                 <Circle color="#555" size={20} style={{ marginRight: 12 }} />
                 <TextInput
-                  ref={subtaskInputRef}
-                  value={newSubtaskTitle}
-                  onChangeText={setNewSubtaskTitle}
-                  placeholder={t('taskDetail.addStepPlaceholder')}
-                  placeholderTextColor="#555"
-                  style={styles.subtaskInput}
-                  autoFocus
-                  onSubmitEditing={() => {
-                    handleAddSubtask();
-                    // Keep input open for adding more
-                  }}
-                  blurOnSubmit={false}
-                  returnKeyType="done"
+                  ref={subtaskInputRef} value={newSubtaskTitle} onChangeText={setNewSubtaskTitle}
+                  placeholder={t('taskDetail.addStepPlaceholder')} placeholderTextColor="#555"
+                  style={styles.subtaskInput} autoFocus onSubmitEditing={handleAddSubtask}
+                  blurOnSubmit={false} returnKeyType="done"
                 />
                 <TouchableOpacity
                   onPress={() => { handleAddSubtask(); setIsAddingSubtask(false); Keyboard.dismiss(); }}
@@ -376,15 +679,12 @@ export const TaskDetailScreen = ({ route, navigation }) => {
                   {totalSubtasks > 0 ? t('taskDetail.nextStep') : t('taskDetail.addStep')}
                 </Text>
               </TouchableOpacity>
-            )}
+            ))}
 
-            {/* Progress bar */}
             {totalSubtasks > 0 && (
               <View style={styles.subtaskProgress}>
                 <View style={styles.progressBarBg}>
-                  <Animated.View
-                    style={[styles.progressBarFill, { width: `${(completedSubtasks / totalSubtasks) * 100}%` }]}
-                  />
+                  <Animated.View style={[styles.progressBarFill, { width: `${(completedSubtasks / totalSubtasks) * 100}%` }]} />
                 </View>
                 <Text style={styles.progressText}>
                   {t('taskDetail.subtaskProgress', { completed: completedSubtasks, total: totalSubtasks })}
@@ -394,16 +694,37 @@ export const TaskDetailScreen = ({ route, navigation }) => {
           </View>
 
           {/* ─── Focus Mode Button ──────────────────────── */}
-          <TouchableOpacity 
-            style={styles.focusModeBtn} 
-            onPress={() => navigation.navigate('FocusMode', { task })}
+          <TouchableOpacity
+            disabled={!canMutate}
+            style={[styles.focusModeBtn, !canMutate && styles.disabledControl]}
+            onPress={() => navigation.navigate('FocusMode', { task, userId: resolvedUserId })}
           >
-            <Zap color="#fff" size={20} fill="#fff" style={{ marginRight: 10 }} />
+            <Zap color={ON_ACCENT} size={20} fill={ON_ACCENT} style={{ marginRight: 10 }} />
             <Text style={styles.focusModeBtnText}>{t('taskDetail.startFocusMode')}</Text>
           </TouchableOpacity>
 
+          {isShared && (
+            <TouchableOpacity
+              disabled={!canMutate}
+              style={[styles.assigneeRow, !canMutate && styles.disabledControl]}
+              onPress={() => setShowAssigneePicker(true)}
+            >
+              <UserRound color="#888" size={22} style={styles.optionIcon} />
+              <View style={styles.optionTextContainer}>
+                <Text style={styles.detailLabel}>Assignee</Text>
+                <Text style={styles.assigneeName}>
+                  {assignedMember ? getMemberName(assignedMember) : 'Unassigned'}
+                </Text>
+              </View>
+              <Text style={styles.assigneeAction}>{canMutate ? 'Change' : 'View only'}</Text>
+            </TouchableOpacity>
+          )}
+
           {/* ─── Options List ─────────────────────────── */}
-          <View style={styles.optionsSection}>
+          <View
+            pointerEvents={canMutate ? 'auto' : 'none'}
+            style={[styles.optionsSection, !canMutate && styles.disabledControl]}
+          >
             {/* Added to My Day */}
             <TouchableOpacity 
               style={styles.optionRow} 
@@ -509,28 +830,56 @@ export const TaskDetailScreen = ({ route, navigation }) => {
           </View>
 
           {/* ─── Notes ────────────────────────────────── */}
-          <View style={styles.notesSection}>
+          <View style={[styles.notesSection, !canMutate && styles.disabledControl]}>
             <View style={styles.noteHeader}>
               <FileText color="#888" size={16} />
               <Text style={styles.noteHeaderText}>{t('taskDetail.noteLabel')}</Text>
             </View>
             <TextInput
               value={noteText} onChangeText={setNoteText} onBlur={handleSaveNotes}
+              editable={canMutate}
               placeholder={t('taskDetail.addNotePlaceholder')} placeholderTextColor="#555"
               style={styles.noteInput} multiline textAlignVertical="top"
             />
           </View>
+
+          {isShared && resolvedUserId && (
+            <View style={styles.commentsSection}>
+              <View style={styles.commentsHeader}>
+                <Text style={styles.commentsTitle}>Comments</Text>
+                {!canMutate && <Text style={styles.readOnlyText}>View only</Text>}
+              </View>
+              <CommentThread
+                userId={resolvedUserId}
+                taskId={normalizeId(task.id)}
+                comments={comments}
+                members={members}
+                onCommentsChange={setComments}
+                readOnly={!canMutate}
+              />
+            </View>
+          )}
+
+          <View style={[styles.bottomBar, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+            <Text style={styles.bottomTimestamp}>
+              {t('taskDetail.createdAt', { time: formatCreatedAt(task.created_at, t) })}
+            </Text>
+            <TouchableOpacity disabled={!canMutate} onPress={handleDelete} style={[styles.deleteBtn, !canMutate && styles.disabledControl]}>
+              <Trash2 color="#A1A1AA" size={22} />
+            </TouchableOpacity>
+          </View>
         </ScrollView>
 
-        {/* ─── Bottom Bar ─────────────────────────────── */}
-        <View style={[styles.bottomBar, { paddingBottom: Math.max(insets.bottom, 16) }]}>
-          <Text style={styles.bottomTimestamp}>
-            {t('taskDetail.createdAt', { time: formatCreatedAt(task.created_at, t) })}
-          </Text>
-          <TouchableOpacity onPress={handleDelete} style={styles.deleteBtn}>
-            <Trash2 color="#888" size={22} />
-          </TouchableOpacity>
-        </View>
+        {isShared && (
+          <AssigneePicker
+            visible={showAssigneePicker}
+            onClose={() => setShowAssigneePicker(false)}
+            members={members}
+            value={task.assigned_to}
+            onSelect={handleAssigneeSelect}
+            disabled={!canMutate}
+          />
+        )}
 
         {/* ─── Date Picker ────────────────────────────── */}
         {showDatePicker && (
@@ -593,12 +942,26 @@ export const TaskDetailScreen = ({ route, navigation }) => {
   );
 };
 
-const makeStyles = (ACCENT) => StyleSheet.create({
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingBottom: 12 },
+const makeStyles = (ACCENT, ON_ACCENT) => StyleSheet.create({
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, paddingBottom: 12 },
   headerBtn: { padding: 8 },
   headerTitle: { color: '#fff', fontSize: 17, fontWeight: '600' },
   scrollView: { flex: 1 },
   scrollContent: { paddingHorizontal: 20 },
+  emptyState: { flex: 1, alignItems: 'flex-start', paddingHorizontal: 32, paddingTop: 24 },
+  emptyStateTitle: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  emptyStateText: { color: '#777', fontSize: 13, lineHeight: 19, marginTop: 7, maxWidth: 360 },
+  disabledControl: { opacity: 0.55 },
+  syncStripWrap: { marginTop: 8, gap: 7 },
+  pendingText: { color: '#A1A1AA', fontSize: 12, fontWeight: '500' },
+  readOnlyBanner: {
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+  },
+  readOnlyText: { color: '#A1A1AA', fontSize: 12, lineHeight: 18, fontWeight: '500' },
+  mutationErrorText: { color: '#FCA5A5', fontSize: 12, lineHeight: 18 },
 
   // Title
   titleRow: { flexDirection: 'row', alignItems: 'flex-start', paddingVertical: 20 },
@@ -674,20 +1037,28 @@ const makeStyles = (ACCENT) => StyleSheet.create({
 
   // Focus Mode
   focusModeBtn: {
+    minHeight: 54,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: ACCENT,
-    paddingVertical: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
     borderRadius: 12,
-    marginBottom: 20,
-    shadowColor: ACCENT,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 4,
+    marginBottom: 16,
   },
-  focusModeBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  focusModeBtnText: { color: ON_ACCENT, fontSize: 15, fontWeight: '600' },
+  assigneeRow: {
+    minHeight: 68,
+    marginBottom: 12,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+  },
+  assigneeName: { color: '#E4E4E7', fontSize: 16, fontWeight: '500', marginTop: 2 },
+  assigneeAction: { color: '#A1A1AA', fontSize: 12, fontWeight: '500' },
 
   // Options
   optionsSection: { marginTop: 0, backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: 12, overflow: 'hidden' },
@@ -699,7 +1070,7 @@ const makeStyles = (ACCENT) => StyleSheet.create({
   optionAction: { padding: 6, marginLeft: 8 },
   separator: { height: StyleSheet.hairlineWidth, backgroundColor: 'rgba(255,255,255,0.08)', marginLeft: 54 },
   detailRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 16, paddingHorizontal: 16 },
-  detailLabel: { fontSize: 13, fontWeight: '500', marginBottom: 2 },
+  detailLabel: { color: '#A1A1AA', fontSize: 13, fontWeight: '500', marginBottom: 2 },
   detailValue: { fontSize: 16, fontWeight: '600' },
 
   // Notes
@@ -713,15 +1084,25 @@ const makeStyles = (ACCENT) => StyleSheet.create({
   noteHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 10, gap: 8 },
   noteHeaderText: { color: '#888', fontSize: 13, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 1 },
   noteInput: { color: '#ccc', fontSize: 15, lineHeight: 22, padding: 0 },
+  commentsSection: { marginTop: 20 },
+  commentsHeader: { minHeight: 32, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  commentsTitle: { color: '#888', fontSize: 13, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 1 },
 
   // Bottom
   bottomBar: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 20, paddingTop: 12,
-    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(255,255,255,0.08)',
-    backgroundColor: '#0a0a0a',
+    minHeight: 64,
+    marginTop: 20,
+    marginHorizontal: -20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: '#0A0A0A',
   },
-  bottomTimestamp: { color: '#555', fontSize: 13, fontWeight: '400' },
+  bottomTimestamp: { color: '#71717A', fontSize: 13, fontWeight: '400' },
   deleteBtn: { padding: 8 },
 
   // Pickers

@@ -25,9 +25,11 @@ const generateUUID = () =>
 const MOOD_DB_LABELS = ['Rough', 'Meh', 'Okay', 'Good', 'Great'];
 
 export const MindfulReflectionModal = ({ isVisible, onClose, userId, todayStats = {}, onSuccess }) => {
-  const ACCENT = useTheme().theme.accent;
+  const { theme } = useTheme();
+  const ACCENT = theme.accent;
+  const ON_ACCENT = theme.onAccent || '#0B0B0D';
   const { t } = useTranslation();
-  const styles = useMemo(() => makeStyles(ACCENT), [ACCENT]);
+  const styles = useMemo(() => makeStyles(ACCENT, ON_ACCENT), [ACCENT, ON_ACCENT]);
 
   const MOODS = [
     { emoji: '😫', label: t('mindfulReflection.moodRough') },
@@ -174,7 +176,7 @@ export const MindfulReflectionModal = ({ isVisible, onClose, userId, todayStats 
   );
 };
 
-const makeStyles = (ACCENT) => StyleSheet.create({
+const makeStyles = (ACCENT, ON_ACCENT) => StyleSheet.create({
   overlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.85)',
@@ -285,7 +287,7 @@ const makeStyles = (ACCENT) => StyleSheet.create({
     marginBottom: 8,
   },
   submitText: {
-    color: '#ffffff',
+    color: ON_ACCENT,
     fontSize: 15,
     fontWeight: '700',
   },

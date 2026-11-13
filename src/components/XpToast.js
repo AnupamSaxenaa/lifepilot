@@ -1,20 +1,23 @@
 // ─── XP Toast ────────────────────────────────────────────────
-// A very small, dismissible popup that shows "+X XP" (gain) or "−X XP" (loss)
-// whenever the user completes / un-completes a task or step. Mounted ONCE at
-// the app root; it listens to the global XpEvents bus so every screen triggers
-// it automatically. Auto-hides after a couple seconds and has a tiny ✕ to
-// dismiss immediately.
+// A quiet confirmation that XP changed. Mounted ONCE at the app root and
+// driven by the global XpEvents bus, so every screen gets it for free.
+//
+// Deliberately monochrome: the old version used a saturated green/red pill
+// with heavy 800-weight type, which fought the app's black-and-white,
+// thin-typography language. Direction is now carried by an arrow, a hairline
+// border, and weight — not by colour.
 // ─────────────────────────────────────────────────────────────
-import { X } from 'lucide-react-native';
+import { ArrowDownRight, ArrowUpRight } from 'lucide-react-native';
 import { useEffect, useRef, useState } from 'react';
-import { Animated, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Animated, Easing, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { XpEvents } from '../utils/xpEvents';
 
 export const XpToast = () => {
   const [amount, setAmount] = useState(0);
   const [visible, setVisible] = useState(false);
-  const opacity = useRef(new Animated.Value(0)).current;
-  const translateY = useRef(new Animated.Value(10)).current;
+  const [opacity] = useState(() => new Animated.Value(0));
+  const [translateY] = useState(() => new Animated.Value(-8));
+  const [scale] = useState(() => new Animated.Value(0.96));
   const hideTimer = useRef(null);
 
   useEffect(() => {
@@ -25,45 +28,57 @@ export const XpToast = () => {
     return unsub;
   }, []);
 
-  useEffect(() => {
-    if (!visible) return;
-    // Animate in
+  const dismiss = () => {
     Animated.parallel([
-      Animated.timing(opacity, { toValue: 1, duration: 180, useNativeDriver: true }),
-      Animated.spring(translateY, { toValue: 0, friction: 7, tension: 60, useNativeDriver: true }),
+      Animated.timing(opacity, { toValue: 0, duration: 200, easing: Easing.in(Easing.quad), useNativeDriver: true }),
+      Animated.timing(translateY, { toValue: -8, duration: 200, easing: Easing.in(Easing.quad), useNativeDriver: true }),
+    ]).start(() => {
+      setVisible(false);
+      translateY.setValue(-8);
+      scale.setValue(0.96);
+    });
+  };
+
+  useEffect(() => {
+    if (!visible) return undefined;
+
+    Animated.parallel([
+      Animated.timing(opacity, { toValue: 1, duration: 160, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+      Animated.spring(translateY, { toValue: 0, damping: 16, stiffness: 180, mass: 0.7, useNativeDriver: true }),
+      Animated.spring(scale, { toValue: 1, damping: 15, stiffness: 190, mass: 0.7, useNativeDriver: true }),
     ]).start();
 
-    // Auto-hide after 2s
     if (hideTimer.current) clearTimeout(hideTimer.current);
-    hideTimer.current = setTimeout(dismiss, 2000);
+    hideTimer.current = setTimeout(dismiss, 1900);
 
     return () => { if (hideTimer.current) clearTimeout(hideTimer.current); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, amount]);
 
-  const dismiss = () => {
-    Animated.parallel([
-      Animated.timing(opacity, { toValue: 0, duration: 160, useNativeDriver: true }),
-      Animated.timing(translateY, { toValue: 10, duration: 160, useNativeDriver: true }),
-    ]).start(() => {
-      setVisible(false);
-      translateY.setValue(10);
-    });
-  };
-
   if (!visible) return null;
 
   const gain = amount > 0;
-  const color = gain ? '#34D399' : '#FB7185';
-  const label = `${gain ? '+' : '−'}${Math.abs(amount)} XP`;
+  const Arrow = gain ? ArrowUpRight : ArrowDownRight;
 
   return (
     <View style={styles.wrap} pointerEvents="box-none">
-      <Animated.View style={[styles.pill, { opacity, transform: [{ translateY }], borderColor: color + '55' }]}>
-        <View style={[styles.dot, { backgroundColor: color }]} />
-        <Text style={[styles.text, { color }]}>{label}</Text>
-        <TouchableOpacity onPress={dismiss} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={styles.close}>
-          <X color="#8A8A8E" size={13} />
+      <Animated.View
+        style={[
+          styles.pill,
+          { opacity, transform: [{ translateY }, { scale }] },
+        ]}
+      >
+        <TouchableOpacity
+          onPress={dismiss}
+          activeOpacity={0.75}
+          style={styles.inner}
+          accessibilityRole="button"
+          accessibilityLabel={`${gain ? 'Gained' : 'Lost'} ${Math.abs(amount)} XP`}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          <Arrow color={gain ? '#F4F4F5' : '#8A8A8E'} size={13} strokeWidth={2} />
+          <Text style={[styles.value, !gain && styles.valueLoss]}>{Math.abs(amount)}</Text>
+          <Text style={styles.unit}>XP</Text>
         </TouchableOpacity>
       </Animated.View>
     </View>
@@ -73,7 +88,7 @@ export const XpToast = () => {
 const styles = StyleSheet.create({
   wrap: {
     position: 'absolute',
-    top: 54,
+    top: 52,
     left: 0,
     right: 0,
     alignItems: 'center',
@@ -81,21 +96,30 @@ const styles = StyleSheet.create({
     elevation: 9999,
   },
   pill: {
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(244,244,245,0.22)',
+    backgroundColor: 'rgba(10,10,11,0.92)',
+    overflow: 'hidden',
+  },
+  inner: {
+    minHeight: 34,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 7,
-    backgroundColor: 'rgba(18,18,20,0.96)',
-    borderWidth: 1,
-    borderRadius: 999,
-    paddingLeft: 12,
-    paddingRight: 8,
-    paddingVertical: 7,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.4,
-    shadowRadius: 8,
+    gap: 6,
+    paddingHorizontal: 13,
   },
-  dot: { width: 6, height: 6, borderRadius: 3 },
-  text: { fontSize: 13, fontWeight: '800', letterSpacing: 0.3 },
-  close: { padding: 3, marginLeft: 2 },
+  value: {
+    color: '#F4F4F5',
+    fontSize: 14,
+    fontWeight: '500',
+    letterSpacing: -0.2,
+  },
+  valueLoss: { color: '#8A8A8E' },
+  unit: {
+    color: '#71717A',
+    fontSize: 9.5,
+    fontWeight: '600',
+    letterSpacing: 1,
+  },
 });

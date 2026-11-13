@@ -50,6 +50,7 @@ import {
 import { cancelAmbientNotification } from '../features/alarm/scheduler/alarmScheduler';
 import { getCachedWeather } from '../features/alarm/weather';
 import { updateLatestWakeSessionReflection } from '../lib/dataManager';
+import { readableOn } from '../theme/contrast';
 import { COLORS } from '../theme/theme';
 import { Gamification } from '../utils/gamification';
 import { Storage } from '../utils/storage';
@@ -446,6 +447,12 @@ export default function AlarmScreen(props) {
       : selectedPalette === 'highContrast'
         ? (isLightBackground ? '#000000' : '#FFFFFF')
         : standardAccent;
+  // The dismiss button is filled with `accent`, which can be a user-picked alarm
+  // label colour, an accessibility-palette colour, or the equipped theme accent
+  // (white by default). Derive its label instead of guessing per palette — the
+  // old per-palette ternary returned '#FFFFFF' for the standard palette, i.e.
+  // white-on-white.
+  const onAccentColor = readableOn(accent);
   const labelColor = selectedPalette === 'standard'
     ? (alarm.label?.color || accent)
     : accent;
@@ -689,11 +696,7 @@ export default function AlarmScreen(props) {
             accessibilityRole="button"
             accessibilityLabel={t('alarmRing.dismiss')}
           >
-            <Text style={[styles.btnText, { color: selectedPalette === 'tritanopia' || selectedPalette === 'deuteranopia'
-              ? '#000000'
-              : selectedPalette === 'highContrast'
-                ? (isLightBackground ? '#FFFFFF' : '#000000')
-                : '#FFFFFF' }]}>
+            <Text style={[styles.btnText, { color: onAccentColor }]}>
               {t('alarmRing.dismiss')}
             </Text>
           </TouchableOpacity>

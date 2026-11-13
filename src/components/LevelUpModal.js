@@ -1,5 +1,5 @@
 import { ArrowRight, Hexagon, Sparkles, X } from 'lucide-react-native';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Animated, Dimensions, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import ConfettiCannon from 'react-native-confetti-cannon';
@@ -14,8 +14,9 @@ export const LevelUpModal = ({ isVisible, oldLevel, newLevel, onClose }) => {
   const styles = useMemo(() => makeStyles(ACCENT), [ACCENT]);
   const { t } = useTranslation();
   const [showConfetti, setShowConfetti] = useState(false);
-  const scaleAnim = useRef(new Animated.Value(0.8)).current;
-  const fadeAnim = useRef(new Animated.Value(0)).current;
+  // Lazy state owns these imperative values without reading a ref during render.
+  const [scaleAnim] = useState(() => new Animated.Value(0.8));
+  const [fadeAnim] = useState(() => new Animated.Value(0));
 
   useEffect(() => {
     if (isVisible) {
@@ -37,10 +38,8 @@ export const LevelUpModal = ({ isVisible, oldLevel, newLevel, onClose }) => {
       
       const timer = setTimeout(() => setShowConfetti(true), 350);
       return () => clearTimeout(timer);
-    } else {
-      setShowConfetti(false);
     }
-  }, [isVisible]);
+  }, [isVisible, scaleAnim, fadeAnim]);
 
   const handleClose = () => {
     Animated.parallel([
@@ -55,6 +54,9 @@ export const LevelUpModal = ({ isVisible, oldLevel, newLevel, onClose }) => {
         useNativeDriver: true,
       })
     ]).start(() => {
+      // Reset in the animation callback rather than synchronously in an effect;
+      // the next opening must wait 350ms before showing confetti again.
+      setShowConfetti(false);
       onClose();
     });
   };

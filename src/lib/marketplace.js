@@ -89,16 +89,33 @@ export const getCatalog = async () => {
 };
 
 /** The user's owned cosmetics (item IDs). Server-authoritative, cached. */
+/**
+ * What this user may equip: everything they bought, plus the whole catalog while
+ * Pro is active.
+ *
+ * The Pro union is computed SERVER-SIDE by `get_owned_cosmetics()` (migration
+ * 0033) rather than client-side against a cached `isPro`, because a cached hint
+ * is editable on-device and this list is what authorises equipping a paid item.
+ * Pro grants access, not ownership — nothing is written to `user_cosmetics`, so a
+ * lapsed subscription cleanly falls back to genuinely purchased items.
+ */
 export const getOwnedCosmetics = async (userId) => {
   if (!userId) return [];
   try {
     const supabase = getClient();
-    const { data, error } = await supabase
+    const { data, error } = await supabase.rpc('get_owned_cosmetics');
+    if (!error && Array.isArray(data)) {
+      await Storage.set(OWNED_KEY(userId), JSON.stringify(data));
+      return data;
+    }
+    // Pre-0033 database: fall back to the plain ownership read. Purchased items
+    // still work; the Pro catalog unlock just isn't available yet.
+    const { data: rows, error: rowErr } = await supabase
       .from('user_cosmetics')
       .select('item_id')
       .eq('user_id', userId);
-    if (!error && Array.isArray(data)) {
-      const ids = data.map((r) => r.item_id);
+    if (!rowErr && Array.isArray(rows)) {
+      const ids = rows.map((r) => r.item_id);
       await Storage.set(OWNED_KEY(userId), JSON.stringify(ids));
       return ids;
     }

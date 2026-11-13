@@ -2,7 +2,7 @@ import notifee from '@notifee/react-native';
 import * as Calendar from 'expo-calendar';
 import * as ImagePicker from 'expo-image-picker';
 import { ExpoSpeechRecognitionModule } from 'expo-speech-recognition';
-import { Bell, Calendar as CalendarIcon, Check, Folder, Mic, Shield, X } from 'lucide-react-native';
+import { Bell, Calendar as CalendarIcon, Check, Folder, Layers, Mic, Shield, X } from 'lucide-react-native';
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert, AppState, Modal, NativeModules, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
@@ -42,23 +42,25 @@ const getPermissionSteps = (t) => [
     title: t('permissionsOnboarding.accessibilityTitle'),
     description: t('permissionsOnboarding.accessibilityDescription'),
     icon: Shield,
+  }, {
+    // Accessibility alone lets us DETECT a blocked app; Android 10+ needs this
+    // one before we're allowed to actually put the block screen on top of it.
+    id: 'overlay',
+    title: t('permissionsOnboarding.overlayTitle'),
+    description: t('permissionsOnboarding.overlayDescription'),
+    icon: Layers,
   }] : [])
 ];
 
-const getAccessibleAccent = (accent) => {
-  if (typeof accent !== 'string' || !/^#[0-9a-f]{6}$/i.test(accent)) return '#3F3F46';
-  const red = parseInt(accent.slice(1, 3), 16);
-  const green = parseInt(accent.slice(3, 5), 16);
-  const blue = parseInt(accent.slice(5, 7), 16);
-  const luminance = (0.299 * red + 0.587 * green + 0.114 * blue) / 255;
-  return luminance > 0.62 ? '#3F3F46' : accent;
-};
-
 export const PermissionsOnboarding = () => {
   const { t } = useTranslation();
-  const themeAccent = useTheme().theme.accent;
-  const ACCENT = useMemo(() => getAccessibleAccent(themeAccent), [themeAccent]);
-  const styles = useMemo(() => makeStyles(ACCENT), [ACCENT]);
+  // Keep the user's real accent as the fill and invert the LABEL against it
+  // (theme.onAccent). This replaces a local hack that darkened the accent itself
+  // whenever it was light — which silently threw away the equipped cosmetic.
+  const { theme } = useTheme();
+  const ACCENT = theme.accent || '#FFFFFF';
+  const ON_ACCENT = theme.onAccent || '#0B0B0D';
+  const styles = useMemo(() => makeStyles(ACCENT, ON_ACCENT), [ACCENT, ON_ACCENT]);
   const PERMISSION_STEPS = useMemo(() => getPermissionSteps(t), [t]);
   const [isVisible, setIsVisible] = useState(false);
   const [currentStep, setCurrentStep] = useState(0);
@@ -86,11 +88,18 @@ export const PermissionsOnboarding = () => {
       if (currentStep < 0 || currentStep >= PERMISSION_STEPS.length) return;
 
       const stepId = PERMISSION_STEPS[currentStep].id;
-      if (stepId !== 'accessibility' || Platform.OS !== 'android') return;
-      if (typeof AppBlocker?.isAccessibilityServiceEnabled !== 'function') return;
+      if (Platform.OS !== 'android') return;
+      // Both of these are granted in a system Settings screen, so we can only
+      // learn the result by re-checking when the user comes back to us.
+      const checker = stepId === 'accessibility'
+        ? AppBlocker?.isAccessibilityServiceEnabled
+        : stepId === 'overlay'
+          ? AppBlocker?.hasOverlayPermission
+          : null;
+      if (typeof checker !== 'function') return;
 
       try {
-        const isEnabled = await AppBlocker.isAccessibilityServiceEnabled();
+        const isEnabled = await checker.call(AppBlocker);
         if (!isEnabled || grantedStatus[stepId]) return;
 
         setGrantedStatus((previous) => ({ ...previous, [stepId]: true }));
@@ -100,7 +109,7 @@ export const PermissionsOnboarding = () => {
           setTimeout(() => { markCompleted().catch(() => {}); }, 600);
         }
       } catch (error) {
-        console.warn('[PermissionsOnboarding] Accessibility check failed:', error?.message || error);
+        console.warn(`[PermissionsOnboarding] ${stepId} check failed:`, error?.message || error);
       }
     });
     return () => subscription.remove();
@@ -178,6 +187,24 @@ export const PermissionsOnboarding = () => {
               t('permissionsOnboarding.enableAccessibilityMessage')
             );
             return;
+          }
+        } else if (stepId === 'overlay') {
+          if (
+            typeof AppBlocker?.hasOverlayPermission !== 'function'
+            || typeof AppBlocker?.requestOverlayPermission !== 'function'
+          ) {
+            // Older native build without these methods — don't dead-end the user.
+            granted = true;
+          } else {
+            granted = await AppBlocker.hasOverlayPermission();
+            if (!granted) {
+              AppBlocker.requestOverlayPermission();
+              Alert.alert(
+                t('permissionsOnboarding.actionRequiredTitle'),
+                t('permissionsOnboarding.enableOverlayMessage')
+              );
+              return;
+            }
           }
         }
       } else if (stepId === 'storage') {
@@ -259,7 +286,11 @@ export const PermissionsOnboarding = () => {
                     {isGranted ? (
                       <Check color="#34D399" size={16} />
                     ) : (
-                      <Text style={[styles.stepNodeText, (isPast || isCurrent) && { color: '#FFF' }]}>{index + 1}</Text>
+                      <Text style={[
+                        styles.stepNodeText,
+                        isPast && styles.stepNodeTextPast,
+                        isCurrent && styles.stepNodeTextCurrent,
+                      ]}>{index + 1}</Text>
                     )}
                   </View>
 
@@ -302,7 +333,7 @@ export const PermissionsOnboarding = () => {
   );
 };
 
-const makeStyles = (ACCENT) => StyleSheet.create({
+const makeStyles = (ACCENT, ON_ACCENT) => StyleSheet.create({
   modalOverlay: {
     flex: 1,
     backgroundColor: Platform.OS === 'android' ? 'rgba(0,0,0,0.5)' : '#09090B',
@@ -362,6 +393,9 @@ const makeStyles = (ACCENT) => StyleSheet.create({
   // Was #71717A on the #27272A node — 3.08:1 for a step number the user reads
   // to know where they are. #A1A1AA gives 5.9:1.
   stepNodeText: { color: '#A1A1AA', fontWeight: '700', fontSize: 12 },
+  // Completed nodes are a translucent green wash over the dark sheet, so a
+  // light label is correct there — only the accent-filled node has to invert.
+  stepNodeTextPast: { color: '#FFFFFF' },
   
   card: {
     flex: 1,
@@ -392,5 +426,7 @@ const makeStyles = (ACCENT) => StyleSheet.create({
     borderRadius: 8,
     alignItems: 'center',
   },
-  grantBtnText: { color: '#FFF', fontWeight: '600', fontSize: 14 },
+  grantBtnText: { color: ON_ACCENT, fontWeight: '600', fontSize: 14 },
+  // The step number sits on an accent-filled node, so it inverts too.
+  stepNodeTextCurrent: { color: ON_ACCENT },
 });

@@ -17,13 +17,19 @@
  *  3. Rebuild the dev/production APK (native module).
  */
 
-import { Platform } from 'react-native';
+import { NativeModules, Platform } from 'react-native';
 
 // Product identifiers — MUST match the IDs created in Play Console + RevenueCat.
+//
+// `pro_lifetime` is deliberately ABSENT and must not be created in Play Console.
+// A lifetime plan is a permanent liability: it owes a monthly credit allotment
+// forever against a single payment, with no recurring revenue to fund it. It is
+// trivial to add later and impossible to withdraw once a single copy is sold.
+// The SERVER still understands plan_type='lifetime' (owner/dev accounts use it,
+// and the webhook stays defensive), it simply cannot be purchased.
 export const PRODUCTS = {
   PRO_MONTHLY: 'pro_monthly',
   PRO_YEARLY: 'pro_yearly',
-  PRO_LIFETIME: 'pro_lifetime',
   TOKENS_50: 'tokens_50',
   TOKENS_150: 'tokens_150',
   TOKENS_500: 'tokens_500',
@@ -36,12 +42,27 @@ const RC_API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_ANDROID_KEY || '';
 let Purchases = null;
 let configured = false;
 
-// Lazily load the native SDK; returns null if not installed.
+/**
+ * Lazily load the SDK, returning null unless it is genuinely usable.
+ *
+ * Checking that `require()` resolves is NOT enough. Once the npm package is
+ * installed the JS wrapper always resolves, but the NATIVE module only exists
+ * after a fresh dev/production build — an OTA update cannot add it. Without the
+ * `NativeModules.RNPurchases` check, installing the package and setting the API
+ * key would make `isBillingAvailable()` report true on an old binary, and every
+ * purchase would fail with an opaque native error instead of the honest
+ * "Coming Soon" path.
+ */
 const getSDK = () => {
-  if (Purchases !== null) return Purchases;
+  if (Purchases !== null) return Purchases || null;
   try {
-    // eslint-disable-next-line global-require
-    Purchases = require('react-native-purchases').default;
+    if (!NativeModules.RNPurchases) {
+      Purchases = false; // package present, native side not built in yet
+      return null;
+    }
+    // Required lazily, not at module scope, so the bundle never touches the SDK
+    // on a platform or build where it cannot work.
+    Purchases = require('react-native-purchases').default || false;
   } catch (_e) {
     Purchases = false; // sentinel: not installed
   }

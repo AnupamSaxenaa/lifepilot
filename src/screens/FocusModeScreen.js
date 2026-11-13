@@ -5,16 +5,18 @@ import * as Brightness from 'expo-brightness';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { StatusBar } from 'expo-status-bar';
 import { Brain, Clock, Coffee, Gamepad2, Info, Moon, Music, Pause, Pizza, Play, Save, Sun, X, Zap } from 'lucide-react-native';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Alert, Animated, BackHandler, Easing, KeyboardAvoidingView, Modal, Platform, StyleSheet, Text, TextInput, TouchableOpacity, View, useWindowDimensions } from 'react-native';
+import { Alert, Animated, AppState, BackHandler, Easing, KeyboardAvoidingView, Modal, Platform, StyleSheet, Text, TextInput, TouchableOpacity, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
 import { getCoachAdvice } from '../lib/AIEngine';
-import { addTask, cacheTasks } from '../lib/dataManager';
-import { supabase } from '../lib/supabase';
-import { syncToSupabase } from '../lib/syncQueue';
+import { addTask, getCurrentUserId, toggleTaskCompletion } from '../lib/dataManager';
+import { getSyncState } from '../lib/syncQueue';
+import { recordFocusSession } from '../utils/focusSessions';
 import { Storage } from '../utils/storage';
+
+const BREAK_ICONS = [Coffee, Music, Gamepad2, Moon, Pizza, Clock];
 
 export default function FocusModeScreen() {
   const { t } = useTranslation();
@@ -22,12 +24,17 @@ export default function FocusModeScreen() {
   const isLandscape = width > height;
   const insets = useSafeAreaInsets();
   const ACCENT = useTheme().theme.accent;
-  const styles = useMemo(() => makeStyles(ACCENT), [ACCENT]);
+  const ON_ACCENT = useTheme().theme.onAccent || '#0B0B0D';
+  const styles = useMemo(() => makeStyles(ACCENT, ON_ACCENT), [ACCENT, ON_ACCENT]);
   const navigation = useNavigation();
   const route = useRoute();
   
   // The task we are focusing on
   const { task } = route.params || {};
+
+  // Brightness State
+  const [showBrightnessModal, setShowBrightnessModal] = useState(false);
+  const [brightnessLevel, setBrightnessLevel] = useState(0.5);
 
   // Orientation Unlock & Local Brightness
   useEffect(() => {
@@ -47,10 +54,6 @@ export default function FocusModeScreen() {
     };
   }, []);
 
-  // Brightness State
-  const [showBrightnessModal, setShowBrightnessModal] = useState(false);
-  const [brightnessLevel, setBrightnessLevel] = useState(0.5);
-
   // Core Timer State
   const [totalSeconds, setTotalSeconds] = useState(25 * 60);
   const [secondsLeft, setSecondsLeft] = useState(25 * 60);
@@ -65,8 +68,7 @@ export default function FocusModeScreen() {
   const [showQuitModal, setShowQuitModal] = useState(false);
   const [toughLoveMessage, setToughLoveMessage] = useState(t('focusMode.defaultToughLoveMessage'));
 
-  // AI Flow Coach State
-  const [isCoaching, setIsCoaching] = useState(true);
+  // AI Flow Coach is optional enhancement; the local timer renders immediately.
   const [coachAdvice, setCoachAdvice] = useState('');
 
   // Custom Time State
@@ -74,9 +76,8 @@ export default function FocusModeScreen() {
   const [customMinutes, setCustomMinutes] = useState('');
 
   // Random Break Icon State
-  const breakIcons = [Coffee, Music, Gamepad2, Moon, Pizza, Clock];
-  const [RandomBreakIcon, setRandomBreakIcon] = useState(() => breakIcons[0]);
-  const breakIconOpacity = useRef(new Animated.Value(1)).current;
+  const [RandomBreakIcon, setRandomBreakIcon] = useState(() => BREAK_ICONS[0]);
+  const [breakIconOpacity] = useState(() => new Animated.Value(1));
 
   // Cycle break icons every 5 seconds
   useEffect(() => {
@@ -84,20 +85,26 @@ export default function FocusModeScreen() {
       Animated.sequence([
         Animated.timing(breakIconOpacity, { toValue: 0, duration: 300, useNativeDriver: true }),
       ]).start(() => {
-        setRandomBreakIcon(() => breakIcons[Math.floor(Math.random() * breakIcons.length)]);
+        setRandomBreakIcon(() => BREAK_ICONS[Math.floor(Math.random() * BREAK_ICONS.length)]);
         Animated.timing(breakIconOpacity, { toValue: 1, duration: 300, useNativeDriver: true }).start();
       });
     }, 5000);
     return () => clearInterval(iconInterval);
-  }, []);
+  }, [breakIconOpacity]);
 
   const timerRef = useRef(null);
-  const progressAnim = useRef(new Animated.Value(0)).current;
-  const pulseAnim = useRef(new Animated.Value(1)).current;
+  const [progressAnim] = useState(() => new Animated.Value(0));
+  const [pulseAnim] = useState(() => new Animated.Value(1));
   const originalFocusTimeRef = useRef(25 * 60);
+  const timerTouchedRef = useRef(false);
   
   // Progress tracking states
   const [timeSpentWork, setTimeSpentWork] = useState(0);
+  // Work seconds counted but not yet persisted. `timeSpentWork` is display
+  // state; this ref is the ledger, so a flush can never lose or double-count
+  // time regardless of React batching.
+  const unbankedWorkRef = useRef(0);
+  const sessionStartRef = useRef(null);
   const [timeSpentBreak, setTimeSpentBreak] = useState(0);
   const [showStats, setShowStats] = useState(false);
   
@@ -142,45 +149,92 @@ export default function FocusModeScreen() {
     };
   }, []);
 
-  // AI Flow Coach (Initial Setup)
+  // AI Flow Coach (optional enhancement). The normal 25-minute timer is
+  // usable immediately; slow/offline advice is ignored after a short UI budget.
   useEffect(() => {
-    if (!task) {
-      setIsCoaching(false);
-      return;
-    }
+    if (!task) return undefined;
+    let active = true;
+    let expired = false;
+    const deadline = setTimeout(() => { expired = true; }, 1500);
 
-    const runCoach = async () => {
+    (async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (!session) { setIsCoaching(false); return; }
-
-        const profileReq = await supabase.from('profiles').select('ai_memory').eq('id', session.user.id).single();
-        const memory = profileReq?.data?.ai_memory || "No memory yet.";
-
-        // Find upcoming tasks to prevent overlap
-        const allTasks = await Storage.get(`tasks_${session.user.id}`) || [];
+        const userId = await getCurrentUserId();
+        if (!userId || !active) return;
+        const memory = await Storage.get(`aimemory_${userId}`) || 'No memory yet.';
+        const allTasks = await Storage.get(`tasks_${userId}`) || [];
         const now = new Date();
-        const upcoming = allTasks.filter(t => !t.is_completed && t.id !== task.id && t.reminder_time && new Date(t.reminder_time) > now);
-        upcoming.sort((a, b) => new Date(a.reminder_time) - new Date(b.reminder_time));
-        const nextTaskInfo = upcoming.length > 0 ? `The next task (${upcoming[0].title}) is scheduled at ${new Date(upcoming[0].reminder_time).toLocaleTimeString()}. DO NOT let this focus session overlap with it.` : "No immediate upcoming tasks.";
+        const upcoming = allTasks
+          .filter((item) => (
+            !item.is_completed
+            && item.id !== task.id
+            && item.reminder_time
+            && new Date(item.reminder_time) > now
+          ))
+          .sort((left, right) => new Date(left.reminder_time) - new Date(right.reminder_time));
+        const nextTaskInfo = upcoming.length > 0
+          ? `The next task (${upcoming[0].title}) is scheduled at ${new Date(upcoming[0].reminder_time).toLocaleTimeString()}. DO NOT let this focus session overlap with it.`
+          : 'No immediate upcoming tasks.';
+        if (!getSyncState().online) return;
 
         const response = await getCoachAdvice(task.title, nextTaskInfo, memory);
-        if (response && response.minutes) {
-          const secs = parseInt(response.minutes, 10) * 60;
-          setTotalSeconds(secs);
-          setSecondsLeft(secs);
-          if (response.advice) setCoachAdvice(response.advice);
-          if (response.tough_love) setToughLoveMessage(response.tough_love);
+        if (!active || expired) return;
+        if (response?.minutes && !timerTouchedRef.current) {
+          const minutes = parseInt(response.minutes, 10);
+          if (Number.isFinite(minutes) && minutes > 0) {
+            const secs = minutes * 60;
+            setTotalSeconds(secs);
+            setSecondsLeft(secs);
+          }
         }
-      } catch (err) {
-        console.log("Coach failed", err);
-      } finally {
-        setIsCoaching(false);
+        if (response?.advice) setCoachAdvice(response.advice);
+        if (response?.tough_love) setToughLoveMessage(response.tough_love);
+      } catch (error) {
+        console.log('Coach unavailable; using local timer:', error?.message || error);
       }
-    };
+    })();
 
-    runCoach();
+    return () => {
+      active = false;
+      clearTimeout(deadline);
+    };
   }, [task]);
+
+  // Bank whatever work time has accumulated. Called when a sitting ends, when
+  // the app goes to the background, and on unmount — because Focus Mode used to
+  // discard every second the moment the screen closed.
+  const flushFocusSession = useCallback(async () => {
+    const seconds = unbankedWorkRef.current;
+    if (seconds <= 0) return;
+    // Zero the ledger BEFORE awaiting, so a second flush racing this one
+    // cannot bank the same seconds twice.
+    unbankedWorkRef.current = 0;
+    const startedAt = sessionStartRef.current;
+    sessionStartRef.current = null;
+    try {
+      const uid = await getCurrentUserId();
+      if (!uid) return;
+      await recordFocusSession(uid, {
+        seconds,
+        startedAt: startedAt || new Date(Date.now() - seconds * 1000),
+        endedAt: new Date(),
+        taskId: task?.id ?? null,
+      });
+    } catch (_e) {
+      // Never let stat bookkeeping break the timer.
+    }
+  }, [task?.id]);
+
+  // Background/unmount safety net.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next !== 'active') flushFocusSession();
+    });
+    return () => {
+      sub.remove();
+      flushFocusSession();
+    };
+  }, [flushFocusSession]);
 
   // Timer Logic
   useEffect(() => {
@@ -192,6 +246,7 @@ export default function FocusModeScreen() {
             setIsRunning(false);
             if (!isBreakRef.current) {
               setTimeSpentWork(t => t + 1);
+              unbankedWorkRef.current += 1;
               handleTimerComplete();
             } else {
               setTimeSpentBreak(t => t + 1);
@@ -199,8 +254,13 @@ export default function FocusModeScreen() {
             }
             return 0;
           }
-          if (isBreakRef.current) setTimeSpentBreak(t => t + 1);
-          else setTimeSpentWork(t => t + 1);
+          if (isBreakRef.current) {
+            setTimeSpentBreak(t => t + 1);
+          } else {
+            setTimeSpentWork(t => t + 1);
+            unbankedWorkRef.current += 1;
+            if (!sessionStartRef.current) sessionStartRef.current = new Date();
+          }
           return prev - 1;
         });
       }, 1000);
@@ -233,7 +293,7 @@ export default function FocusModeScreen() {
     }).start();
   }, [secondsLeft, totalSeconds]);
 
-  const handleTimerComplete = () => {
+  function handleTimerComplete() {
     Alert.alert(
       t('focusMode.sessionCompleteTitle'),
       t('focusMode.sessionCompleteMessage'),
@@ -243,16 +303,16 @@ export default function FocusModeScreen() {
         { text: t('focusMode.finishedButton'), onPress: () => completeTaskAndExit() }
       ]
     );
-  };
+  }
 
-  const completeTaskAndExit = async () => {
+  async function completeTaskAndExit() {
     if (task) {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session) {
+        const userId = await getCurrentUserId();
+        if (userId) {
           // ✅ CRITICAL FIX: Always reload the absolute latest tasks from storage
           // This prevents stale data from overwriting recent changes
-          const latestTasks = await Storage.get(`tasks_${session.user.id}`) || [];
+          const latestTasks = await Storage.get(`tasks_${userId}`) || [];
           
           console.log('[FocusMode] Loaded latest tasks:', latestTasks.length);
           console.log('[FocusMode] Looking for task:', task.id);
@@ -274,26 +334,8 @@ export default function FocusModeScreen() {
             return;
           }
           
-          // Update ONLY this task - don't touch any others
-          const updatedTasks = latestTasks.map(t =>
-            t.id === task.id 
-              ? { ...t, is_completed: true, completed_at: new Date().toISOString() }
-              : t  // Keep all other tasks exactly as they are
-          );
-          
           console.log('[FocusMode] Updating task completion in cache');
-          
-          // Save back to cache
-          await cacheTasks(session.user.id, updatedTasks);
-          
-          // Sync to Supabase (fire and forget)
-          syncToSupabase('tasks', 'update',
-            { is_completed: true, completed_at: new Date().toISOString() },
-            { column: 'id', value: task.id }
-          ).catch(err => {
-            console.error('[FocusMode] Sync failed:', err);
-          });
-          
+          await toggleTaskCompletion(userId, latestTasks, task.id, false);
           console.log('[FocusMode] Task marked as completed successfully');
         }
       } catch (err) {
@@ -303,17 +345,17 @@ export default function FocusModeScreen() {
       }
     }
     navigation.goBack();
-  };
+  }
 
-  const startBreak = (secs) => {
+  function startBreak(secs) {
     originalFocusTimeRef.current = secondsLeft;
     setIsBreak(true);
     setTotalSeconds(secs);
     setSecondsLeft(secs);
     setIsRunning(true);
-  };
+  }
 
-  const endBreak = () => {
+  function endBreak() {
     setIsBreak(false);
     setIsRunning(false);
     if (originalFocusTimeRef.current > 0) {
@@ -323,9 +365,10 @@ export default function FocusModeScreen() {
       setTotalSeconds(25 * 60);
       setSecondsLeft(25 * 60);
     }
-  };
+  }
 
   const toggleTimer = () => {
+    timerTouchedRef.current = true;
     setIsRunning(!isRunning);
   };
 
@@ -358,8 +401,8 @@ export default function FocusModeScreen() {
       return;
     }
     
-    const { data: { session } } = await supabase.auth.getSession();
-    if (session) {
+    const userId = await getCurrentUserId();
+    if (userId) {
       // Save to 'inbox' without scheduling it for Today
       const newTask = {
         title: dumpText.trim(),
@@ -371,10 +414,10 @@ export default function FocusModeScreen() {
       };
       
       // Load the current cache so we don't wipe out other tasks
-      const currentCache = await Storage.get(`tasks_${session.user.id}`) || [];
+      const currentCache = await Storage.get(`tasks_${userId}`) || [];
       
       // Fire and forget so we can instantly go back to focus
-      addTask(session.user.id, currentCache, newTask, () => {}).then();
+      addTask(userId, currentCache, newTask, () => {}).then();
     }
     
     setDumpText('');
@@ -386,19 +429,6 @@ export default function FocusModeScreen() {
     const s = secs % 60;
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
-
-  // Interpolate progress to ring height/width
-  const ringSize = 300;
-  
-  if (isCoaching) {
-    return (
-      <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
-        <Brain color={ACCENT} size={64} style={{ marginBottom: 20 }} />
-        <Text style={styles.coachTitle}>{t('focusMode.coachAnalyzing')}</Text>
-        <Text style={styles.coachSub}>{t('focusMode.coachSubtitle')}</Text>
-      </View>
-    );
-  }
 
   return (
     <View style={[styles.container, { paddingTop: insets.top, paddingLeft: insets.left, paddingRight: insets.right }]}>
@@ -569,7 +599,7 @@ export default function FocusModeScreen() {
             <Brain color={ACCENT} size={48} style={{ alignSelf: 'center', marginBottom: 16 }} />
             <Text style={styles.modalTitle}>{t('focusMode.quittingTitle')}</Text>
             
-            <Text style={styles.toughLoveText}>"{toughLoveMessage}"</Text>
+            <Text style={styles.toughLoveText}>{`“${toughLoveMessage}”`}</Text>
 
             <View style={{ marginTop: 32 }}>
               <TouchableOpacity style={styles.resumeBtn} onPress={resumeFromQuit}>
@@ -606,6 +636,7 @@ export default function FocusModeScreen() {
               <TouchableOpacity style={styles.modalSave} onPress={() => {
                 const mins = parseInt(customMinutes, 10);
                 if (!isNaN(mins) && mins > 0) {
+                  timerTouchedRef.current = true;
                   setTotalSeconds(mins * 60);
                   setSecondsLeft(mins * 60);
                 }
@@ -660,7 +691,7 @@ export default function FocusModeScreen() {
   );
 }
 
-const makeStyles = (ACCENT) => StyleSheet.create({
+const makeStyles = (ACCENT, ON_ACCENT) => StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#000',
@@ -890,7 +921,7 @@ const makeStyles = (ACCENT) => StyleSheet.create({
     justifyContent: 'center',
   },
   modalSaveText: {
-    color: '#fff',
+    color: ON_ACCENT,
     fontWeight: '600',
     fontSize: 16,
   },
@@ -925,7 +956,7 @@ const makeStyles = (ACCENT) => StyleSheet.create({
     marginBottom: 12,
   },
   resumeText: {
-    color: '#fff',
+    color: ON_ACCENT,
     fontWeight: '700',
     fontSize: 16,
   },

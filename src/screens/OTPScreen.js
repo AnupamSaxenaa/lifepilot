@@ -12,6 +12,7 @@ import {
     AuthStatus,
     useAuthPalette,
 } from '../components/auth/AuthKit';
+import { setAuthenticatedUser } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
 
 export const OTPScreen = ({ navigation, route }) => {
@@ -19,6 +20,17 @@ export const OTPScreen = ({ navigation, route }) => {
   const palette = useAuthPalette();
   
   const email = route?.params?.email || 'your email';
+  const returnTo = route?.params?.returnTo;
+  const inviteToken = route?.params?.inviteToken;
+  const postAuthRoute = inviteToken
+    ? {
+        name: 'InviteAcceptance',
+        params: {
+          ...(returnTo ? { returnTo } : {}),
+          token: inviteToken,
+        },
+      }
+    : { name: 'Dashboard' };
 
   const [code, setCode] = useState(['', '', '', '', '', '', '', '']);
   const [timer, setTimer] = useState(30);
@@ -59,23 +71,32 @@ export const OTPScreen = ({ navigation, route }) => {
     setLoading(true);
     setErrorText('');
 
-    const { error } = await supabase.auth.verifyOtp({
+    const { data, error } = await supabase.auth.verifyOtp({
       email,
       token: fullCode,
       type: 'signup',
     });
 
-    setLoading(false);
-
     if (error) {
+      setLoading(false);
       setErrorText(error.message);
       return;
     }
 
-    // Navigate to Dashboard upon success
+    const verifiedUser = data?.session?.user || data?.user;
+    if (!verifiedUser?.id) {
+      setLoading(false);
+      setErrorText(t('login.errorSignInCancelled'));
+      return;
+    }
+
+    // The OTP creates the real session. Activate that exact UUID and seed its
+    // own name/username before Dashboard reads any profile cache.
+    await setAuthenticatedUser(verifiedUser);
+    setLoading(false);
     navigation.reset({
       index: 0,
-      routes: [{ name: 'Dashboard' }],
+      routes: [postAuthRoute],
     });
   };
 

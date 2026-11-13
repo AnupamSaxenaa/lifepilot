@@ -71,8 +71,10 @@ const hhmmToDate = (hhmm) => {
 export const ScheduleModal = ({ isVisible, onClose, userId, onChange }) => {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
-  const ACCENT = useTheme().theme.accent;
-  const styles = useMemo(() => makeStyles(ACCENT), [ACCENT]);
+  const { theme } = useTheme();
+  const ACCENT = theme.accent;
+  const ON_ACCENT = theme.onAccent || '#0B0B0D';
+  const styles = useMemo(() => makeStyles(ACCENT, ON_ACCENT), [ACCENT, ON_ACCENT]);
   const [schedules, setSchedules] = useState([]);
   const [showBuilder, setShowBuilder] = useState(false);
 
@@ -114,7 +116,17 @@ export const ScheduleModal = ({ isVisible, onClose, userId, onChange }) => {
   };
 
   useEffect(() => {
-    if (isVisible) load();
+    if (!isVisible || !userId) return undefined;
+    let active = true;
+
+    // Make the asynchronous storage boundary explicit and ignore a late response
+    // after the sheet closes or switches users. Existing rows stay visible while
+    // this refresh runs, preserving the cache-first experience.
+    getSchedules(userId).then((list) => {
+      if (active) setSchedules(list);
+    }).catch(() => {});
+
+    return () => { active = false; };
   }, [isVisible, userId]);
 
   const toggleDay = (d) => {
@@ -314,7 +326,7 @@ export const ScheduleModal = ({ isVisible, onClose, userId, onChange }) => {
   );
 };
 
-const makeStyles = (ACCENT) => StyleSheet.create({
+const makeStyles = (ACCENT, ON_ACCENT) => StyleSheet.create({
   container: { flex: 1, backgroundColor: BG },
   header: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
@@ -353,7 +365,7 @@ const makeStyles = (ACCENT) => StyleSheet.create({
   },
   dayChipActive: { backgroundColor: ACCENT, borderColor: ACCENT },
   dayChipText: { color: MUTED, fontSize: 13, fontWeight: '700' },
-  dayChipTextActive: { color: '#000' },
+  dayChipTextActive: { color: ON_ACCENT },
   presetRow: { flexDirection: 'row', gap: 8, marginTop: 10 },
   presetBtn: {
     paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, backgroundColor: '#121214',
@@ -380,5 +392,5 @@ const makeStyles = (ACCENT) => StyleSheet.create({
   cancelBtn: { flex: 1, alignItems: 'center', paddingVertical: 14, borderRadius: 12, borderWidth: 1, borderColor: BORDER },
   cancelBtnText: { color: MUTED, fontSize: 14, fontWeight: '700' },
   saveBtn: { flex: 2, alignItems: 'center', paddingVertical: 14, borderRadius: 12, backgroundColor: ACCENT },
-  saveBtnText: { color: '#000', fontSize: 14, fontWeight: '800' },
+  saveBtnText: { color: ON_ACCENT, fontSize: 14, fontWeight: '800' },
 });

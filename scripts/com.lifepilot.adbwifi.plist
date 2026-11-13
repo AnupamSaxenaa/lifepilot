@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.lifepilot.adbwifi</string>
+
+  <!-- --no-deep keeps scheduled runs cheap: probe + subnet sweep only, never
+       the multi-minute ephemeral port scan. Run the script by hand with no
+       flags after a phone reboot, when the pinned port is gone. -->
+  <!-- Must NOT point into ~/Desktop or ~/Documents: macOS TCC denies launchd
+       execution there ("Operation not permitted"). npm run adb:wifi:install
+       copies the script to ~/.local/bin, which is not protected. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/praveenkumarsaxena/.local/bin/lifepilot-adb-wifi</string>
+    <string>--quiet</string>
+    <string>--no-deep</string>
+  </array>
+
+  <key>StartInterval</key>
+  <integer>120</integer>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- launchd starts with a minimal PATH; adb lives in Homebrew's bin. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/lifepilot-adbwifi.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/lifepilot-adbwifi.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LowPriorityIO</key>
+  <true/>
+</dict>
+</plist>

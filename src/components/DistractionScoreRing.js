@@ -17,9 +17,9 @@ import Svg, { Circle } from 'react-native-svg';
 const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
 const getScoreColor = (score) => {
-  if (score <= 40) return '#FB7185';   // danger
-  if (score <= 70) return '#FBBF24';   // warning
-  return '#34D399';                    // healthy
+  if (score <= 40) return '#C47D84';
+  if (score <= 70) return '#C4A261';
+  return '#6FAD8E';
 };
 
 export const DistractionScoreRing = ({ score = 0, size = 180, strokeWidth = 10, label }) => {
@@ -35,7 +35,7 @@ export const DistractionScoreRing = ({ score = 0, size = 180, strokeWidth = 10, 
       duration: 1200,
       easing: Easing.out(Easing.cubic),
     });
-  }, [score]);
+  }, [animatedScore, score]);
 
   const animatedProps = useAnimatedProps(() => ({
     strokeDashoffset: circumference * (1 - animatedScore.value / 100),
@@ -44,22 +44,14 @@ export const DistractionScoreRing = ({ score = 0, size = 180, strokeWidth = 10, 
   const color = getScoreColor(score);
 
   return (
-    <View style={[styles.container, { 
-      width: size, 
-      height: size,
-      shadowColor: color,
-      shadowOffset: { width: 0, height: 0 },
-      shadowOpacity: 0.6,
-      shadowRadius: 20,
-      elevation: 10,
-    }]}>
+    <View style={[styles.container, { width: size, height: size }]}>
       <Svg width={size} height={size}>
         {/* Background track */}
         <Circle
           cx={center}
           cy={center}
           r={radius}
-          stroke="#27272A"
+          stroke="#202024"
           strokeWidth={strokeWidth}
           fill="transparent"
         />
@@ -98,16 +90,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   scoreText: {
-    fontSize: 42,
-    fontWeight: '800',
-    letterSpacing: -1,
+    fontSize: 40,
+    fontWeight: '300',
+    letterSpacing: -1.5,
   },
   labelText: {
-    color: '#71717a',
-    fontSize: 12,
-    fontWeight: '600',
-    letterSpacing: 1,
+    color: '#71717A',
+    fontSize: 10,
+    fontWeight: '500',
+    letterSpacing: 0.9,
     textTransform: 'uppercase',
-    marginTop: 2,
+    marginTop: 3,
   },
 });

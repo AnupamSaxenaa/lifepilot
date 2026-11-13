@@ -4,7 +4,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as IntentLauncher from 'expo-intent-launcher';
 import { Archive, ArrowLeft, BarChart3, Copy, Download, MoonStar, Plus, RotateCcw, Search, Star, Sunrise, Trash2, Upload } from 'lucide-react-native';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert, Animated, FlatList, Modal, Platform, ScrollView, Share, StyleSheet, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { NestableDraggableFlatList, NestableScrollContainer } from 'react-native-draggable-flatlist';
@@ -34,6 +34,7 @@ import {
     resetAlarms,
     updateAlarm
 } from '../lib/dataManager';
+import { readableOn } from '../theme/contrast';
 import { COLORS } from '../theme/theme';
 import { syncAlarmsToNotifications } from '../utils/AlarmManager';
 import { Storage } from '../utils/storage';
@@ -44,6 +45,13 @@ export const AlarmListScreen = ({ navigation }) => {
   // so this forces a repaint when the equipped accent changes) — Task 13.4.
   useAppTheme();
   const accent = COLORS.dark.accent;
+  // Chips are filled with `accent`, so their active label has to invert against
+  // it. `styles` is a module-level StyleSheet, hence the inline override.
+  const onAccent = COLORS.dark.onAccent || readableOn(accent);
+  const chipTxtActive = useMemo(
+    () => [styles.chipTxtActive, { color: onAccent }],
+    [onAccent],
+  );
   const [userId, setUserId] = useState(null);
   const [alarms, setAlarms] = useState([]);
   const [sortOrder, setSortOrder] = useState('time'); // 'time', 'active'
@@ -1082,7 +1090,7 @@ export const AlarmListScreen = ({ navigation }) => {
                       if (mode === 'fixed' && soundSelection.length > 1) setSoundSelection([soundSelection[0]]);
                     }}
                   >
-                    <Text style={[styles.chipTxt, soundRotateMode === mode && styles.chipTxtActive]}>{t(`alarmPremium.soundMode.${mode}`)}</Text>
+                    <Text style={[styles.chipTxt, soundRotateMode === mode && chipTxtActive]}>{t(`alarmPremium.soundMode.${mode}`)}</Text>
                   </TouchableOpacity>
                 ))}
               </View>
@@ -1108,7 +1116,7 @@ export const AlarmListScreen = ({ navigation }) => {
                           onLongPress={() => previewAlarmSound(sound.id, soundVolume)}
                           accessibilityLabel={t('alarmPremium.soundAccessibility', { sound: t(`alarmPremium.sounds.${sound.nameKey}`) })}
                         >
-                          <Text style={[styles.chipTxt, selected && styles.chipTxtActive]}>{t(`alarmPremium.sounds.${sound.nameKey}`)}</Text>
+                          <Text style={[styles.chipTxt, selected && chipTxtActive]}>{t(`alarmPremium.sounds.${sound.nameKey}`)}</Text>
                         </TouchableOpacity>
                         <TouchableOpacity onPress={() => toggleLibraryFavorite(sound.id)} accessibilityRole="button" accessibilityLabel={t('alarmPremium.favoriteSoundAccessibility')}>
                           <Star color={favored ? '#FBBF24' : '#71717A'} size={16} fill={favored ? '#FBBF24' : 'none'} />
@@ -1142,7 +1150,7 @@ export const AlarmListScreen = ({ navigation }) => {
                 <View style={styles.chipsWrap}>
                   {[0, 10, 30, 60].map((seconds) => (
                     <TouchableOpacity key={seconds} style={[styles.chip, fadeInSeconds === seconds && { backgroundColor: accent, borderColor: accent }]} onPress={() => setFadeInSeconds(seconds)}>
-                      <Text style={[styles.chipTxt, fadeInSeconds === seconds && styles.chipTxtActive]}>{seconds === 0 ? t('alarmList.ambientOff') : t('alarmPremium.secondsShort', { count: seconds })}</Text>
+                      <Text style={[styles.chipTxt, fadeInSeconds === seconds && chipTxtActive]}>{seconds === 0 ? t('alarmList.ambientOff') : t('alarmPremium.secondsShort', { count: seconds })}</Text>
                     </TouchableOpacity>
                   ))}
                 </View>
@@ -1162,7 +1170,7 @@ export const AlarmListScreen = ({ navigation }) => {
                     style={[styles.chip, vibrationPattern === v && { backgroundColor: accent, borderColor: accent }]}
                     onPress={() => setVibrationPattern(v)}
                   >
-                    <Text style={[styles.chipTxt, vibrationPattern === v && styles.chipTxtActive]}>{t(`alarmOptions.vibration.${v}`)}</Text>
+                    <Text style={[styles.chipTxt, vibrationPattern === v && chipTxtActive]}>{t(`alarmOptions.vibration.${v}`)}</Text>
                   </TouchableOpacity>
                 ))}
               </View>
@@ -1173,7 +1181,7 @@ export const AlarmListScreen = ({ navigation }) => {
               <Text style={styles.settingLabel}>{t('alarmOptions.labelTitle')}</Text>
               <View style={styles.chipsWrap}>
                 <TouchableOpacity style={[styles.chip, !labelKey && !labelText && styles.chipActive]} onPress={() => { setLabelKey(null); setLabelText(''); }}>
-                  <Text style={[styles.chipTxt, !labelKey && !labelText && styles.chipTxtActive]}>{t('alarmOptions.labelNone')}</Text>
+                  <Text style={[styles.chipTxt, !labelKey && !labelText && chipTxtActive]}>{t('alarmOptions.labelNone')}</Text>
                 </TouchableOpacity>
                 {LABEL_PRESETS.map((l) => (
                   <TouchableOpacity
@@ -1182,7 +1190,7 @@ export const AlarmListScreen = ({ navigation }) => {
                     onPress={() => { setLabelKey(l.key); setLabelText(''); setLabelColor(l.color); }}
                   >
                     <View style={[styles.labelDot, { backgroundColor: l.color }]} />
-                    <Text style={[styles.chipTxt, labelKey === l.key && !labelText && styles.chipTxtActive]}>{t(`alarmOptions.labels.${l.key}`)}</Text>
+                    <Text style={[styles.chipTxt, labelKey === l.key && !labelText && chipTxtActive]}>{t(`alarmOptions.labels.${l.key}`)}</Text>
                   </TouchableOpacity>
                 ))}
               </View>
@@ -1217,7 +1225,7 @@ export const AlarmListScreen = ({ navigation }) => {
                     style={[styles.chip, clockStyle === value && { backgroundColor: accent, borderColor: accent }]}
                     onPress={() => setClockStyle(value)}
                   >
-                    <Text style={[styles.chipTxt, clockStyle === value && styles.chipTxtActive]}>
+                    <Text style={[styles.chipTxt, clockStyle === value && chipTxtActive]}>
                       {t(`alarmPremium.clockStyles.${value}`)}
                     </Text>
                   </TouchableOpacity>
@@ -1231,7 +1239,7 @@ export const AlarmListScreen = ({ navigation }) => {
                     style={[styles.chip, backgroundMode === value && { backgroundColor: accent, borderColor: accent }]}
                     onPress={() => setBackgroundMode(value)}
                   >
-                    <Text style={[styles.chipTxt, backgroundMode === value && styles.chipTxtActive]}>
+                    <Text style={[styles.chipTxt, backgroundMode === value && chipTxtActive]}>
                       {t(`alarmPremium.backgroundModes.${value}`)}
                     </Text>
                   </TouchableOpacity>
@@ -1245,7 +1253,7 @@ export const AlarmListScreen = ({ navigation }) => {
                     style={[styles.chip, palette === value && { backgroundColor: accent, borderColor: accent }]}
                     onPress={() => setPalette(value)}
                   >
-                    <Text style={[styles.chipTxt, palette === value && styles.chipTxtActive]}>
+                    <Text style={[styles.chipTxt, palette === value && chipTxtActive]}>
                       {t(`alarmPremium.palettes.${value}`)}
                     </Text>
                   </TouchableOpacity>
@@ -1257,11 +1265,11 @@ export const AlarmListScreen = ({ navigation }) => {
               <Text style={styles.settingLabel}>{t('alarmCategories.title')}</Text>
               <View style={styles.chipsWrap}>
                 <TouchableOpacity style={[styles.chip, !category && { backgroundColor: accent, borderColor: accent }]} onPress={() => setCategory(null)}>
-                  <Text style={[styles.chipTxt, !category && styles.chipTxtActive]}>{t('alarmCategories.none')}</Text>
+                  <Text style={[styles.chipTxt, !category && chipTxtActive]}>{t('alarmCategories.none')}</Text>
                 </TouchableOpacity>
                 {ALARM_CATEGORIES.map((key) => (
                   <TouchableOpacity key={key} style={[styles.chip, category === key && { backgroundColor: accent, borderColor: accent }]} onPress={() => setCategory(key)}>
-                    <Text style={[styles.chipTxt, category === key && styles.chipTxtActive]}>{t(`alarmCategories.${key}`)}</Text>
+                    <Text style={[styles.chipTxt, category === key && chipTxtActive]}>{t(`alarmCategories.${key}`)}</Text>
                   </TouchableOpacity>
                 ))}
               </View>
@@ -1322,7 +1330,7 @@ export const AlarmListScreen = ({ navigation }) => {
                 <View style={styles.chipsWrap}>
                   {[10, 20, 30, 45, 60].map((minutes) => (
                     <TouchableOpacity key={minutes} style={[styles.chip, smartWakeWindow === minutes && { backgroundColor: accent, borderColor: accent }]} onPress={() => setSmartWakeWindow(minutes)}>
-                      <Text style={[styles.chipTxt, smartWakeWindow === minutes && styles.chipTxtActive]}>{t('alarmPremium.minutesShort', { count: minutes })}</Text>
+                      <Text style={[styles.chipTxt, smartWakeWindow === minutes && chipTxtActive]}>{t('alarmPremium.minutesShort', { count: minutes })}</Text>
                     </TouchableOpacity>
                   ))}
                 </View>
@@ -1342,7 +1350,7 @@ export const AlarmListScreen = ({ navigation }) => {
                     style={[styles.chip, ambientLeadMin === m && { backgroundColor: accent, borderColor: accent }]}
                     onPress={() => setAmbientLeadMin(m)}
                   >
-                    <Text style={[styles.chipTxt, ambientLeadMin === m && styles.chipTxtActive]}>
+                    <Text style={[styles.chipTxt, ambientLeadMin === m && chipTxtActive]}>
                       {m === 0 ? t('alarmList.ambientOff') : t('alarmPremium.minutesShort', { count: m })}
                     </Text>
                   </TouchableOpacity>
@@ -1367,7 +1375,7 @@ export const AlarmListScreen = ({ navigation }) => {
                       style={[styles.chip, holidayCountry === countryOption.code && { backgroundColor: accent, borderColor: accent }]}
                       onPress={() => setHolidayCountry(countryOption.code)}
                     >
-                      <Text style={[styles.chipTxt, holidayCountry === countryOption.code && styles.chipTxtActive]}>
+                      <Text style={[styles.chipTxt, holidayCountry === countryOption.code && chipTxtActive]}>
                         {countryOption.i18nKey ? t(countryOption.i18nKey, countryOption.name) : countryOption.name}
                       </Text>
                     </TouchableOpacity>
@@ -1385,7 +1393,7 @@ export const AlarmListScreen = ({ navigation }) => {
                   style={[styles.chip, missionSteps.length === 0 && { backgroundColor: accent, borderColor: accent }]}
                   onPress={() => setMissionSteps([])}
                 >
-                  <Text style={[styles.chipTxt, missionSteps.length === 0 && styles.chipTxtActive]}>{t('alarmChallenges.none')}</Text>
+                  <Text style={[styles.chipTxt, missionSteps.length === 0 && chipTxtActive]}>{t('alarmChallenges.none')}</Text>
                 </TouchableOpacity>
                 {availableChallenges.map((descriptor) => {
                   const selected = missionSteps.some((step) => step.id === descriptor.id);
@@ -1395,7 +1403,7 @@ export const AlarmListScreen = ({ navigation }) => {
                       style={[styles.chip, selected && { backgroundColor: accent, borderColor: accent }]}
                       onPress={() => toggleMissionStep(descriptor)}
                     >
-                      <Text style={[styles.chipTxt, selected && styles.chipTxtActive]}>{t(`alarmChallenges.${descriptor.id}`, descriptor.id)}</Text>
+                      <Text style={[styles.chipTxt, selected && chipTxtActive]}>{t(`alarmChallenges.${descriptor.id}`, descriptor.id)}</Text>
                     </TouchableOpacity>
                   );
                 })}
@@ -1489,7 +1497,7 @@ export const AlarmListScreen = ({ navigation }) => {
                       style={[styles.chip, snoozeDefaultMin === minutes && { backgroundColor: accent, borderColor: accent }]}
                       onPress={() => setSnoozeDefaultMin(minutes)}
                     >
-                      <Text style={[styles.chipTxt, snoozeDefaultMin === minutes && styles.chipTxtActive]}>{t('alarmPremium.minutesShort', { count: minutes })}</Text>
+                      <Text style={[styles.chipTxt, snoozeDefaultMin === minutes && chipTxtActive]}>{t('alarmPremium.minutesShort', { count: minutes })}</Text>
                     </TouchableOpacity>
                   ))}
                 </View>

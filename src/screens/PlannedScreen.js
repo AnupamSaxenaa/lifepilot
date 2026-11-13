@@ -30,7 +30,7 @@ import { GlassSidebar } from '../components/GlassSidebar';
 import { ScribbleStrike } from '../components/ScribbleStrike';
 import { useTheme as useAppTheme } from '../context/ThemeContext';
 import { useWidgetTaskSync } from '../hooks/useWidgetTaskSync';
-import { cacheTasks, loadProfile, loadTasks, toggleTaskImportance, updateTask } from '../lib/dataManager';
+import { cacheTasks, getCurrentUserId, loadProfile, loadTasks, toggleTaskImportance, updateTask } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
 import { syncToSupabase } from '../lib/syncQueue';
 import { COLORS } from '../theme/theme';
@@ -141,7 +141,9 @@ export const PlannedScreen = ({ navigation }) => {
   const [showMenu, setShowMenu] = useState(false);
 
   // Widget → app sync: reflect widget task toggles on resume / while foregrounded.
-  useWidgetTaskSync(userId, (fresh) => setTasks(fresh));
+  useWidgetTaskSync(userId, (fresh) => {
+    setTasks(Array.isArray(fresh) ? fresh : []);
+  });
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isCacheLoaded, setIsCacheLoaded] = useState(false);
   const [completingTaskIds, setCompletingTaskIds] = useState([]);
@@ -169,14 +171,14 @@ export const PlannedScreen = ({ navigation }) => {
 
   useEffect(() => {
     const init = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
-      setUserId(session.user.id);
+      const resolvedUserId = await getCurrentUserId();
+      if (!resolvedUserId) return;
+      setUserId(resolvedUserId);
       
       const [cachedProfile, cachedTasks] = await Promise.all([
-        loadProfile(session.user.id, (fresh) => setProfile(fresh)),
-        loadTasks(session.user.id, (fresh) => {
-          setTasks(fresh);
+        loadProfile(resolvedUserId, (fresh) => setProfile(fresh)),
+        loadTasks(resolvedUserId, (fresh) => {
+          setTasks(Array.isArray(fresh) ? fresh : []);
           setLoading(false);
           setIsCacheLoaded(true);
         })
@@ -184,7 +186,7 @@ export const PlannedScreen = ({ navigation }) => {
 
       if (cachedProfile) setProfile(cachedProfile);
       
-      if (cachedTasks) {
+      if (Array.isArray(cachedTasks)) {
         setTasks(cachedTasks);
         setLoading(false);
         setIsCacheLoaded(true);

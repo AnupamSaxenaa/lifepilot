@@ -5,14 +5,15 @@ import { useTranslation } from 'react-i18next';
 import { ScrollView, StyleSheet, Switch, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
-import { loadLists } from '../lib/dataManager';
-import { supabase } from '../lib/supabase';
+import { getCurrentUserId, loadLists } from '../lib/dataManager';
 import { Storage } from '../utils/storage';
 import { updateAllWidgets } from '../utils/widgetUpdater';
 
 export const WidgetSettingsScreen = ({ navigation }) => {
   const { t } = useTranslation();
-  const ACCENT = useTheme().theme.accent;
+  const { theme } = useTheme();
+  const ACCENT = theme.accent;
+  const ON_ACCENT = theme.onAccent || '#0B0B0D';
 
   const [opacity, setOpacity] = useState(90);
   const [listId, setListId] = useState('today');
@@ -34,10 +35,12 @@ export const WidgetSettingsScreen = ({ navigation }) => {
       setHideCompleted(savedHide === 'true');
       if (savedStyle) setBgStyle(savedStyle);
 
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session) {
-        const cached = await loadLists(session.user.id, (fresh) => setCustomLists(fresh || []));
-        if (cached) setCustomLists(cached);
+      const userId = await getCurrentUserId();
+      if (userId) {
+        const cached = await loadLists(userId, (fresh) => {
+          setCustomLists(Array.isArray(fresh) ? fresh : []);
+        });
+        if (Array.isArray(cached)) setCustomLists(cached);
       }
     };
     load();
@@ -206,7 +209,7 @@ export const WidgetSettingsScreen = ({ navigation }) => {
           disabled={isSaving}
           activeOpacity={0.85}
         >
-          <Text style={styles.saveButtonText}>
+          <Text style={[styles.saveButtonText, { color: ON_ACCENT }]}>
             {isSaving ? t('widgetSettings.applying') : t('widgetSettings.applyButton')}
           </Text>
         </TouchableOpacity>

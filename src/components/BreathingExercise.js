@@ -36,8 +36,10 @@ export const BreathingExercise = ({ onComplete, duration = 20, visible = true })
   useEffect(() => {
     if (!visible) return;
 
+    // secondsLeft is already initialized from duration when this session mounts.
+    // Resetting it synchronously here only forced a duplicate render before the
+    // timer started. The current owner mounts a fresh exercise for each session.
     // Countdown timer
-    setSecondsLeft(duration);
     timerRef.current = setInterval(() => {
       setSecondsLeft(prev => {
         if (prev <= 1) {

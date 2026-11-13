@@ -104,31 +104,80 @@ const patchGlobalFont = () => {
   }
   if (jsxRuntime.__lpFontPatched) return;
 
+  // Reference-stable weight objects, so the injected style never allocates a
+  // fresh object per element.
+  const WEIGHT_STYLES = Object.freeze(
+    Object.fromEntries(
+      Object.entries(LIGHTEN_WEIGHT).map(([from, to]) => [from, Object.freeze({ fontWeight: to })]),
+    ),
+  );
+  // Memoized results keyed on the caller's original style reference. Almost all
+  // styles come from StyleSheet.create and are stable ids or stable arrays, so
+  // this hits constantly. WeakMap for objects/arrays, Map for numeric ids.
+  const arrayCache = new WeakMap();
+  const idCache = new Map();
+  const flatCache = new WeakMap();
+
+  const flattenOnce = (style) => {
+    if (style == null) return null;
+    if (typeof style === 'number') {
+      let flat = idCache.get(style);
+      if (flat === undefined) {
+        try { flat = StyleSheet.flatten(style); } catch (_e) { flat = null; }
+        idCache.set(style, flat);
+      }
+      return flat;
+    }
+    if (typeof style !== 'object') return null;
+    let flat = flatCache.get(style);
+    if (flat === undefined) {
+      try { flat = StyleSheet.flatten(style); } catch (_e) { flat = null; }
+      flatCache.set(style, flat);
+    }
+    return flat;
+  };
+
   const injectFont = (type, props) => {
     if ((type !== Text && type !== TextInput) || !props) return props;
     const existing = props.style;
-    // Flatten so we can read the effective fontFamily/fontWeight even when the
-    // style is a registered StyleSheet id (number) or an array.
-    let flat;
-    try {
-      flat = existing ? StyleSheet.flatten(existing) : null;
-    } catch (_e) {
-      flat = null;
+
+    // Fast path: reuse the exact array produced for this style reference last
+    // time. This is what keeps the `style` prop IDENTITY stable across renders —
+    // previously a new array was built for every <Text> on every render, so
+    // React always saw a changed prop, always sent a native style update, and
+    // no memoized text-bearing component could ever bail out.
+    const cache = existing == null
+      ? null
+      : (typeof existing === 'number' ? idCache : (typeof existing === 'object' ? arrayCache : null));
+    if (cache) {
+      const cachedStyle = cache === idCache
+        ? idCache.get(`s:${existing}`)
+        : arrayCache.get(existing);
+      if (cachedStyle !== undefined) {
+        return cachedStyle === null ? props : { ...props, style: cachedStyle };
+      }
     }
+
+    const flat = flattenOnce(existing);
     const hasExplicitFont = !!(flat && flat.fontFamily);
     const base = (currentFontFamily && !hasExplicitFont)
       ? { fontFamily: currentFontFamily }
       : null;
-    // Map the current weight (default to a light weight when unspecified).
     const currentWeight = flat && flat.fontWeight != null ? String(flat.fontWeight) : 'normal';
-    const mappedWeight = LIGHTEN_WEIGHT[currentWeight] || null;
-    const weightOverride = mappedWeight ? { fontWeight: mappedWeight } : null;
-    if (!base && !weightOverride) return props;
-    return {
-      ...props,
-      // Order: injected font family → original style → weight override (wins).
-      style: [base, existing, weightOverride].filter(Boolean),
-    };
+    const mapped = WEIGHT_STYLES[currentWeight] || null;
+    // Already at the target weight: nothing to override, so skip the work.
+    const weightOverride = (mapped && mapped.fontWeight !== currentWeight) ? mapped : null;
+
+    if (!base && !weightOverride) {
+      if (cache === arrayCache) arrayCache.set(existing, null);
+      else if (cache === idCache) idCache.set(`s:${existing}`, null);
+      return props;
+    }
+
+    const nextStyle = [base, existing, weightOverride].filter(Boolean);
+    if (cache === arrayCache) arrayCache.set(existing, nextStyle);
+    else if (cache === idCache) idCache.set(`s:${existing}`, nextStyle);
+    return { ...props, style: nextStyle };
   };
 
   for (const key of ['jsx', 'jsxs', 'jsxDEV']) {
@@ -179,11 +228,18 @@ const applyPalette = (palette) => {
       target.primary = readable.accent;
       target.danger = readable.danger;
       target.success = readable.success;
+      // Labels/glyphs drawn ON those fills. Without these, anything reading the
+      // shared palette has no choice but to hardcode '#FFF' — which is
+      // invisible on the default white accent.
+      target.onAccent = readable.onAccent;
+      target.onSuccess = readable.onSuccess;
+      target.onDanger = readable.onDanger;
     }
     if (src.accent) {
       const readable = resolveReadablePalette({ bg: src.bg, accent: src.accent });
       // An accent that can't be seen against the background is not an accent.
       target.accent = scheme === 'dark' ? readable.accent : src.accent;
+      target.onAccent = readable.onAccent;
     }
   }
 };
@@ -207,11 +263,16 @@ const withReadableForeground = (t) => {
     text: t.text && t.text !== DEFAULT_THEME.text ? t.text : readable.text,
     muted: t.muted && t.muted !== DEFAULT_THEME.muted ? t.muted : readable.muted,
     accent: readable.accent,
+    // The colour any label/icon drawn ON the accent must use. The default accent
+    // is #FFFFFF, so a hardcoded white label is invisible — always pair
+    // `theme.accent` as a background with `theme.onAccent` as its foreground.
     onAccent: readable.onAccent,
     hairline: readable.hairline,
     fill: readable.fill,
     danger: readable.danger,
     success: readable.success,
+    onSuccess: readable.onSuccess,
+    onDanger: readable.onDanger,
     isLightBg: readable.isLightBg,
   };
 };

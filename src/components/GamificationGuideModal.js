@@ -1,4 +1,4 @@
-import { Award, Flame, Gem, Hexagon, X, Zap } from 'lucide-react-native';
+import { Award, CalendarDays, Gem, Hexagon, X, Zap } from 'lucide-react-native';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
@@ -101,7 +101,7 @@ export const GamificationGuideModal = ({ isVisible, onClose, gamestate }) => {
           {/* Streaks & Freezes */}
           <View style={styles.card}>
             <View style={styles.cardHeader}>
-              <Flame color={ACCENT} size={20} />
+              <CalendarDays color={ACCENT} size={20} />
               <Text style={styles.cardTitle}>{t('gamificationGuide.streaksFreezesTitle')}</Text>
             </View>
             <Text style={styles.cardDesc}>

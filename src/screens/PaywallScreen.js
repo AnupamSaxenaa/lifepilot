@@ -2,19 +2,22 @@ import { Check, X, Zap } from 'lucide-react-native';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-    ActivityIndicator, Alert, Dimensions,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator, Alert, Dimensions,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { usePro } from '../context/ProContext';
 import {
-    PRODUCTS, getOfferings,
-    isBillingAvailable,
-    purchasePackage, restorePurchases,
+  ENTITLEMENT_PRO,
+  PRODUCTS, getOfferings,
+  isBillingAvailable,
+  purchasePackage, restorePurchases,
 } from '../lib/purchases';
+import { readableOn } from '../theme/contrast';
 
 const { width } = Dimensions.get('window');
 
@@ -24,13 +27,17 @@ const SURFACE = '#0A0A0A';
 const BORDER = '#1C1C1E';
 const TEXT = '#FAFAFA';
 const MUTED = '#71717A';
+// Fixed rather than the equipped accent so the paywall reads consistently for
+// every user. Derived label, so it stays correct if ACCENT ever changes.
 const ACCENT = '#FFFFFF';
+const ON_ACCENT = readableOn(ACCENT);
 
 // Fallback display data (shown until live store prices load).
+// Lifetime is intentionally not offered — see the note on PRODUCTS in
+// src/lib/purchases.js.
 const PRO_PLANS = [
   { id: PRODUCTS.PRO_MONTHLY, titleKey: 'planMonthlyTitle', price: '₹49', perKey: 'planMonthlyPer', highlight: false },
   { id: PRODUCTS.PRO_YEARLY, titleKey: 'planYearlyTitle', price: '₹299', perKey: 'planYearlyPer', highlight: true, badgeKey: 'planYearlyBadge' },
-  { id: PRODUCTS.PRO_LIFETIME, titleKey: 'planLifetimeTitle', price: '₹699', perKey: 'planLifetimePer', highlight: false, badgeKey: 'planLifetimeBadge' },
 ];
 
 const TOKEN_PACKS = [
@@ -39,17 +46,43 @@ const TOKEN_PACKS = [
   { id: PRODUCTS.TOKENS_500, tokens: 500, price: '₹99', badgeKey: 'tokenBestValueBadge' },
 ];
 
+// EVERY line here must correspond to a gate that actually exists in the app.
+// Advertising a benefit with no gate behind it is a Play policy problem, not just
+// a UX one. Currently gated:
+//   featureMindfulLock  → FREE_LOCKED_APP_LIMIT in src/utils/mindfulLock.js,
+//                         enforced in MindfulLockSetupScreen (add) and
+//                         MindfulLockScreen (schedules).
+//   featureAiTokens     → SUBSCRIPTION_TOKENS in the revenuecat-webhook, on top
+//                         of the additive daily floor (migration 0032).
+//   featureThemes       → get_owned_cosmetics() (migration 0033) unions the
+//                         catalog for Pro, server-side.
+// Add a key here only in the same commit as the gate that makes it true.
+//
+// Deliberately NOT claimed:
+//
+//   "ad-free" — the app has no involuntary ads. No banners, interstitials or
+//   app-open ads exist, only the user-initiated rewarded ad in the credit store.
+//   There is nothing to remove, so it would be a hollow benefit.
+//
+//   featureRooms ("Host your own focus rooms") — the Pro gate EXISTS in
+//   CreateHustleRoomScreen, but `EXPO_PUBLIC_HUSTLERS_ENABLED` is set in neither
+//   the play-production profile nor the EAS production environment, so it
+//   defaults false and every rooms entry point is hidden in a STORE build
+//   (App.js:495, DashboardScreen.js:703, SettingsScreen.js:856). Advertising it
+//   would be selling a feature the shipped binary does not show.
+//   To re-enable: set EXPO_PUBLIC_HUSTLERS_ENABLED=true for store builds, verify
+//   rooms actually work in that build, THEN add 'featureRooms' back here. The
+//   translated strings are already in all 21 locales, so it is a one-line change.
 const PRO_FEATURE_KEYS = [
   'featureMindfulLock',
   'featureAiTokens',
-  'featureWidgetsThemes',
-  'featureHistoryAnalytics',
-  'featurePrioritySupport',
+  'featureThemes',
 ];
 
 export const PaywallScreen = ({ navigation }) => {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
+  const { refreshPro } = usePro();
   const [offering, setOffering] = useState(null);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState(null);
@@ -90,13 +123,21 @@ export const PaywallScreen = ({ navigation }) => {
     }
     setBusyId(productId);
     const res = await purchasePackage(pkg);
-    setBusyId(null);
 
     if (res.success) {
+      // Play has taken the money, but entitlement is granted by the billing
+      // webhook, which lands a moment later. Poll for it so the app unlocks now
+      // instead of on the next cold start.
+      await refreshPro({ awaitGrant: true });
+      setBusyId(null);
       Alert.alert(t('common.success'), t('paywall.purchaseSuccessMessage'), [
         { text: t('paywall.greatButton'), onPress: () => navigation.goBack() },
       ]);
-    } else if (res.userCancelled) {
+      return;
+    }
+
+    setBusyId(null);
+    if (res.userCancelled) {
       // silent
     } else {
       Alert.alert(t('paywall.purchaseFailedTitle'), t('paywall.purchaseFailedMessage'));
@@ -104,11 +145,30 @@ export const PaywallScreen = ({ navigation }) => {
   };
 
   const handleRestore = async () => {
-    if (!isBillingAvailable()) return;
+    // Never a silent no-op: Play requires a working Restore path, and a dead tap
+    // reads as a broken app. Say why instead of doing nothing.
+    if (!isBillingAvailable()) {
+      Alert.alert(t('paywall.comingSoonTitle'), t('paywall.comingSoonMessage'));
+      return;
+    }
     setBusyId('restore');
-    await restorePurchases();
+    const info = await restorePurchases();
     setBusyId(null);
-    Alert.alert(t('paywall.restoreTitle'), t('paywall.restoreMessage'));
+
+    if (!info) {
+      Alert.alert(t('paywall.restoreFailedTitle'), t('paywall.restoreFailedMessage'));
+      return;
+    }
+    // Report what actually came back rather than claiming success either way.
+    const restoredPro = !!info?.entitlements?.active?.[ENTITLEMENT_PRO];
+    if (restoredPro) await refreshPro({ awaitGrant: true });
+    if (restoredPro) {
+      Alert.alert(t('paywall.restoreTitle'), t('paywall.restoreMessage'), [
+        { text: t('paywall.greatButton'), onPress: () => navigation.goBack() },
+      ]);
+    } else {
+      Alert.alert(t('paywall.restoreTitle'), t('paywall.restoreNothingMessage'));
+    }
   };
 
   return (
@@ -228,7 +288,7 @@ const styles = StyleSheet.create({
     position: 'absolute', top: -9, left: 16, backgroundColor: ACCENT,
     paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6,
   },
-  planBadgeText: { color: '#000', fontSize: 9, fontWeight: '800', letterSpacing: 0.5 },
+  planBadgeText: { color: ON_ACCENT, fontSize: 9, fontWeight: '800', letterSpacing: 0.5 },
   planTitle: { color: TEXT, fontSize: 17, fontWeight: '700' },
   planPer: { color: MUTED, fontSize: 12, marginTop: 2 },
   planPrice: { color: TEXT, fontSize: 20, fontWeight: '800' },

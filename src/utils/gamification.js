@@ -1,5 +1,5 @@
 import { supabase } from '../lib/supabase';
-import { syncToSupabase } from '../lib/syncQueue';
+import { syncRpc, syncToSupabase } from '../lib/syncQueue';
 import { Storage } from './storage';
 import { XpEvents } from './xpEvents';
 
@@ -45,6 +45,104 @@ export const Gamification = {
     return 50 * (level - 1) * ((level - 1) + 3);
   },
 
+  toLocalDayKey(value = new Date()) {
+    // `null` must stay null. A default parameter only covers `undefined`, so
+    // this used to reach `new Date(null)` — the 1970 epoch — and a user with no
+    // last active date was treated as absent for ~20,000 days.
+    if (value === null || value === '') return null;
+    if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  },
+
+  addDays(dayKey, amount) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dayKey || '')) return null;
+    const [year, month, day] = dayKey.split('-').map(Number);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    date.setUTCDate(date.getUTCDate() + amount);
+    return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
+  },
+
+  daysBetween(fromDay, toDay) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fromDay || '') || !/^\d{4}-\d{2}-\d{2}$/.test(toDay || '')) return null;
+    const toUtc = (key) => {
+      const [year, month, day] = key.split('-').map(Number);
+      return Date.UTC(year, month - 1, day);
+    };
+    return Math.round((toUtc(toDay) - toUtc(fromDay)) / 86400000);
+  },
+
+  normalizeHistory(items) {
+    if (!Array.isArray(items)) return [];
+    const allowed = new Set(['active', 'frozen', 'broken', 'missed']);
+    const byDay = new Map();
+    items.slice(-500).forEach((item) => {
+      const date = this.toLocalDayKey(item?.date);
+      if (!date || !allowed.has(item?.type)) return;
+      byDay.set(date, {
+        date,
+        type: item.type,
+        streakBefore: Math.max(0, Number(item.streakBefore) || 0),
+        streakAfter: Math.max(0, Number(item.streakAfter) || 0),
+        xpSpent: Math.max(0, Number(item.xpSpent) || 0),
+        reason: typeof item.reason === 'string' ? item.reason : null,
+        createdAt: item.createdAt || new Date().toISOString(),
+      });
+    });
+    return [...byDay.values()].sort((a, b) => a.date.localeCompare(b.date)).slice(-400);
+  },
+
+  recordHistory(state, event) {
+    const history = this.normalizeHistory(state.streakHistory);
+    const date = this.toLocalDayKey(event?.date);
+    if (!date) return;
+    const next = history.filter((item) => item.date !== date);
+    next.push({
+      date,
+      type: event.type,
+      streakBefore: Math.max(0, Number(event.streakBefore) || 0),
+      streakAfter: Math.max(0, Number(event.streakAfter) || 0),
+      xpSpent: Math.max(0, Number(event.xpSpent) || 0),
+      reason: event.reason || null,
+      createdAt: event.createdAt || new Date().toISOString(),
+    });
+    state.streakHistory = this.normalizeHistory(next);
+    state.streakHistoryVersion = 1;
+  },
+
+  /**
+   * A streak of N ending on lastActiveDate means those N consecutive days were
+   * active, so the calendar can be reconstructed for accounts whose streak
+   * predates history tracking. Existing entries are never overwritten — a
+   * recorded freeze or break inside the run stays exactly as it happened.
+   */
+  backfillStreakRun(state) {
+    const anchor = this.toLocalDayKey(state.lastActiveDate);
+    const streak = Math.max(0, Number(state.streak) || 0);
+    if (!anchor || streak <= 0) return false;
+
+    const existing = new Set(this.normalizeHistory(state.streakHistory).map((item) => item.date));
+    const pending = [];
+    for (let offset = 0; offset < Math.min(streak, 400); offset += 1) {
+      const date = this.addDays(anchor, -offset);
+      if (!date || existing.has(date)) continue;
+      pending.push({
+        date,
+        type: 'active',
+        streakBefore: Math.max(0, streak - offset - 1),
+        streakAfter: streak - offset,
+        reason: 'backfilled',
+      });
+    }
+    if (pending.length === 0) return false;
+    pending.forEach((event) => this.recordHistory(state, event));
+    return true;
+  },
+
   async getState(userId) {
     if (!userId) return null;
     const defaultState = {
@@ -52,28 +150,32 @@ export const Gamification = {
       level: 1,
       streak: 0,
       lastActiveDate: null,
-      tasksCompletedToday: 0
+      tasksCompletedToday: 0,
+      streakHistoryVersion: 1,
+      streakHistory: [],
+      lastStreakResult: null,
     };
-    
+
     let state = await Storage.get(`gamification_${userId}`);
-    
-    // HYDRATION FIX: If completely missing from local storage (e.g., fresh install or cache clear),
-    // fetch the real state directly from the server so we don't accidentally overwrite the server with 0s.
-    if (!state) {
+
+    // A cache miss may hydrate the aggregate from the server. History remains
+    // local-first because the current profile schema stores only aggregates.
+    if (!state || typeof state !== 'object' || Array.isArray(state)) {
       try {
         const { data } = await supabase
           .from('profiles')
           .select('xp, streak, level, last_active_date, tasks_completed_today')
           .eq('id', userId)
           .single();
-          
+
         if (data) {
           state = {
-            xp: data.xp || 0,
+            ...defaultState,
+            xp: Math.max(0, Number(data.xp) || 0),
             level: this.getLevelFromXP(data.xp || 0),
-            streak: data.streak || 0,
-            lastActiveDate: data.last_active_date ? new Date(data.last_active_date).toDateString() : null,
-            tasksCompletedToday: data.tasks_completed_today || 0
+            streak: Math.max(0, Number(data.streak) || 0),
+            lastActiveDate: this.toLocalDayKey(data.last_active_date),
+            tasksCompletedToday: Math.max(0, Number(data.tasks_completed_today) || 0),
           };
           await Storage.set(`gamification_${userId}`, state);
         }
@@ -82,110 +184,144 @@ export const Gamification = {
       }
     }
 
-    // We no longer check against Storage profile.xp here because the profile in Storage 
-    // is often stale. If the user deducts XP, state.xp becomes lower than the stale 
-    // profile.xp, causing this function to wrongly revert the deduction. 
-    // Cross-device server sync is handled separately in DashboardScreen's backgroundOps.
-
-    return state ? { ...defaultState, ...state } : defaultState;
+    const normalized = state && typeof state === 'object' && !Array.isArray(state)
+      ? { ...defaultState, ...state }
+      : { ...defaultState };
+    normalized.xp = Math.max(0, Number(normalized.xp) || 0);
+    normalized.level = Math.max(1, Number(normalized.level) || this.getLevelFromXP(normalized.xp));
+    normalized.streak = Math.max(0, Number(normalized.streak) || 0);
+    normalized.tasksCompletedToday = Math.max(0, Number(normalized.tasksCompletedToday) || 0);
+    normalized.lastActiveDate = this.toLocalDayKey(normalized.lastActiveDate);
+    normalized.streakHistory = this.normalizeHistory(normalized.streakHistory);
+    return normalized;
   },
 
   async saveState(userId, state) {
     if (!userId) return;
-    await Storage.set(`gamification_${userId}`, state);
-    
-    // Sync to Supabase profiles table for cross-device persistence
+    const normalized = {
+      ...state,
+      lastActiveDate: this.toLocalDayKey(state.lastActiveDate),
+      streakHistoryVersion: 1,
+      streakHistory: this.normalizeHistory(state.streakHistory),
+    };
+
+    // Local state is committed first. The aggregate profile mutation is then
+    // queued durably, so offline streak and freeze changes survive restarts.
+    await Storage.set(`gamification_${userId}`, normalized);
     syncToSupabase('profiles', 'update', {
-      xp: state.xp,
-      level: state.level,
-      streak: state.streak,
-      last_active_date: state.lastActiveDate,
-      tasks_completed_today: state.tasksCompletedToday
+      xp: normalized.xp,
+      level: normalized.level,
+      streak: normalized.streak,
+      last_active_date: normalized.lastActiveDate,
+      tasks_completed_today: normalized.tasksCompletedToday,
     }, { column: 'id', value: userId });
   },
 
   async checkStreak(userId) {
     const state = await this.getState(userId);
-    if (!state) return;
+    if (!state) return null;
 
-    // Streak protection must never lower the level the user had when this check
-    // started. Only XP earned above this level's cumulative floor is spendable.
-    const levelAtStart = Math.max(Number(state.level) || 1, this.getLevelFromXP(state.xp || 0));
-    const today = new Date().toDateString();
-    const lastActive = state.lastActiveDate;
+    const today = this.toLocalDayKey();
+    const lastActive = this.toLocalDayKey(state.lastActiveDate);
+    const streakBefore = Math.max(0, Number(state.streak) || 0);
+    const levelAtStart = Math.max(Number(state.level) || 1, this.getLevelFromXP(state.xp));
+    let streakAdvanced = false;
+    let result = 'continued';
+    let missedDays = 0;
+    let xpSpent = 0;
 
-    // If active today, do nothing.
-    if (lastActive === today) return state;
-
-    // If last active was exactly yesterday, streak continues! Otherwise, we check for a Streak Freeze.
-    if (lastActive) {
-      const yesterday = new Date();
-      yesterday.setDate(yesterday.getDate() - 1);
-      const yesterdayStr = yesterday.toDateString();
-
-      if (lastActive === yesterdayStr) {
-        // NEW STREAK LOGIC: Increment streak just by opening the app on a new day!
-        state.streak += 1;
-        state.lastActiveDate = today;
-        console.log(`[Gamification] Streak increased to ${state.streak} just by opening the app!`);
-
-        // Milestone Bonus
-        if ([7, 14, 30, 60, 100].includes(state.streak)) {
-          state.xp += 500;
-          console.log(`[Gamification] Milestone Reached! ${state.streak} Days. +500 XP`);
-        }
-      } else {
-        // Calculate days missed
-        const lastDate = new Date(lastActive);
-        const currentDate = new Date(today);
-        // Reset times to midnight for accurate day diff
-        lastDate.setHours(0,0,0,0);
-        currentDate.setHours(0,0,0,0);
-
-        const daysMissed = Math.floor((currentDate - lastDate) / (1000 * 60 * 60 * 24)) - 1;
-
-        // Protection is opt-in. A missing setting is disabled, so XP is never
-        // spent until the user explicitly enables Auto Streak Freeze.
-        const freezeSetting = await Storage.get(`streak_freeze_enabled_${userId}`);
-        const freezeEnabled = freezeSetting === true || freezeSetting === 'true';
-
-        if (daysMissed > 0 && state.streak > 0 && freezeEnabled) {
-          const requestedCost = 500 * daysMissed;
-          const levelFloor = this.getRequiredXPForLevel(levelAtStart);
-          const spendableXP = Math.max(0, state.xp - levelFloor);
-
-          if (spendableXP > 0) {
-            // Spend at most the XP earned inside the current level. Example: if
-            // only 30 XP was earned after reaching this level, protection costs
-            // 30 XP—not 500—and can never remove the level or its stone.
-            const actualCost = Math.min(requestedCost, spendableXP);
-            state.xp = Math.max(levelFloor, state.xp - actualCost);
-            console.log(`[Gamification] Streak Freeze activated for ${daysMissed} day(s). Cost: ${actualCost}/${requestedCost} XP; level floor preserved.`);
-
-            // Resume streak from today.
-            state.streak += 1;
-            state.lastActiveDate = today;
-          } else {
-            state.streak = 1; // No current-level XP is available to fund protection.
-            state.lastActiveDate = today;
-          }
-        } else {
-          state.streak = 1; // start new streak today
-          state.lastActiveDate = today;
-        }
+    // Migrate old aggregate-only state into the calendar once, without
+    // inventing historical freeze/break events that the old model never kept.
+    if (lastActive === today) {
+      const hadToday = state.streakHistory.some((item) => item.date === today);
+      if (!hadToday) {
+        this.recordHistory(state, {
+          date: today,
+          type: 'active',
+          streakBefore,
+          streakAfter: streakBefore,
+          reason: 'history_started',
+        });
       }
-    } else if (state.streak > 0) {
-      // lastActiveDate is null but streak exists — recovering from fresh install/cache wipe.
-      // Preserve the streak and mark today as the active date instead of resetting.
-      console.log(`[Gamification] Recovering streak of ${state.streak} from server (no lastActiveDate).`);
-      state.lastActiveDate = today;
-    } else {
-      state.streak = 1; // First day ever!
-      state.lastActiveDate = today;
+      const backfilled = this.backfillStreakRun(state);
+      if (!hadToday || backfilled) {
+        state.lastStreakResult = { date: today, outcome: 'history_started', missedDays: 0, xpSpent: 0 };
+        await this.saveState(userId, state);
+      }
+      return state;
     }
 
-    state.tasksCompletedToday = 0; // Reset daily count
+    if (!lastActive) {
+      state.streak = streakBefore > 0 ? streakBefore : 1;
+      result = streakBefore > 0 ? 'recovered' : 'started';
+    } else {
+      const elapsedDays = this.daysBetween(lastActive, today);
+
+      if (elapsedDays === 1) {
+        state.streak = Math.max(1, streakBefore + 1);
+        streakAdvanced = true;
+      } else if (elapsedDays != null && elapsedDays > 1) {
+        missedDays = elapsedDays - 1;
+        const freezeSetting = await Storage.get(`streak_freeze_enabled_${userId}`);
+        const freezeEnabled = freezeSetting === true || freezeSetting === 'true';
+        const levelFloor = this.getRequiredXPForLevel(levelAtStart);
+        const spendableXP = Math.max(0, state.xp - levelFloor);
+        const requiredCost = 500 * missedDays;
+        const canFullyProtect = freezeEnabled && streakBefore > 0 && spendableXP >= requiredCost;
+
+        if (canFullyProtect) {
+          xpSpent = requiredCost;
+          state.xp -= requiredCost;
+          for (let offset = 1; offset <= missedDays; offset += 1) {
+            this.recordHistory(state, {
+              date: this.addDays(lastActive, offset),
+              type: 'frozen',
+              streakBefore,
+              streakAfter: streakBefore,
+              xpSpent: 500,
+              reason: 'auto_freeze',
+            });
+          }
+          state.streak = streakBefore + 1;
+          streakAdvanced = true;
+          result = 'frozen';
+        } else {
+          for (let offset = 1; offset <= missedDays; offset += 1) {
+            this.recordHistory(state, {
+              date: this.addDays(lastActive, offset),
+              type: offset === 1 ? 'broken' : 'missed',
+              streakBefore: offset === 1 ? streakBefore : 0,
+              streakAfter: 0,
+              reason: freezeEnabled ? 'insufficient_safe_xp' : 'freeze_disabled',
+            });
+          }
+          state.streak = 1;
+          result = freezeEnabled && streakBefore > 0 ? 'freeze_unfunded' : 'reset';
+        }
+      } else {
+        // A clock/timezone correction must never charge XP or destroy a streak.
+        state.streak = Math.max(1, streakBefore);
+        result = 'clock_adjusted';
+      }
+    }
+
+    if (streakAdvanced && [7, 14, 30, 60, 100].includes(state.streak)) {
+      state.xp += 500;
+      result = result === 'frozen' ? 'frozen_milestone' : 'milestone';
+    }
+
+    state.lastActiveDate = today;
+    state.tasksCompletedToday = 0;
     state.level = Math.max(levelAtStart, this.getLevelFromXP(state.xp));
+    this.recordHistory(state, {
+      date: today,
+      type: 'active',
+      streakBefore,
+      streakAfter: state.streak,
+      reason: result,
+    });
+    this.backfillStreakRun(state);
+    state.lastStreakResult = { date: today, outcome: result, missedDays, xpSpent };
     await this.saveState(userId, state);
     return state;
   },
@@ -209,6 +345,16 @@ export const Gamification = {
 
     // Surface a small "+X XP / −X XP" popup app-wide (single wiring point).
     XpEvents.emit(amount);
+
+    // Mirror the completion into the shared daily rollup that the leaderboard
+    // reads. Queued via RPC so it replays when offline, and the local day is
+    // sent from the device because the server only knows UTC.
+    if (amount !== 0) {
+      syncRpc('bump_daily_tasks', {
+        p_local_day: this.toLocalDayKey(),
+        p_delta: amount > 0 ? 1 : -1,
+      }).catch(() => {});
+    }
 
     await this.saveState(userId, state);
     return state;

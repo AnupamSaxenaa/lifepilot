@@ -12,7 +12,7 @@ import { ScribbleStrike } from '../components/ScribbleStrike';
 import { getPriorityColor, shouldShowFlag } from '../config/priorityConfig';
 import { useTheme as useAppTheme } from '../context/ThemeContext';
 import { useWidgetTaskSync } from '../hooks/useWidgetTaskSync';
-import { cacheTasks, loadProfile, loadTasks, reorderTasks, toggleTaskImportance } from '../lib/dataManager';
+import { cacheTasks, getCurrentUserId, loadProfile, loadTasks, reorderTasks, toggleTaskImportance } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
 import { syncToSupabase } from '../lib/syncQueue';
 import { COLORS } from '../theme/theme';
@@ -175,7 +175,10 @@ export const StarredScreen = ({ navigation }) => {
   const [showMenu, setShowMenu] = useState(false);
 
   // Widget → app sync: reflect widget task toggles on resume / while foregrounded.
-  useWidgetTaskSync(userId, (fresh) => setTasks(fresh.filter((t) => t.is_important)));
+  useWidgetTaskSync(userId, (fresh) => {
+    const refreshedTasks = Array.isArray(fresh) ? fresh : [];
+    setTasks(refreshedTasks.filter((t) => t.is_important));
+  });
   const [activeToolbarMenu, setActiveToolbarMenu] = useState(null);
   const [levelUpData, setLevelUpData] = useState(null);
   const completingTimeouts = useRef({});
@@ -187,15 +190,16 @@ export const StarredScreen = ({ navigation }) => {
 
   useEffect(() => {
     const init = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
-      setUserId(session.user.id);
+      const resolvedUserId = await getCurrentUserId();
+      if (!resolvedUserId) return;
+      setUserId(resolvedUserId);
       
       const [cachedProfile, cachedSort, cachedTasks] = await Promise.all([
-        loadProfile(session.user.id, (fresh) => setProfile(fresh)),
+        loadProfile(resolvedUserId, (fresh) => setProfile(fresh)),
         Storage.get('sortBy_starred'),
-        loadTasks(session.user.id, (fresh) => {
-          setTasks(fresh.filter(t => t.is_important));
+        loadTasks(resolvedUserId, (fresh) => {
+          const refreshedTasks = Array.isArray(fresh) ? fresh : [];
+          setTasks(refreshedTasks.filter(t => t.is_important));
           setLoading(false);
           setIsCacheLoaded(true);
         })
@@ -205,7 +209,7 @@ export const StarredScreen = ({ navigation }) => {
       if (cachedSort) setSortBy(cachedSort);
       setIsSortLoaded(true);
       
-      if (cachedTasks) {
+      if (Array.isArray(cachedTasks)) {
         setTasks(cachedTasks.filter(t => t.is_important));
         setLoading(false);
         setIsCacheLoaded(true);

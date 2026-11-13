@@ -16,14 +16,29 @@ import {
     AuthStatus,
     useAuthPalette
 } from '../components/auth/AuthKit';
+import { setAuthenticatedUser } from '../lib/dataManager';
 import { supabase } from '../lib/supabase';
-import { Storage } from '../utils/storage';
 
 WebBrowser.maybeCompleteAuthSession();
 
-export const LoginScreen = ({ navigation }) => {
+export const LoginScreen = ({ navigation, route }) => {
   const { t } = useTranslation();
   const palette = useAuthPalette();
+  const returnTo = route?.params?.returnTo;
+  const inviteToken = route?.params?.inviteToken;
+  const authRouteParams = {
+    ...(returnTo ? { returnTo } : {}),
+    ...(inviteToken ? { inviteToken } : {}),
+  };
+  const postAuthRoute = inviteToken
+    ? {
+        name: 'InviteAcceptance',
+        params: {
+          ...(returnTo ? { returnTo } : {}),
+          token: inviteToken,
+        },
+      }
+    : { name: 'Dashboard' };
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -47,16 +62,16 @@ export const LoginScreen = ({ navigation }) => {
       
       if (error) {
         setError(error.message);
-      } else {
-        // 📱 Save user ID for Android Widgets
-        if (data?.session?.user?.id) {
-          await Storage.set('current_user_id', data.session.user.id);
-        }
-        
+      } else if (data?.session?.user) {
+        // Switch both the in-memory owner and the widget pointer before any
+        // user-scoped screen can mount.
+        await setAuthenticatedUser(data.session.user);
         navigation.reset({
           index: 0,
-          routes: [{ name: 'Dashboard' }],
+          routes: [postAuthRoute],
         });
+      } else {
+        setError(t('login.errorSignInCancelled'));
       }
     } catch (e) {
       setError(e.message || t('common.networkError'));
@@ -106,12 +121,8 @@ export const LoginScreen = ({ navigation }) => {
         return;
       }
 
-      // Save user ID for Android widgets.
-      if (session.user?.id) {
-        await Storage.set('current_user_id', session.user.id);
-      }
-
-      navigation.reset({ index: 0, routes: [{ name: 'Dashboard' }] });
+      await setAuthenticatedUser(session.user);
+      navigation.reset({ index: 0, routes: [postAuthRoute] });
     } catch (err) {
       console.error('[Google Auth] Error:', err);
       setError(err.message || t('login.errorGoogleFailed'));
@@ -177,7 +188,7 @@ export const LoginScreen = ({ navigation }) => {
           <AuthFooter
             prompt={t('login.noAccount')}
             action={t('login.register')}
-            onPress={() => navigation.navigate('Register')}
+            onPress={() => navigation.navigate('Register', authRouteParams)}
           />
         </AuthCard>
       </View>

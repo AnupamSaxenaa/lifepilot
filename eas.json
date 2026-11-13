@@ -1,4 +1,7 @@
 {
+  "cli": {
+    "appVersionSource": "remote"
+  },
   "build": {
     "development": {
       "developmentClient": true,
@@ -40,11 +43,11 @@
         "EXPO_PUBLIC_COHERE_API_KEY": "DISABLED"
       }
     },
-    "production": {
+    "legacy-production-apk": {
       "android": {
         "buildType": "apk"
       },
-      "channel": "production",
+      "channel": "legacy-production",
       "env": {
         "APP_VARIANT": "production",
         "EXPO_PUBLIC_GROQ_API_KEY": "DISABLED",
@@ -59,7 +62,7 @@
       "android": {
         "buildType": "apk"
       },
-      "channel": "production",
+      "channel": "store-production",
       "env": {
         "APP_VARIANT": "store",
         "EXPO_PUBLIC_ALARMS_ENABLED": "false",
@@ -75,9 +78,10 @@
       "environment": "production",
       "distribution": "store",
       "android": {
-        "buildType": "app-bundle"
+        "buildType": "app-bundle",
+        "autoIncrement": true
       },
-      "channel": "production",
+      "channel": "store-production",
       "env": {
         "APP_VARIANT": "store",
         "EXPO_PUBLIC_ALARMS_ENABLED": "false",

@@ -14,10 +14,11 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
+import { loadProfile, updateProfile } from '../lib/dataManager';
 import {
     claimStoneShards, getCatalog, getOwnedCosmetics, purchaseCosmetic, refreshShardBalance,
 } from '../lib/marketplace';
-import { supabase } from '../lib/supabase';
+import { readableOn } from '../theme/contrast';
 import { Storage } from '../utils/storage';
 
 const BG = '#000000';
@@ -26,7 +27,11 @@ const SURFACE_2 = '#121214';
 const BORDER = '#1C1C1E';
 const TEXT = '#FAFAFA';
 const MUTED = '#71717A';
+// Deliberately fixed rather than the equipped accent: this is the screen where
+// you preview and buy accents, so the store chrome must not shift underneath you.
 const ACCENT = '#FFFFFF';
+// Derived, not hardcoded, so the label follows ACCENT if it ever changes.
+const ON_ACCENT = readableOn(ACCENT);
 const GREEN = '#E5E7EB';
 
 // The real app logo artwork, shown as-is (no tint) for the single icon variant.
@@ -114,42 +119,67 @@ export const MarketplaceScreen = ({ navigation, route }) => {
     }
   }, [userId]);
 
+  /**
+   * Project a profile row onto the equipped-cosmetics view and cache it.
+   * Tolerates a null/partial profile so an offline first run is a no-op rather
+   * than clearing what the user already has equipped.
+   */
+  const applyEquippedFromProfile = useCallback(async (profile) => {
+    if (!profile) return;
+    const eq = {
+      theme: profile.equipped_theme ?? null,
+      accent: profile.equipped_accent ?? null,
+      font: profile.equipped_font ?? null,
+      icon: profile.equipped_icon ?? null,
+    };
+    setEquipped(eq);
+    await Storage.set(`equipped_cosmetics_${userId}`, JSON.stringify(eq));
+  }, [userId]);
+
+  /**
+   * Persist an equip/unequip through dataManager so it is written to the local
+   * cache first and queued for sync.
+   *
+   * This replaced `supabase.from('profiles').update(...)` called straight from
+   * the screen, which broke in two different ways offline: equipping threw and
+   * therefore applied nothing at all, while unequipping swallowed the error and
+   * applied locally but never reached the server — so it silently reverted on
+   * the next reinstall.
+   *
+   * The current profile is read with refresh:false because updateProfile spreads
+   * over it; passing a stub would overwrite the cached display name and username.
+   */
+  const persistEquipField = useCallback(async (field, value) => {
+    const current = await loadProfile(userId, undefined, { refresh: false });
+    await updateProfile(userId, current, { [field]: value });
+  }, [userId]);
+
   const loadFromServer = useCallback(async () => {
     if (!userId) return;
     try {
       // Fire every network call in parallel — no more waterfalling one
       // request after another.
-      const [, bal, cat, own, profileRes] = await Promise.all([
+      const [, bal, cat, own, profile] = await Promise.all([
         claimStoneShards(userId),
         refreshShardBalance(userId),
         getCatalog(),
         getOwnedCosmetics(userId),
-        supabase
-          .from('profiles')
-          .select('equipped_theme, equipped_accent, equipped_font, equipped_icon')
-          .eq('id', userId)
-          .single(),
+        // Equipped state comes from the cached profile rather than its own
+        // query. loadProfile already selects '*' and caches it, so a dedicated
+        // request was both redundant and the reason this screen could not
+        // resolve equipped cosmetics offline. It returns cache immediately and
+        // reconciles in the background via the onFresh callback.
+        loadProfile(userId, (fresh) => applyEquippedFromProfile(fresh)),
       ]);
       setBalance(bal.balance ?? 0);
       setCatalog(cat);
       setOwned(own);
-
-      const data = profileRes?.data;
-      if (data && !profileRes.error) {
-        const eq = {
-          theme: data.equipped_theme,
-          accent: data.equipped_accent,
-          font: data.equipped_font,
-          icon: data.equipped_icon,
-        };
-        setEquipped(eq);
-        await Storage.set(`equipped_cosmetics_${userId}`, JSON.stringify(eq));
-      }
+      await applyEquippedFromProfile(profile);
     } catch (_e) {
       // Offline or request failed — cached values already painted, so this
       // is a silent no-op rather than an error state.
     }
-  }, [userId]);
+  }, [userId, applyEquippedFromProfile]);
 
   const load = useCallback(async () => {
     if (!userId) { setLoading(false); return; }
@@ -198,7 +228,7 @@ export const MarketplaceScreen = ({ navigation, route }) => {
         }
       }
 
-      await supabase.from('profiles').update({ [field]: item.id }).eq('id', userId);
+      await persistEquipField(field, item.id);
       const next = { ...equipped, [item.category]: item.id };
       setEquipped(next);
       await Storage.set(`equipped_cosmetics_${userId}`, JSON.stringify(next));
@@ -227,9 +257,9 @@ export const MarketplaceScreen = ({ navigation, route }) => {
     if (cat === 'icon' && Platform.OS === 'android' && NativeModules.AppIcon) {
       try { await NativeModules.AppIcon.setAppIcon('default'); } catch (_e) {}
     }
-    try {
-      await supabase.from('profiles').update({ [field]: null }).eq('id', userId);
-    } catch (_e) {}
+    // No try/catch swallowing here any more: the write goes to the local cache
+    // first and is queued, so it cannot fail because the device is offline.
+    await persistEquipField(field, null);
     const next = { ...equipped, [cat]: null };
     setEquipped(next);
     await Storage.set(`equipped_cosmetics_${userId}`, JSON.stringify(next));
@@ -406,7 +436,7 @@ export const MarketplaceScreen = ({ navigation, route }) => {
                             activeOpacity={0.85}
                           >
                             {isEquipped
-                              ? <><Check color="#000" size={14} /><Text style={styles.equippedBtnText}>{t('marketplace.activeLabel')}</Text></>
+                              ? <><Check color={ON_ACCENT} size={14} /><Text style={styles.equippedBtnText}>{t('marketplace.activeLabel')}</Text></>
                               : <Text style={styles.equipBtnText}>{t('marketplace.equipButton')}</Text>}
                           </TouchableOpacity>
                         ) : (
@@ -545,12 +575,12 @@ const styles = StyleSheet.create({
 
   actionBtn: { minWidth: 82, height: 38, borderRadius: 11, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 5, paddingHorizontal: 14 },
   buyBtn: { backgroundColor: ACCENT },
-  buyBtnText: { color: '#000', fontWeight: '800', fontSize: 14 },
+  buyBtnText: { color: ON_ACCENT, fontWeight: '800', fontSize: 14 },
   buyBtnDisabled: { backgroundColor: SURFACE_2, borderWidth: 1, borderColor: BORDER },
   equipBtn: { backgroundColor: 'rgba(255, 255, 255,0.15)', borderWidth: 1, borderColor: ACCENT },
   equipBtnText: { color: ACCENT, fontWeight: '800', fontSize: 14 },
   equippedBtn: { backgroundColor: ACCENT },
-  equippedBtnText: { color: '#000', fontWeight: '800', fontSize: 13 },
+  equippedBtnText: { color: ON_ACCENT, fontWeight: '800', fontSize: 13 },
   ownedPill: { backgroundColor: SURFACE_2, borderWidth: 1, borderColor: BORDER },
   ownedPillText: { color: MUTED, fontWeight: '700', fontSize: 13 },
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AppState, Dimensions, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
@@ -13,28 +13,65 @@ export const DailyPromiseOverlay = ({ userId }) => {
   const [promiseText, setPromiseText] = useState('');
   const [countdown, setCountdown] = useState(5);
   const [showCountdown, setShowCountdown] = useState(false);
-  const [showButton, setShowButton] = useState(false);
+  // Derived, not stored: the button is visible exactly when the countdown has
+  // run out. Holding this in state meant setting it from inside an effect, which
+  // added a render pass and an ordering hazard between the mount and the fade-in
+  // for no benefit.
+  const showButton = showCountdown && countdown === 0;
+
+  // Latched once the user accepts, so neither a second tap nor an AppState
+  // 'active' event can restart the fade-in and strand a half-dismissed overlay.
+  const dismissingRef = useRef(false);
 
   // Animations
   const containerOpacity = useSharedValue(0);
   const buttonOpacity = useSharedValue(0);
 
-  const handleDismiss = async () => {
-    // Save that we've shown it today
-    const today = new Date().toDateString();
-    await Storage.set(`lastPromiseShownDate_${userId}`, today);
+  /**
+   * Dismiss the overlay.
+   *
+   * This used to need two taps, for two independent reasons:
+   *
+   * 1. It awaited `Storage.set` BEFORE starting the fade, so the first tap
+   *    produced no visible response at all until AsyncStorage came back. On a
+   *    device that has just resumed, that is easily long enough to read as "the
+   *    button didn't work", so the natural reaction is to tap again. Writing the
+   *    date is bookkeeping — it must not gate the user's feedback.
+   *
+   * 2. The completion callback only hid the overlay `if (finished)`. Reanimated
+   *    reports finished=false whenever an animation is interrupted, and
+   *    `checkPromise` re-assigns `containerOpacity` on every AppState 'active'
+   *    event and on every re-run of the mount effect. If either landed while the
+   *    fade-out was in flight, the callback was dropped and `isVisible` stayed
+   *    true — the overlay simply sat there, fully dismissed in intent but still
+   *    on screen, until the next tap started a fade that nothing interrupted.
+   *
+   * Now: the fade starts synchronously on press, the overlay is hidden whether or
+   * not the animation completed cleanly, and a re-entry guard makes any extra
+   * taps harmless.
+   */
+  const handleDismiss = () => {
+    if (dismissingRef.current) return;
+    dismissingRef.current = true;
 
-    // Fade out
-    containerOpacity.value = withTiming(0, { duration: 600 }, (finished) => {
-      if (finished) {
-        runOnJS(setIsVisible)(false);
-      }
+    // Persist in the background. A failed write only means the promise may show
+    // again later, which is far better than delaying the dismissal.
+    const today = new Date().toDateString();
+    Storage.set(`lastPromiseShownDate_${userId}`, today).catch(() => {});
+
+    containerOpacity.value = withTiming(0, { duration: 600 }, () => {
+      // Unconditional: an interrupted fade must still dismiss.
+      runOnJS(setIsVisible)(false);
     });
   };
 
   useEffect(() => {
     const checkPromise = async () => {
       if (!userId) return;
+      // Once accepted, never re-show in this session. Without this, the
+      // AppState listener could fire mid-fade-out and animate the overlay back
+      // in, because the "shown today" write may not have landed yet.
+      if (dismissingRef.current) return;
 
       const today = new Date().toDateString();
       const lastShown = await Storage.get(`lastPromiseShownDate_${userId}`);
@@ -88,9 +125,8 @@ export const DailyPromiseOverlay = ({ userId }) => {
       const timer = setTimeout(() => setCountdown(countdown - 1), 1000);
       return () => clearTimeout(timer);
     } else if (showCountdown && countdown === 0) {
-      requestAnimationFrame(() => {
-        setShowButton(true);
-      });
+      // The button is already mounted by this point (showButton is derived from
+      // the same condition), so this only has to fade it in.
       buttonOpacity.value = withTiming(1, { duration: 600 });
     }
   }, [showCountdown, countdown]);
@@ -132,7 +168,14 @@ export const DailyPromiseOverlay = ({ userId }) => {
 
           {showButton && (
             <Animated.View style={[animatedButtonStyle, { width: '100%' }]}>
-              <TouchableOpacity style={styles.button} onPress={handleDismiss}>
+              <TouchableOpacity
+                style={styles.button}
+                onPress={handleDismiss}
+                activeOpacity={0.85}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                accessibilityRole="button"
+                accessibilityLabel={t('dailyPromise.respectButton')}
+              >
                 <Text style={styles.buttonText}>{t('dailyPromise.respectButton')}</Text>
               </TouchableOpacity>
             </Animated.View>

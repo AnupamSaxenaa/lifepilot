@@ -29,6 +29,7 @@ import { useTheme as useAppTheme } from '../context/ThemeContext';
 import { getDailyMotivation } from '../features/alarm/motivation';
 import { getCurrentWeather } from '../features/alarm/weather';
 import { addTask, getCurrentUserId, loadTasks, updateTask } from '../lib/dataManager';
+import { readableOn } from '../theme/contrast';
 import { COLORS } from '../theme/theme';
 import { Gamification } from '../utils/gamification';
 
@@ -173,11 +174,13 @@ export const MorningFocusScreen = ({ navigation }) => {
   const { t } = useTranslation();
   const { theme } = useAppTheme();
   const accent = theme?.accent || COLORS.dark.accent;
+  const onAccent = theme?.onAccent || readableOn(accent);
   const styles = useMemo(() => makeStyles({
     accent,
+    onAccent,
     background: theme?.bg || COLORS.dark.background || '#09090B',
     surface: theme?.surface || COLORS.dark.surface || '#141417',
-  }), [accent, theme?.bg, theme?.surface]);
+  }), [accent, onAccent, theme?.bg, theme?.surface]);
 
   const [userId, setUserId] = useState(null);
   const [tasks, setTasks] = useState([]);
@@ -384,7 +387,7 @@ export const MorningFocusScreen = ({ navigation }) => {
               value={newTaskTitle}
             />
             <TouchableOpacity disabled={!newTaskTitle.trim()} onPress={createTask} style={[styles.addButton, { backgroundColor: accent }]}>
-              <Plus color="#09090B" size={19} />
+              <Plus color={onAccent} size={19} />
             </TouchableOpacity>
           </View>
         ) : (
@@ -485,7 +488,7 @@ export const MorningFocusScreen = ({ navigation }) => {
   );
 };
 
-const makeStyles = ({ accent, background, surface }) => StyleSheet.create({
+const makeStyles = ({ accent, onAccent, background, surface }) => StyleSheet.create({
   container: { flex: 1, backgroundColor: background },
   content: { paddingHorizontal: 18, paddingTop: 14, paddingBottom: 48 },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: 9, marginBottom: 10 },
@@ -532,9 +535,9 @@ const makeStyles = ({ accent, background, surface }) => StyleSheet.create({
   inlineEditor: { flexDirection: 'row', alignItems: 'flex-end', gap: 7, paddingBottom: 9 },
   inlineInput: { flex: 1, minHeight: 40, maxHeight: 86, color: '#FFF', backgroundColor: surface, borderRadius: 10, borderWidth: 1, borderColor: `${accent}44`, paddingHorizontal: 10, paddingVertical: 8, fontSize: 12 },
   smallButton: { borderRadius: 9, paddingHorizontal: 10, paddingVertical: 9 },
-  smallButtonText: { color: '#09090B', fontSize: 11, fontWeight: '900' },
+  smallButtonText: { color: onAccent, fontSize: 11, fontWeight: '900' },
   emptyWrap: { alignItems: 'center', paddingVertical: 30, gap: 10 },
   emptyText: { color: '#A1A1AA', fontSize: 14, fontWeight: '500', textAlign: 'center' },
   startBtn: { marginTop: 27, paddingVertical: 14, borderRadius: 24, alignItems: 'center' },
-  startBtnText: { color: '#09090B', fontSize: 15, fontWeight: '900' },
+  startBtnText: { color: onAccent, fontSize: 15, fontWeight: '900' },
 });

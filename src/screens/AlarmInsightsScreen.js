@@ -121,6 +121,7 @@ export const AlarmInsightsScreen = ({ navigation }) => {
   const { t, i18n } = useTranslation();
   const { theme } = useTheme();
   const accent = theme.accent;
+  const onAccent = theme.onAccent || '#0B0B0D';
   const [history, setHistory] = useState([]);
   const [alarms, setAlarms] = useState([]);
   const [period, setPeriod] = useState('week');
@@ -232,7 +233,7 @@ export const AlarmInsightsScreen = ({ navigation }) => {
               style={[styles.periodChip, period === option && { backgroundColor: accent }]}
               onPress={() => setPeriod(option)}
             >
-              <Text style={[styles.periodText, period === option && styles.periodTextActive]}>
+              <Text style={[styles.periodText, period === option && [styles.periodTextActive, { color: onAccent }]]}>
                 {t(`alarmInsights.period.${option}`)}
               </Text>
             </TouchableOpacity>
@@ -476,5 +477,7 @@ const styles = StyleSheet.create({
   periodRow: { flexDirection: 'row', gap: 8, marginBottom: 18 },
   periodChip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 18, backgroundColor: '#18181B' },
   periodText: { color: '#A1A1AA', fontSize: 12, fontWeight: '700' },
+  // Overridden inline with the derived onAccent — the chip fill is the theme
+  // accent, which can be dark.
   periodTextActive: { color: '#09090B' },
 });

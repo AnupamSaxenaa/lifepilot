@@ -9,14 +9,39 @@ dist/
 web-build/
 expo-env.d.ts
 
-# Native
+# Native outputs and signing material
 .kotlin/
 *.orig.*
 *.jks
+*.keystore
 *.p8
 *.p12
 *.key
 *.mobileprovision
+
+# LOCAL TESTER CREDENTIALS — never upload these to EAS.
+# .easignore does not inherit .gitignore, so all four entries are required here
+# even though Git already ignores them. The Play profile uses EAS-managed remote
+# credentials; these files belong only to LP LAB/tester builds.
+credentials.json
+credentials/
+.revenuecat_webhook_secret.txt
+
+# IDE/agent state and nested worktrees can contain snapshots, terminals and
+# credentials. None is part of the app build, and .kilo/worktrees alone can
+# multiply the upload by an entire second checkout.
+.git/
+.kilo/
+.kiro/
+.claude/
+.vscode/
+tools/
+
+# Local release/store artifacts are outputs, not build inputs.
+release/
+play-assets/
+*.aab
+*.idsig
 
 # Metro
 .metro-health-check*

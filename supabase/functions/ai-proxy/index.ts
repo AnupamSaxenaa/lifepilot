@@ -62,13 +62,57 @@ function json(status: number, body: unknown) {
   });
 }
 
+// ── Latency control ─────────────────────────────────────────────────────────
+// WHY THIS EXISTS
+//
+// The cascade below is sequential, and with every key set it is up to ELEVEN
+// HTTP requests: groq, cerebras, gemini (3 models), openrouter (4 models),
+// mistral, cohere. Deno's `fetch` has NO default timeout, so a single slow or
+// hanging provider blocked everything behind it — which on free tiers (queued
+// or rate-limited requests that stall rather than 429 promptly) is routine.
+// That is why Aura felt slow: not the model, the waiting.
+//
+// Two bounds fix it:
+//   PROVIDER_TIMEOUT_MS — abandon one attempt quickly and move to the next
+//   TOTAL_DEADLINE_MS   — cap the whole cascade so the user always gets an
+//                         answer or an honest failure in bounded time
+//
+// The signal genuinely ABORTS the request rather than just racing a timer, so a
+// slow provider stops consuming the isolate instead of dangling until the
+// platform's wall-clock limit.
+const PROVIDER_TIMEOUT_MS = 8_000;
+const TOTAL_DEADLINE_MS = 25_000;
+// Below this there is no point starting another attempt.
+const MIN_ATTEMPT_MS = 1_500;
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(1, timeoutMs));
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Milliseconds left before the cascade must give up. */
+const msLeft = (deadline: number) => deadline - Date.now();
+
+/** Budget for a single attempt: the per-provider cap, clipped to the deadline. */
+const attemptBudget = (deadline: number) =>
+  Math.min(PROVIDER_TIMEOUT_MS, Math.max(0, msLeft(deadline)));
+
 // ── Provider calls ──────────────────────────────────────────────────────────
 type Msg = { role: string; content: string };
 
-async function callGroq(messages: Msg[], jsonMode: boolean): Promise<string> {
+async function callGroq(messages: Msg[], jsonMode: boolean, deadline: number): Promise<string> {
   const key = Deno.env.get("GROQ_API_KEY");
   if (!key) throw new Error("no groq key");
-  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  const res = await fetchWithTimeout("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -77,7 +121,7 @@ async function callGroq(messages: Msg[], jsonMode: boolean): Promise<string> {
       temperature: 0.7,
       ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
     }),
-  });
+  }, attemptBudget(deadline));
   if (!res.ok) throw new Error(`groq ${res.status}`);
   const data = await res.json();
   const text = data?.choices?.[0]?.message?.content;
@@ -85,21 +129,26 @@ async function callGroq(messages: Msg[], jsonMode: boolean): Promise<string> {
   return text;
 }
 
-async function callGemini(messages: Msg[]): Promise<string> {
+async function callGemini(messages: Msg[], deadline: number): Promise<string> {
   const key = Deno.env.get("GEMINI_API_KEY");
   if (!key) throw new Error("no gemini key");
   const prompt = messages.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n\n");
   const models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest"];
   let lastErr: Error | null = null;
   for (const model of models) {
+    // This inner loop is 3 more sequential requests. Respect the shared deadline
+    // so Gemini alone cannot consume the whole budget and starve the providers
+    // queued behind it.
+    if (msLeft(deadline) < MIN_ATTEMPT_MS) break;
     try {
-      const res = await fetch(
+      const res = await fetchWithTimeout(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
         },
+        attemptBudget(deadline),
       );
       if (!res.ok) { lastErr = new Error(`gemini ${model} ${res.status}`); continue; }
       const data = await res.json();
@@ -113,10 +162,10 @@ async function callGemini(messages: Msg[]): Promise<string> {
   throw lastErr ?? new Error("gemini failed");
 }
 
-async function callMistral(messages: Msg[], jsonMode: boolean): Promise<string> {
+async function callMistral(messages: Msg[], jsonMode: boolean, deadline: number): Promise<string> {
   const key = Deno.env.get("MISTRAL_API_KEY");
   if (!key) throw new Error("no mistral key");
-  const res = await fetch("https://api.mistral.ai/v1/chat/completions", {
+  const res = await fetchWithTimeout("https://api.mistral.ai/v1/chat/completions", {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -124,7 +173,7 @@ async function callMistral(messages: Msg[], jsonMode: boolean): Promise<string> 
       messages,
       ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
     }),
-  });
+  }, attemptBudget(deadline));
   if (!res.ok) throw new Error(`mistral ${res.status}`);
   const data = await res.json();
   const text = data?.choices?.[0]?.message?.content;
@@ -132,15 +181,15 @@ async function callMistral(messages: Msg[], jsonMode: boolean): Promise<string> 
   return text;
 }
 
-async function callCohere(messages: Msg[]): Promise<string> {
+async function callCohere(messages: Msg[], deadline: number): Promise<string> {
   const key = Deno.env.get("COHERE_API_KEY");
   if (!key) throw new Error("no cohere key");
   const prompt = messages.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n\n");
-  const res = await fetch("https://api.cohere.com/v2/chat", {
+  const res = await fetchWithTimeout("https://api.cohere.com/v2/chat", {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
     body: JSON.stringify({ model: "command-r", messages: [{ role: "user", content: prompt }] }),
-  });
+  }, attemptBudget(deadline));
   if (!res.ok) throw new Error(`cohere ${res.status}`);
   const data = await res.json();
   const text = data?.message?.content?.[0]?.text;
@@ -151,7 +200,7 @@ async function callCohere(messages: Msg[]): Promise<string> {
 // ── OpenRouter (OpenAI-compatible) ──
 // A single free key unlocks MANY free models — the strongest single backup.
 // We try a few free models in order so one being rate-limited doesn't sink us.
-async function callOpenRouter(messages: Msg[], jsonMode: boolean): Promise<string> {
+async function callOpenRouter(messages: Msg[], jsonMode: boolean, deadline: number): Promise<string> {
   const key = Deno.env.get("OPENROUTER_API_KEY");
   if (!key) throw new Error("no openrouter key");
   const models = [
@@ -162,8 +211,10 @@ async function callOpenRouter(messages: Msg[], jsonMode: boolean): Promise<strin
   ];
   let lastErr: Error | null = null;
   for (const model of models) {
+    // Four sequential model attempts — same deadline guard as Gemini above.
+    if (msLeft(deadline) < MIN_ATTEMPT_MS) break;
     try {
-      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      const res = await fetchWithTimeout("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
         headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -171,7 +222,7 @@ async function callOpenRouter(messages: Msg[], jsonMode: boolean): Promise<strin
           messages,
           ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
         }),
-      });
+      }, attemptBudget(deadline));
       if (!res.ok) { lastErr = new Error(`openrouter ${model} ${res.status}`); continue; }
       const data = await res.json();
       const text = data?.choices?.[0]?.message?.content;
@@ -185,10 +236,10 @@ async function callOpenRouter(messages: Msg[], jsonMode: boolean): Promise<strin
 }
 
 // ── Cerebras (OpenAI-compatible, free tier, very fast) ──
-async function callCerebras(messages: Msg[], jsonMode: boolean): Promise<string> {
+async function callCerebras(messages: Msg[], jsonMode: boolean, deadline: number): Promise<string> {
   const key = Deno.env.get("CEREBRAS_API_KEY");
   if (!key) throw new Error("no cerebras key");
-  const res = await fetch("https://api.cerebras.ai/v1/chat/completions", {
+  const res = await fetchWithTimeout("https://api.cerebras.ai/v1/chat/completions", {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -196,7 +247,7 @@ async function callCerebras(messages: Msg[], jsonMode: boolean): Promise<string>
       messages,
       ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
     }),
-  });
+  }, attemptBudget(deadline));
   if (!res.ok) throw new Error(`cerebras ${res.status}`);
   const data = await res.json();
   const text = data?.choices?.[0]?.message?.content;
@@ -208,16 +259,23 @@ async function runCascade(messages: Msg[], jsonMode: boolean): Promise<string> {
   // Order = fastest/most-generous first, then broad backups. Each provider
   // throws "no key" and is skipped cleanly if its secret isn't set, so you can
   // add keys incrementally without touching code.
+  const deadline = Date.now() + TOTAL_DEADLINE_MS;
   const providers = [
-    () => callGroq(messages, jsonMode),
-    () => callCerebras(messages, jsonMode),
-    () => callGemini(messages),
-    () => callOpenRouter(messages, jsonMode),
-    () => callMistral(messages, jsonMode),
-    () => callCohere(messages),
+    () => callGroq(messages, jsonMode, deadline),
+    () => callCerebras(messages, jsonMode, deadline),
+    () => callGemini(messages, deadline),
+    () => callOpenRouter(messages, jsonMode, deadline),
+    () => callMistral(messages, jsonMode, deadline),
+    () => callCohere(messages, deadline),
   ];
   let lastErr: Error | null = null;
   for (const p of providers) {
+    // Stop rather than start an attempt that cannot finish. Without this the
+    // cascade would keep trying providers long after the caller gave up.
+    if (msLeft(deadline) < MIN_ATTEMPT_MS) {
+      lastErr = lastErr ?? new Error("cascade deadline exceeded");
+      break;
+    }
     try {
       return await p();
     } catch (e) {
@@ -308,6 +366,12 @@ serve(async (req) => {
   // than `p_cost: 0` — `consume_ai_tokens` treats anything below 1 as
   // `invalid_cost` and refuses, which would break every free feature.
   let remaining: number | null = null;
+  // Which buckets the spend actually came from, so a refund restores exactly
+  // those. Refunding a mixed spend entirely into the paid bucket would convert
+  // perishable free credits into permanent ones on every provider failure.
+  let spentFromBonus = 0;
+  let spentFromFree = 0;
+  let spentFromPaid = 0;
   if (cost > 0) {
     const { data: consume, error: consumeErr } = await supabase.rpc("consume_ai_tokens", {
       p_cost: cost,
@@ -323,6 +387,11 @@ serve(async (req) => {
       });
     }
     remaining = consume?.remaining ?? 0;
+    // Pre-0026 databases don't return the split. Falling back to "all free"
+    // matches the old refund behaviour rather than inventing paid credits.
+    spentFromBonus = consume?.from_bonus ?? 0;
+    spentFromFree = consume?.from_free ?? cost;
+    spentFromPaid = consume?.from_paid ?? 0;
   }
 
   try {
@@ -337,10 +406,31 @@ serve(async (req) => {
       const admin = createClient(SUPABASE_URL, serviceRoleKey, {
         auth: { persistSession: false, autoRefreshToken: false },
       });
-      await admin.rpc("refund_ai_tokens", {
+      // Bucket-accurate refund. Try newest signature first and degrade, so this
+      // function is safe to deploy before (or after) 0027 and 0026 are applied.
+      //   4-arg (0027): bonus + free + paid
+      //   3-arg (0026): free + paid
+      //   2-arg (pre):  flat amount into the free bucket
+      const { error: refund4Err } = await admin.rpc("refund_ai_tokens", {
         p_user: userId,
-        p_amount: cost,
-      }).catch(() => {});
+        p_from_bonus: spentFromBonus,
+        p_from_free: spentFromFree,
+        p_from_paid: spentFromPaid,
+      });
+      if (refund4Err) {
+        const { error: refund3Err } = await admin.rpc("refund_ai_tokens", {
+          p_user: userId,
+          // Without a bonus bucket, bonus-funded spend is closest to free.
+          p_from_free: spentFromFree + spentFromBonus,
+          p_from_paid: spentFromPaid,
+        });
+        if (refund3Err) {
+          await admin.rpc("refund_ai_tokens", {
+            p_user: userId,
+            p_amount: cost,
+          }).catch(() => {});
+        }
+      }
     }
     return json(502, { error: "ai_unavailable" });
   }
